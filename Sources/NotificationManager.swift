@@ -4,16 +4,17 @@ import UserNotifications
 final class NotificationManager {
     static let shared = NotificationManager()
 
-    private var center: UNUserNotificationCenter { UNUserNotificationCenter.current() }
     private let reminderID = "daily-note-reminder"
 
     func requestPermission() {
+        let center = UNUserNotificationCenter.current()
         Task {
             try? await center.requestAuthorization(options: [.alert, .sound])
         }
     }
 
     func scheduleReminder(hour: Int, minute: Int) {
+        let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: [reminderID])
 
         let content = UNMutableNotificationContent()
@@ -33,6 +34,6 @@ final class NotificationManager {
     }
 
     func cancelReminder() {
-        center.removePendingNotificationRequests(withIdentifiers: [reminderID])
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [reminderID])
     }
 }
