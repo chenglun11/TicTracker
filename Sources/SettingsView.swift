@@ -473,13 +473,13 @@ private struct JiraTab: View {
                     .textFieldStyle(UnderlineTextFieldStyle())
                 SecureField("API Token", text: $tokenInput)
                     .textFieldStyle(UnderlineTextFieldStyle())
-                    .onChange(of: tokenInput) { _, newValue in
-                        if let data = newValue.data(using: .utf8) {
-                            _ = KeychainHelper.save(data: data)
-                        }
-                    }
+                    .onSubmit { saveToken() }
                 HStack {
+                    Button("保存 Token") { saveToken() }
+                        .controlSize(.small)
+                        .disabled(tokenInput.isEmpty)
                     Button(testing ? "测试中…" : "测试连接") {
+                        saveToken()
                         testConnection()
                     }
                     .buttonStyle(.borderedProminent)
@@ -535,6 +535,12 @@ private struct JiraTab: View {
             if let data = KeychainHelper.load(), let str = String(data: data, encoding: .utf8) {
                 tokenInput = str
             }
+        }
+    }
+
+    private func saveToken() {
+        if let data = tokenInput.data(using: .utf8) {
+            KeychainHelper.save(data: data)
         }
     }
 

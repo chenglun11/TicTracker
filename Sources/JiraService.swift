@@ -26,7 +26,7 @@ final class JiraService {
         guard let store, store.jiraConfig.enabled else { return }
         pollingTask = Task {
             while !Task.isCancelled {
-                await fetchMyIssues()
+                _ = await fetchMyIssues()
                 let minutes = store.jiraConfig.pollingInterval
                 try? await Task.sleep(for: .seconds(minutes * 60))
             }
@@ -45,31 +45,36 @@ final class JiraService {
 
     // MARK: - API
 
-    func fetchMyIssues() async {
-        guard let store else { return }
+    func fetchMyIssues() async -> String? {
+        guard let store else { return "未初始化" }
         let config = store.jiraConfig
-        guard !config.serverURL.isEmpty, !config.username.isEmpty else { return }
-        guard let token = loadToken(), !token.isEmpty else { return }
+        guard !config.serverURL.isEmpty, !config.username.isEmpty else { return "请先配置服务器和用户名" }
+        guard let token = loadToken(), !token.isEmpty else { return "API Token 未设置" }
 
         let base = config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard var components = URLComponents(string: "\(base)/rest/api/2/search") else { return }
+        guard var components = URLComponents(string: "\(base)/rest/api/2/search") else { return "URL 无效" }
         components.queryItems = [
             URLQueryItem(name: "jql", value: config.jql),
             URLQueryItem(name: "fields", value: "summary,status,priority,issuetype"),
             URLQueryItem(name: "maxResults", value: "50"),
         ]
-        guard let url = components.url else { return }
+        guard let url = components.url else { return "URL 无效" }
 
         var request = URLRequest(url: url)
         applyAuth(&request, username: config.username, token: token)
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
+            guard let http = response as? HTTPURLResponse else { return "无响应" }
+            guard http.statusCode == 200 else {
+                return http.statusCode == 401 ? "认证失败" : "HTTP \(http.statusCode)"
+            }
             let issues = parseIssues(data)
             store.jiraIssues = issues
+            return nil
         } catch {
             DevLog.shared.error("Jira", "fetchMyIssues failed: \(error.localizedDescription)")
+            return error.localizedDescription
         }
     }
 

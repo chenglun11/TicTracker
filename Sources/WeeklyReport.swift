@@ -54,6 +54,30 @@ struct WeeklyReport {
         let grand = totals.values.reduce(0, +)
         lines.append("合计: \(grand) 次")
 
+        // Jira issue counts for the week
+        var jiraTotals: [String: Int] = [:]
+        var jiraDate = monday
+        while jiraDate <= today {
+            let key = fmt.string(from: jiraDate)
+            if let dayCounts = store.jiraIssueCounts[key] {
+                for (issueKey, count) in dayCounts {
+                    jiraTotals[issueKey, default: 0] += count
+                }
+            }
+            jiraDate = calendar.date(byAdding: .day, value: 1, to: jiraDate)!
+        }
+        if !jiraTotals.isEmpty {
+            lines.append("")
+            lines.append("--- Jira 工单支持 ---")
+            let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
+            for (issueKey, count) in jiraTotals.sorted(by: { $0.value > $1.value }) {
+                let summary = issueMap[issueKey].map { " \($0)" } ?? ""
+                lines.append("\(issueKey)\(summary): \(count) 次")
+            }
+            let jiraGrand = jiraTotals.values.reduce(0, +)
+            lines.append("Jira 合计: \(jiraGrand) 次")
+        }
+
         // Daily breakdown
         let weekdayFmt = DateFormatter()
         weekdayFmt.dateFormat = "M/d（EEE）"

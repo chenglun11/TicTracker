@@ -7,6 +7,7 @@ struct JiraView: View {
     @State private var transitionsFor: String?
     @State private var transitions: [JiraTransition] = []
     @State private var transitioning = false
+    @State private var errorMessage: String?
 
     private var filteredIssues: [JiraIssue] {
         if searchText.isEmpty { return store.jiraIssues }
@@ -69,9 +70,16 @@ struct JiraView: View {
 
             // Bottom bar
             HStack {
-                Text("今日 Jira 支持：\(todayJiraTotal) 次")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                } else {
+                    Text("今日 Jira 支持：\(todayJiraTotal) 次")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if refreshing {
                     ProgressView()
@@ -218,8 +226,11 @@ struct JiraView: View {
 
     private func refresh() {
         refreshing = true
+        errorMessage = nil
         Task {
-            await JiraService.shared.fetchMyIssues()
+            if let err = await JiraService.shared.fetchMyIssues() {
+                errorMessage = "刷新失败：\(err)"
+            }
             refreshing = false
         }
     }
@@ -240,10 +251,13 @@ struct JiraView: View {
 
     private func performTransition(issueKey: String, transitionID: String) {
         transitioning = true
+        errorMessage = nil
         Task {
             let ok = await JiraService.shared.doTransition(issueKey: issueKey, transitionID: transitionID)
             if ok {
-                await JiraService.shared.fetchMyIssues()
+                _ = await JiraService.shared.fetchMyIssues()
+            } else {
+                errorMessage = "流转失败，请重试"
             }
             transitioning = false
             transitionsFor = nil

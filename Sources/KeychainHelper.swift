@@ -5,6 +5,7 @@ enum KeychainHelper {
     static let service = "com.tictracker.jira"
     static let account = "api-token"
 
+    @discardableResult
     static func save(service: String = service, account: String = account, data: Data) -> Bool {
         delete(service: service, account: account)
         let query: [String: Any] = [
