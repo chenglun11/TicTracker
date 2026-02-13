@@ -15,11 +15,15 @@ struct MenuBarView: View {
         selectedKey == store.todayKey
     }
 
-    private var displayDate: String {
+    private static let displayDateFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "M/d (EEE)"
         fmt.locale = Locale(identifier: "zh_CN")
-        return fmt.string(from: selectedDate)
+        return fmt
+    }()
+
+    private var displayDate: String {
+        Self.displayDateFormatter.string(from: selectedDate)
     }
 
     var body: some View {

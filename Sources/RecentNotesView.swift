@@ -34,21 +34,28 @@ struct RecentNotesView: View {
         let note: String
     }
 
-    private var allEntries: [DayEntry] {
+    private static let dateFmt: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        let displayFmt = DateFormatter()
-        displayFmt.dateFormat = "M/d (EEE)"
-        displayFmt.locale = Locale(identifier: "zh_CN")
+        return fmt
+    }()
 
+    private static let displayFmt: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d (EEE)"
+        fmt.locale = Locale(identifier: "zh_CN")
+        return fmt
+    }()
+
+    private var allEntries: [DayEntry] {
         let allKeys = Set(store.records.keys).union(store.dailyNotes.keys).sorted().reversed()
         return allKeys.compactMap { key in
             let records = store.records[key] ?? [:]
             let total = records.values.reduce(0, +)
             let note = store.dailyNotes[key] ?? ""
             guard total > 0 || !note.isEmpty else { return nil }
-            guard let date = fmt.date(from: key) else { return nil }
-            return DayEntry(id: key, display: displayFmt.string(from: date), records: records, total: total, note: note)
+            guard let date = Self.dateFmt.date(from: key) else { return nil }
+            return DayEntry(id: key, display: Self.displayFmt.string(from: date), records: records, total: total, note: note)
         }
     }
 
