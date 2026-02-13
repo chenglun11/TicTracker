@@ -36,13 +36,39 @@ struct WeeklyReport {
 
         var lines = ["本周技术支持汇总（\(mondayStr) - \(todayStr)）"]
 
-        let sorted = store.departments.filter { totals[$0, default: 0] > 0 }
-        for dept in sorted {
+        let allDepts = Array(Set(store.departments + totals.keys)).sorted {
+            let i1 = store.departments.firstIndex(of: $0)
+            let i2 = store.departments.firstIndex(of: $1)
+            switch (i1, i2) {
+            case let (a?, b?): return a < b
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return $0 < $1
+            }
+        }
+        for dept in allDepts where totals[dept, default: 0] > 0 {
             lines.append("\(dept): \(totals[dept, default: 0]) 次")
         }
 
         let grand = totals.values.reduce(0, +)
         lines.append("合计: \(grand) 次")
+
+        // Append daily notes
+        var noteLines: [String] = []
+        var noteDate = monday
+        while noteDate <= today {
+            let key = fmt.string(from: noteDate)
+            if let note = store.dailyNotes[key], !note.isEmpty {
+                let display = displayFmt.string(from: noteDate)
+                noteLines.append("\(display): \(note)")
+            }
+            noteDate = calendar.date(byAdding: .day, value: 1, to: noteDate)!
+        }
+        if !noteLines.isEmpty {
+            lines.append("")
+            lines.append("--- 每日记录 ---")
+            lines.append(contentsOf: noteLines)
+        }
 
         return lines.joined(separator: "\n")
     }

@@ -4,12 +4,19 @@ struct MenuBarView: View {
     @Bindable var store: DataStore
     @Environment(\.openWindow) private var openWindow
     @State private var copied = false
+    @State private var noteText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("今日技术支持 — \(store.todayKey)")
-                .font(.headline)
-                .padding(.bottom, 4)
+            HStack(alignment: .firstTextBaseline) {
+                Text("今日技术支持")
+                    .font(.headline)
+                Spacer()
+                Text(store.todayKey)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 2)
 
             if store.departments.isEmpty {
                 Text("暂无部门，请在设置中添加")
@@ -37,6 +44,36 @@ struct MenuBarView: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 4) {
+                Text("今日小记")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $noteText)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .frame(height: 64)
+                    .overlay(alignment: .topLeading) {
+                        if noteText.isEmpty {
+                            Text("记录今天做了什么…")
+                                .font(.body)
+                                .foregroundStyle(.tertiary)
+                                .padding(.leading, 5)
+                                .padding(.top, 1)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .padding(4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.3))
+                    )
+                    .onChange(of: noteText) { _, newValue in
+                        store.setTodayNote(newValue)
+                    }
+            }
+
+            Divider()
+
             HStack {
                 Button(copied ? "已复制 ✓" : "复制本周汇总") {
                     WeeklyReport.copyToClipboard(from: store)
@@ -46,16 +83,35 @@ struct MenuBarView: View {
                     }
                 }
                 Spacer()
-                Button("设置") {
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "recent-notes")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.borderless)
+                .help("查看日报")
+                Button {
+                    NSApp.setActivationPolicy(.regular)
                     openWindow(id: "settings")
                     NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "gearshape")
                 }
-                Button("退出") {
+                .buttonStyle(.borderless)
+                .help("设置")
+                Button {
                     NSApp.terminate(nil)
+                } label: {
+                    Image(systemName: "power")
                 }
+                .buttonStyle(.borderless)
+                .help("退出")
             }
         }
         .padding()
-        .frame(width: 280)
+        .frame(width: 300)
+        .onAppear { noteText = store.todayNote }
     }
 }

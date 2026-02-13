@@ -15,6 +15,11 @@ struct TechSupportTrackerApp: App {
         Window("设置", id: "settings") {
             SettingsView(store: store)
         }
-        .defaultSize(width: 320, height: 400)
+        .defaultSize(width: 420, height: 360)
+
+        Window("最近日报", id: "recent-notes") {
+            RecentNotesView(store: store)
+        }
+        .defaultSize(width: 360, height: 420)
     }
 }
