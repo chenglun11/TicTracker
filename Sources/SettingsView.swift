@@ -1,6 +1,20 @@
 import SwiftUI
 import ServiceManagement
 
+// MARK: - Underline TextField Style
+
+private struct UnderlineTextFieldStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .padding(.vertical, 4)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(.quaternary)
+                    .frame(height: 1)
+            }
+    }
+}
+
 struct SettingsView: View {
     @Bindable var store: DataStore
 
@@ -41,7 +55,7 @@ private struct DepartmentTab: View {
             Section("添加项目") {
                 HStack(spacing: 8) {
                     TextField("新项目名称", text: $newDept)
-                        .textFieldStyle(.plain)
+                        .textFieldStyle(UnderlineTextFieldStyle())
                         .onSubmit { add() }
                     Button("添加", action: add)
                         .buttonStyle(.borderedProminent)
@@ -59,7 +73,7 @@ private struct DepartmentTab: View {
                         if editingDept == dept {
                             HStack(spacing: 8) {
                                 TextField("项目名称", text: $editText)
-                                    .textFieldStyle(.plain)
+                                    .textFieldStyle(UnderlineTextFieldStyle())
                                     .onSubmit { commitRename(dept) }
                                 Button("确定") { commitRename(dept) }
                                     .buttonStyle(.borderedProminent)
@@ -162,9 +176,9 @@ private struct GeneralTab: View {
         Form {
             Section("显示名称") {
                 TextField("主标题", text: Bindable(store).popoverTitle)
-                    .textFieldStyle(.plain)
+                    .textFieldStyle(UnderlineTextFieldStyle())
                 TextField("小记标题", text: Bindable(store).noteTitle)
-                    .textFieldStyle(.plain)
+                    .textFieldStyle(UnderlineTextFieldStyle())
             }
 
             Section("启动") {
@@ -271,9 +285,9 @@ private struct RSSTab: View {
         Form {
             Section("添加订阅源") {
                 TextField("名称", text: $newFeedName)
-                    .textFieldStyle(.plain)
+                    .textFieldStyle(UnderlineTextFieldStyle())
                 TextField("URL", text: $newFeedURL)
-                    .textFieldStyle(.plain)
+                    .textFieldStyle(UnderlineTextFieldStyle())
                 HStack {
                     Button("添加") { addFeed() }
                         .buttonStyle(.borderedProminent)
