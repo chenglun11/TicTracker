@@ -146,12 +146,22 @@ final class UpdateChecker {
                     return
                 }
 
+                // 移除 quarantine 属性，防止 Gatekeeper 拦截
+                let xattr = Process()
+                xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+                xattr.arguments = ["-cr", newApp.path]
+                try? xattr.run()
+                xattr.waitUntilExit()
+
                 let bundlePath = await MainActor.run { Bundle.main.bundlePath }
                 let currentAppURL = URL(fileURLWithPath: bundlePath)
                 let destination = currentAppURL
 
-                // 备份当前版本
-                let backupURL = tempDir.appendingPathComponent("TicTracker-backup.app")
+                // 备份当前版本到独立目录（不随 tempDir 一起清理）
+                let backupDir = FileManager.default.temporaryDirectory.appendingPathComponent("TicTrackerBackup")
+                try? FileManager.default.removeItem(at: backupDir)
+                try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+                let backupURL = backupDir.appendingPathComponent("TicTracker-backup.app")
                 try FileManager.default.moveItem(at: currentAppURL, to: backupURL)
 
                 // 移入新版本
@@ -166,12 +176,16 @@ final class UpdateChecker {
 
                 // 清理临时文件
                 try? FileManager.default.removeItem(at: tempDir)
+                try? FileManager.default.removeItem(at: backupDir)
 
                 await MainActor.run {
                     progressWindow.close()
-                    // 等当前进程退出后再启动新版本
                     let pid = ProcessInfo.processInfo.processIdentifier
-                    let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done; open \"\(destination.path)\""
+                    let script = """
+                    while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done
+                    xattr -cr "\(destination.path)"
+                    open "\(destination.path)"
+                    """
                     let relaunch = Process()
                     relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
                     relaunch.arguments = ["-c", script]
