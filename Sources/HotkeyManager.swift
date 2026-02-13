@@ -1,6 +1,7 @@
 import Cocoa
 import Carbon
 
+@MainActor
 final class HotkeyManager {
     static let shared = HotkeyManager()
 
@@ -59,7 +60,4 @@ final class HotkeyManager {
         hotKeyRefs.removeAll()
     }
 
-    deinit {
-        unregisterAll()
-    }
 }

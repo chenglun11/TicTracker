@@ -15,6 +15,7 @@ struct SettingsView: View {
             AboutTab()
                 .tabItem { Label("关于", systemImage: "info.circle") }
         }
+        .tabViewStyle(.sidebarAdaptable)
         .frame(minWidth: 460, minHeight: 420)
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
@@ -31,49 +32,74 @@ private struct DepartmentTab: View {
     @State private var editText = ""
     @State private var deletingDept: String?
 
+    private let colors: [Color] = [.blue, .purple, .orange, .green, .pink, .cyan, .indigo, .mint, .teal]
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .foregroundStyle(Color.accentColor)
                 TextField("新项目名称", text: $newDept)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { add() }
                 Button("添加", action: add)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                     .disabled(newDept.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .padding()
 
             List {
-                ForEach(store.departments, id: \.self) { dept in
-                    HStack {
-                        if editingDept == dept {
+                ForEach(Array(store.departments.enumerated()), id: \.element) { i, dept in
+                    if editingDept == dept {
+                        HStack(spacing: 8) {
                             TextField("项目名称", text: $editText)
                                 .textFieldStyle(.roundedBorder)
                                 .onSubmit { commitRename(dept) }
                             Button("确定") { commitRename(dept) }
-                                .buttonStyle(.borderless)
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
                             Button("取消") { editingDept = nil }
-                                .buttonStyle(.borderless)
-                        } else {
+                                .controlSize(.small)
+                        }
+                    } else {
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(colors[i % colors.count].gradient)
+                                .frame(width: 8, height: 8)
                             Text(dept)
+                                .font(.body)
+                            if i < 9 {
+                                Text("\(store.currentModifierLabel)\(i + 1)")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                            }
                             Spacer()
-                            Text("\(store.totalCountForDepartment(dept))")
+                            Text("\(store.totalCountForDepartment(dept)) 次")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .monospacedDigit()
                             Button {
                                 editingDept = dept
                                 editText = dept
                             } label: {
                                 Image(systemName: "pencil")
+                                    .font(.caption)
                             }
                             .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
                             Button {
                                 deletingDept = dept
                             } label: {
                                 Image(systemName: "trash")
-                                    .foregroundStyle(.red)
+                                    .font(.caption)
+                                    .foregroundStyle(.red.opacity(0.7))
                             }
                             .buttonStyle(.borderless)
                         }
+                        .padding(.vertical, 2)
                     }
                 }
                 .onMove { from, to in

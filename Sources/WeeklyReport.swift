@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 
+@MainActor
 struct WeeklyReport {
     static func generate(from store: DataStore) -> String {
         let calendar = Calendar.current

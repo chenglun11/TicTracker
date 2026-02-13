@@ -1,5 +1,6 @@
 import UserNotifications
 
+@MainActor
 final class NotificationManager {
     static let shared = NotificationManager()
 
