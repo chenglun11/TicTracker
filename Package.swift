@@ -7,7 +7,11 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "TicTracker",
-            path: "Sources"
+            path: "Sources",
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                .unsafeFlags(["-warnings-as-errors"]),
+            ]
         )
     ]
 )
