@@ -34,6 +34,14 @@ final class NotificationManager {
         }
     }
 
+    func refreshReminderIfNeeded() {
+        guard UserDefaults.standard.bool(forKey: "reminderEnabled") else { return }
+        let hour = UserDefaults.standard.object(forKey: "reminderHour") as? Int ?? 17
+        let minute = UserDefaults.standard.object(forKey: "reminderMinute") as? Int ?? 30
+        scheduleReminder(hour: hour, minute: minute)
+        DevLog.shared.info("Notify", "启动时刷新日报提醒 \(String(format: "%02d:%02d", hour, minute))")
+    }
+
     func cancelReminder() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [reminderID])
     }

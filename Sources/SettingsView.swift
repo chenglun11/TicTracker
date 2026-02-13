@@ -37,78 +37,83 @@ private struct DepartmentTab: View {
     private let colors: [Color] = [.blue, .purple, .orange, .green, .pink, .cyan, .indigo, .mint, .teal]
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "plus.circle.fill")
-                    .foregroundStyle(Color.accentColor)
-                TextField("新项目名称", text: $newDept)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { add() }
-                Button("添加", action: add)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(newDept.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            .padding()
-
-            List {
-                ForEach(Array(store.departments.enumerated()), id: \.element) { i, dept in
-                    if editingDept == dept {
-                        HStack(spacing: 8) {
-                            TextField("项目名称", text: $editText)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { commitRename(dept) }
-                            Button("确定") { commitRename(dept) }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                            Button("取消") { editingDept = nil }
-                                .controlSize(.small)
-                        }
-                    } else {
-                        HStack(spacing: 10) {
-                            Circle()
-                                .fill(colors[i % colors.count].gradient)
-                                .frame(width: 8, height: 8)
-                            Text(dept)
-                                .font(.body)
-                            if i < 9 {
-                                Text("\(store.currentModifierLabel)\(i + 1)")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
-                            }
-                            Spacer()
-                            Text("\(store.totalCountForDepartment(dept)) 次")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                            Button {
-                                editingDept = dept
-                                editText = dept
-                            } label: {
-                                Image(systemName: "pencil")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.borderless)
-                            .foregroundStyle(.secondary)
-                            Button {
-                                deletingDept = dept
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.caption)
-                                    .foregroundStyle(.red.opacity(0.7))
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                        .padding(.vertical, 2)
-                    }
+        Form {
+            Section("添加项目") {
+                HStack(spacing: 8) {
+                    TextField("新项目名称", text: $newDept)
+                        .textFieldStyle(.plain)
+                        .onSubmit { add() }
+                    Button("添加", action: add)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(newDept.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .onMove { from, to in
-                    store.departments.move(fromOffsets: from, toOffset: to)
+            }
+
+            Section("项目列表") {
+                if store.departments.isEmpty {
+                    Text("暂无项目")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(store.departments.enumerated()), id: \.element) { i, dept in
+                        if editingDept == dept {
+                            HStack(spacing: 8) {
+                                TextField("项目名称", text: $editText)
+                                    .textFieldStyle(.plain)
+                                    .onSubmit { commitRename(dept) }
+                                Button("确定") { commitRename(dept) }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                Button("取消") { editingDept = nil }
+                                    .controlSize(.small)
+                            }
+                        } else {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(colors[i % colors.count].gradient)
+                                    .frame(width: 8, height: 8)
+                                Text(dept)
+                                    .font(.body)
+                                if i < 9 {
+                                    Text("\(store.currentModifierLabel)\(i + 1)")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                                }
+                                Spacer()
+                                Text("\(store.totalCountForDepartment(dept)) 次")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                                Button {
+                                    editingDept = dept
+                                    editText = dept
+                                } label: {
+                                    Image(systemName: "pencil")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
+                                Button {
+                                    deletingDept = dept
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.caption)
+                                        .foregroundStyle(.red.opacity(0.7))
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                    .onMove { from, to in
+                        store.departments.move(fromOffsets: from, toOffset: to)
+                    }
                 }
             }
         }
+        .formStyle(.grouped)
         .alert("确认删除「\(deletingDept ?? "")」？", isPresented: Binding(
             get: { deletingDept != nil },
             set: { if !$0 { deletingDept = nil } }
@@ -157,9 +162,9 @@ private struct GeneralTab: View {
         Form {
             Section("显示名称") {
                 TextField("主标题", text: Bindable(store).popoverTitle)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
                 TextField("小记标题", text: Bindable(store).noteTitle)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
             }
 
             Section("启动") {
@@ -266,9 +271,9 @@ private struct RSSTab: View {
         Form {
             Section("添加订阅源") {
                 TextField("名称", text: $newFeedName)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
                 TextField("URL", text: $newFeedURL)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
                 HStack {
                     Button("添加") { addFeed() }
                         .buttonStyle(.borderedProminent)
@@ -436,7 +441,7 @@ private struct DataTab: View {
         Form {
             Section("统计") {
                 LabeledContent("已记录天数", value: "\(store.totalDaysTracked) 天")
-                LabeledContent("累计支持次数", value: "\(store.totalSupportCount) 次")
+                LabeledContent("累计点击次数", value: "\(store.totalSupportCount) 次")
             }
 
             Section("导出 / 导入") {

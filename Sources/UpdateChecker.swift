@@ -169,10 +169,12 @@ final class UpdateChecker {
 
                 await MainActor.run {
                     progressWindow.close()
-                    // 重启
+                    // 等当前进程退出后再启动新版本
+                    let pid = ProcessInfo.processInfo.processIdentifier
+                    let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done; open \"\(destination.path)\""
                     let relaunch = Process()
-                    relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                    relaunch.arguments = [destination.path]
+                    relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+                    relaunch.arguments = ["-c", script]
                     try? relaunch.run()
                     NSApp.terminate(nil)
                 }
@@ -199,7 +201,8 @@ final class UpdateChecker {
     // MARK: - Alerts
 
     private func showUpdateAlert(version: String, zipURL: String?) {
-        NSApp.setActivationPolicy(.regular)
+        let wasAccessory = NSApp.activationPolicy() == .accessory
+        if wasAccessory { NSApp.setActivationPolicy(.regular) }
         NSApp.activate(ignoringOtherApps: true)
 
         let alert = NSAlert()
@@ -225,11 +228,12 @@ final class UpdateChecker {
             UserDefaults.standard.set(version, forKey: "skippedVersion")
         }
 
-        NSApp.setActivationPolicy(.accessory)
+        if wasAccessory { NSApp.setActivationPolicy(.accessory) }
     }
 
     private func showUpToDateAlert() {
-        NSApp.setActivationPolicy(.regular)
+        let wasAccessory = NSApp.activationPolicy() == .accessory
+        if wasAccessory { NSApp.setActivationPolicy(.regular) }
         NSApp.activate(ignoringOtherApps: true)
 
         let alert = NSAlert()
@@ -239,11 +243,12 @@ final class UpdateChecker {
         alert.alertStyle = .informational
         alert.runModal()
 
-        NSApp.setActivationPolicy(.accessory)
+        if wasAccessory { NSApp.setActivationPolicy(.accessory) }
     }
 
     private func showError(_ message: String) {
-        NSApp.setActivationPolicy(.regular)
+        let wasAccessory = NSApp.activationPolicy() == .accessory
+        if wasAccessory { NSApp.setActivationPolicy(.regular) }
         NSApp.activate(ignoringOtherApps: true)
 
         let alert = NSAlert()
@@ -253,6 +258,6 @@ final class UpdateChecker {
         alert.alertStyle = .warning
         alert.runModal()
 
-        NSApp.setActivationPolicy(.accessory)
+        if wasAccessory { NSApp.setActivationPolicy(.accessory) }
     }
 }

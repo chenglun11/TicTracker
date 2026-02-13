@@ -22,6 +22,7 @@ struct TicTrackerApp: App {
                         appDelegate.store = store
                         DevLog.shared.info("App", "启动 TicTracker")
                         HotkeyManager.shared.setup(store: store)
+                        NotificationManager.shared.refreshReminderIfNeeded()
                         UpdateChecker.shared.checkInBackground()
                         RSSFeedManager.shared.setup(store: store)
                         RSSFeedManager.shared.startPolling()
