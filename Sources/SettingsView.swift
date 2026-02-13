@@ -319,7 +319,7 @@ private struct AboutTab: View {
                 .clipShape(RoundedRectangle(cornerRadius: 20))
                 .shadow(color: .black.opacity(0.15), radius: 6, y: 3)
 
-            Text("计数工具")
+            Text("TicTracker")
                 .font(.title2.bold())
 
             Text("版本 \(version)（\(build)）")

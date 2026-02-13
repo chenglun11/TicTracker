@@ -5,9 +5,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>com.maxli.TicTracker</string>
 	<key>CFBundleName</key>
-	<string>计数工具</string>
+	<string>TicTracker</string>
 	<key>CFBundleDisplayName</key>
-	<string>计数工具</string>
+	<string>TicTracker</string>
 	<key>CFBundleExecutable</key>
 	<string>TicTracker</string>
 	<key>CFBundleVersion</key>
