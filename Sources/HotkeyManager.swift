@@ -18,13 +18,11 @@ final class HotkeyManager {
     func rebindHotkeys() {
         unregisterAll()
         guard let store else { return }
-        // Ctrl+Shift+1..9 for first 9 departments
         let count = min(store.departments.count, 9)
+        let keyCodes: [UInt32] = [0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19]
+        let modifiers: UInt32 = store.currentCarbonFlags
         for i in 0..<count {
-            // kVK_ANSI_1 = 0x12, kVK_ANSI_2 = 0x13, ...
-            let keyCodes: [UInt32] = [0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19]
-            let modifiers: UInt32 = store.currentCarbonFlags
-            let hotKeyID = EventHotKeyID(signature: OSType(0x5453_5448), id: UInt32(i)) // "TSTH"
+            let hotKeyID = EventHotKeyID(signature: OSType(0x5453_5448), id: UInt32(i))
             var hotKeyRef: EventHotKeyRef?
             let status = RegisterEventHotKey(keyCodes[i], modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
             if status == noErr, let ref = hotKeyRef {
