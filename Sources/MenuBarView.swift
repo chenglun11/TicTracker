@@ -103,7 +103,7 @@ struct MenuBarView: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                MiniChartView(data: store.past7DaysTotals, todayKey: store.todayKey)
+                MiniChartView(data: store.past7DaysBreakdown, departments: store.departments, todayKey: store.todayKey)
             }
 
             Divider()
@@ -152,6 +152,15 @@ struct MenuBarView: View {
                 HStack(spacing: 12) {
                     Button {
                         NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "statistics")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "chart.bar.xaxis")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("统计")
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
                         openWindow(id: "rss-reader")
                         NSApp.activate(ignoringOtherApps: true)
                     } label: {
@@ -159,6 +168,15 @@ struct MenuBarView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("RSS 订阅")
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "jira")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "server.rack")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Jira 工单")
                     Button {
                         NSApp.setActivationPolicy(.regular)
                         openWindow(id: "recent-notes")
@@ -212,29 +230,95 @@ struct MenuBarView: View {
 }
 
 private struct MiniChartView: View {
-    let data: [(date: String, weekday: String, total: Int)]
+    let data: [(date: String, weekday: String, breakdown: [(dept: String, count: Int)])]
+    let departments: [String]
     let todayKey: String
+    @State private var selectedDay: String?
 
     var body: some View {
-        let maxVal = max(data.map(\.total).max() ?? 1, 1)
+        let maxVal = max(data.map { $0.breakdown.reduce(0) { $0 + $1.count } }.max() ?? 1, 1)
         HStack(alignment: .bottom, spacing: 6) {
             ForEach(data, id: \.date) { item in
+                let total = item.breakdown.reduce(0) { $0 + $1.count }
                 VStack(spacing: 2) {
-                    if item.total > 0 {
-                        Text("\(item.total)")
+                    if total > 0 {
+                        Text("\(total)")
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     }
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(item.date == todayKey ? Color.accentColor : Color.secondary.opacity(0.4))
-                        .frame(height: max(CGFloat(item.total) / CGFloat(maxVal) * 30, item.total > 0 ? 4 : 1))
+                    stackedBar(date: item.date, breakdown: item.breakdown, total: total, maxVal: maxVal)
                     Text(item.weekday)
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    selectedDay = selectedDay == item.date ? nil : item.date
+                }
+                .popover(isPresented: Binding(
+                    get: { selectedDay == item.date },
+                    set: { if !$0 { selectedDay = nil } }
+                )) {
+                    dayDetail(date: item.date, weekday: item.weekday, breakdown: item.breakdown, total: total)
+                }
             }
         }
         .frame(height: 50)
+    }
+
+    @ViewBuilder
+    private func stackedBar(date: String, breakdown: [(dept: String, count: Int)], total: Int, maxVal: Int) -> some View {
+        let barHeight = max(CGFloat(total) / CGFloat(maxVal) * 30, total > 0 ? 4 : 1)
+        let isToday = date == todayKey
+        if breakdown.isEmpty {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.secondary.opacity(0.2))
+                .frame(height: 1)
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(breakdown.reversed().enumerated()), id: \.offset) { _, segment in
+                    let segmentHeight = CGFloat(segment.count) / CGFloat(total) * barHeight
+                    let colorIndex = departments.firstIndex(of: segment.dept) ?? 0
+                    Rectangle()
+                        .fill(departmentColors[colorIndex % departmentColors.count].opacity(isToday ? 1.0 : 0.55))
+                        .frame(height: segmentHeight)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 2))
+            .frame(height: barHeight)
+        }
+    }
+
+    private func dayDetail(date: String, weekday: String, breakdown: [(dept: String, count: Int)], total: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(date) \(weekday)")
+                .font(.caption.bold())
+            Divider()
+            ForEach(breakdown, id: \.dept) { segment in
+                HStack {
+                    let colorIndex = departments.firstIndex(of: segment.dept) ?? 0
+                    Circle()
+                        .fill(departmentColors[colorIndex % departmentColors.count])
+                        .frame(width: 6, height: 6)
+                    Text(segment.dept)
+                        .font(.caption)
+                    Spacer()
+                    Text("\(segment.count)")
+                        .font(.caption)
+                        .monospacedDigit()
+                }
+            }
+            if total > 0 {
+                Divider()
+                HStack {
+                    Text("合计").font(.caption.bold())
+                    Spacer()
+                    Text("\(total)").font(.caption.bold()).monospacedDigit()
+                }
+            }
+        }
+        .padding(8)
+        .frame(width: 150)
     }
 }

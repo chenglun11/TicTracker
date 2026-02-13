@@ -1,6 +1,8 @@
 import SwiftUI
 import ServiceManagement
 
+let departmentColors: [Color] = [.blue, .purple, .orange, .green, .pink, .cyan, .indigo, .mint, .teal]
+
 // MARK: - Underline TextField Style
 
 private struct UnderlineTextFieldStyle: TextFieldStyle {
@@ -19,22 +21,33 @@ struct SettingsView: View {
     @Bindable var store: DataStore
 
     var body: some View {
-        TabView {
+        tabContent
+            .frame(minWidth: 560, minHeight: 420)
+            .onDisappear {
+                NSApp.setActivationPolicy(.accessory)
+            }
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        let tabs = TabView {
             DepartmentTab(store: store)
                 .tabItem { Label("项目", systemImage: "building.2") }
             GeneralTab(store: store)
                 .tabItem { Label("通用", systemImage: "gearshape") }
             RSSTab(store: store)
                 .tabItem { Label("RSS", systemImage: "dot.radiowaves.up.forward") }
+            JiraTab(store: store)
+                .tabItem { Label("Jira", systemImage: "server.rack") }
             DataTab(store: store)
                 .tabItem { Label("数据", systemImage: "externaldrive") }
             AboutTab()
                 .tabItem { Label("关于", systemImage: "info.circle") }
         }
-        .tabViewStyle(.sidebarAdaptable)
-        .frame(minWidth: 560, minHeight: 420)
-        .onDisappear {
-            NSApp.setActivationPolicy(.accessory)
+        if #available(macOS 15, *) {
+            tabs.tabViewStyle(.sidebarAdaptable)
+        } else {
+            tabs
         }
     }
 }
@@ -47,8 +60,6 @@ private struct DepartmentTab: View {
     @State private var editingDept: String?
     @State private var editText = ""
     @State private var deletingDept: String?
-
-    private let colors: [Color] = [.blue, .purple, .orange, .green, .pink, .cyan, .indigo, .mint, .teal]
 
     var body: some View {
         Form {
@@ -84,7 +95,7 @@ private struct DepartmentTab: View {
                         } else {
                             HStack(spacing: 10) {
                                 Circle()
-                                    .fill(colors[i % colors.count].gradient)
+                                    .fill(departmentColors[i % departmentColors.count].gradient)
                                     .frame(width: 8, height: 8)
                                 Text(dept)
                                     .font(.body)
@@ -256,6 +267,7 @@ private struct GeneralTab: View {
                 ForEach(Array(store.departments.prefix(9).enumerated()), id: \.offset) { i, dept in
                     LabeledContent("\(store.currentModifierLabel)\(i + 1)", value: "\(dept) +1")
                 }
+                LabeledContent("\(store.currentModifierLabel)0", value: "快速日报")
             }
         }
         .formStyle(.grouped)
@@ -443,6 +455,113 @@ private struct RSSTab: View {
     }
 }
 
+// MARK: - Jira Tab
+
+private struct JiraTab: View {
+    @Bindable var store: DataStore
+    @State private var tokenInput = ""
+    @State private var testing = false
+    @State private var testResult: String?
+    @State private var testSuccess = false
+
+    var body: some View {
+        Form {
+            Section("连接") {
+                TextField("服务器地址", text: Bindable(store).jiraConfig.serverURL, prompt: Text("https://jira.example.com"))
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                TextField("用户名", text: Bindable(store).jiraConfig.username)
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                SecureField("API Token", text: $tokenInput)
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .onChange(of: tokenInput) { _, newValue in
+                        if let data = newValue.data(using: .utf8) {
+                            _ = KeychainHelper.save(data: data)
+                        }
+                    }
+                HStack {
+                    Button(testing ? "测试中…" : "测试连接") {
+                        testConnection()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(testing || store.jiraConfig.serverURL.isEmpty || store.jiraConfig.username.isEmpty || tokenInput.isEmpty)
+
+                    if let result = testResult {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundStyle(testSuccess ? .green : .red)
+                    }
+                }
+            }
+
+            Section("查询") {
+                TextField("JQL", text: Bindable(store).jiraConfig.jql)
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .font(.callout.monospaced())
+                HStack {
+                    Text("轮询间隔")
+                    Spacer()
+                    Picker("", selection: Bindable(store).jiraConfig.pollingInterval) {
+                        Text("5 分钟").tag(5)
+                        Text("10 分钟").tag(10)
+                        Text("15 分钟").tag(15)
+                        Text("30 分钟").tag(30)
+                        Text("60 分钟").tag(60)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 100)
+                    .onChange(of: store.jiraConfig.pollingInterval) { _, _ in
+                        if store.jiraConfig.enabled {
+                            JiraService.shared.restartPolling()
+                        }
+                    }
+                }
+            }
+
+            Section("启用") {
+                Toggle("自动轮询 Jira 工单", isOn: Bindable(store).jiraConfig.enabled)
+                    .onChange(of: store.jiraConfig.enabled) { _, enabled in
+                        if enabled {
+                            JiraService.shared.startPolling()
+                        } else {
+                            JiraService.shared.stopPolling()
+                        }
+                    }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            if let data = KeychainHelper.load(), let str = String(data: data, encoding: .utf8) {
+                tokenInput = str
+            }
+        }
+    }
+
+    private func testConnection() {
+        testing = true
+        testResult = nil
+        Task {
+            let result = await JiraService.shared.testConnection()
+            switch result {
+            case .success:
+                testResult = "连接成功"
+                testSuccess = true
+            case .authError:
+                testResult = "认证失败，请检查用户名和 Token"
+                testSuccess = false
+            case .networkError(let msg):
+                testResult = "连接失败：\(msg)"
+                testSuccess = false
+            case .parseError:
+                testResult = "解析失败"
+                testSuccess = false
+            }
+            testing = false
+        }
+    }
+}
+
 // MARK: - Data Tab
 
 private struct DataTab: View {
@@ -462,6 +581,9 @@ private struct DataTab: View {
                 HStack {
                     Button("导出 JSON") {
                         exportData()
+                    }
+                    Button("导出 CSV") {
+                        exportCSV()
                     }
                     Button("导入 JSON") {
                         importData()
@@ -508,6 +630,16 @@ private struct DataTab: View {
         panel.nameFieldStringValue = "TicTrackerData.json"
         if panel.runModal() == .OK, let url = panel.url {
             try? json.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func exportCSV() {
+        let csv = store.exportCSV()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.nameFieldStringValue = "TicTrackerData.csv"
+        if panel.runModal() == .OK, let url = panel.url {
+            try? csv.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 

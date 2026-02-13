@@ -25,6 +25,18 @@ final class DataStore {
         }
     }
 
+    // MARK: - Jira
+
+    var jiraConfig: JiraConfig {
+        didSet { saveJiraConfig() }
+    }
+    var jiraIssues: [JiraIssue] {
+        didSet { saveJiraIssues() }
+    }
+    var jiraIssueCounts: [String: [String: Int]] {  // dateKey → issueKey → count
+        didSet { saveJiraIssueCounts() }
+    }
+
     // MARK: - RSS
 
     var rssFeeds: [RSSFeed] {
@@ -95,6 +107,26 @@ final class DataStore {
         popoverTitle = UserDefaults.standard.string(forKey: "popoverTitle") ?? "今日技术支持"
         noteTitle = UserDefaults.standard.string(forKey: "noteTitle") ?? "今日小记"
         hotkeyModifier = UserDefaults.standard.string(forKey: "hotkeyModifier") ?? "ctrl_shift"
+
+        // Jira
+        if let data = UserDefaults.standard.data(forKey: "jiraConfig"),
+           let decoded = try? JSONDecoder().decode(JiraConfig.self, from: data) {
+            jiraConfig = decoded
+        } else {
+            jiraConfig = JiraConfig()
+        }
+        if let data = UserDefaults.standard.data(forKey: "jiraIssues"),
+           let decoded = try? JSONDecoder().decode([JiraIssue].self, from: data) {
+            jiraIssues = decoded
+        } else {
+            jiraIssues = []
+        }
+        if let data = UserDefaults.standard.data(forKey: "jiraIssueCounts"),
+           let decoded = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
+            jiraIssueCounts = decoded
+        } else {
+            jiraIssueCounts = [:]
+        }
 
         // RSS
         if let data = UserDefaults.standard.data(forKey: "rssFeeds"),
@@ -176,13 +208,17 @@ final class DataStore {
 
     // MARK: - Weekly Trend
 
-    var past7DaysTotals: [(date: String, weekday: String, total: Int)] {
+    var past7DaysBreakdown: [(date: String, weekday: String, breakdown: [(dept: String, count: Int)])] {
         let calendar = Calendar.current
         return (0..<7).reversed().map { daysAgo in
             let d = calendar.date(byAdding: .day, value: -daysAgo, to: Date())!
             let key = Self.dateFormatter.string(from: d)
-            let total = records[key]?.values.reduce(0, +) ?? 0
-            return (key, Self.weekdayFormatter.string(from: d), total)
+            let dayRecords = records[key] ?? [:]
+            let breakdown = departments.compactMap { dept -> (dept: String, count: Int)? in
+                let count = dayRecords[dept, default: 0]
+                return count > 0 ? (dept, count) : nil
+            }
+            return (key, Self.weekdayFormatter.string(from: d), breakdown)
         }
     }
 
@@ -204,6 +240,30 @@ final class DataStore {
             }
         }
         return streak
+    }
+
+    // MARK: - Jira Counts
+
+    func jiraIncrementForKey(_ dateKey: String, issueKey: String) {
+        var day = jiraIssueCounts[dateKey] ?? [:]
+        day[issueKey, default: 0] += 1
+        jiraIssueCounts[dateKey] = day
+    }
+
+    func jiraDecrementForKey(_ dateKey: String, issueKey: String) {
+        var day = jiraIssueCounts[dateKey] ?? [:]
+        let current = day[issueKey, default: 0]
+        guard current > 0 else { return }
+        day[issueKey] = current - 1
+        jiraIssueCounts[dateKey] = day
+    }
+
+    func jiraTodayCount(issueKey: String) -> Int {
+        jiraIssueCounts[todayKey]?[issueKey] ?? 0
+    }
+
+    func jiraTotalCount(issueKey: String) -> Int {
+        jiraIssueCounts.values.compactMap { $0[issueKey] }.reduce(0, +)
     }
 
     // MARK: - Departments
@@ -262,6 +322,29 @@ final class DataStore {
         return String(data: data, encoding: .utf8)
     }
 
+    func exportCSV() -> String {
+        let allDates = Set(records.keys).union(dailyNotes.keys).sorted().reversed()
+        var lines: [String] = []
+        let header = (["日期"] + departments + ["合计", "日报"]).map { escapeCSV($0) }
+        lines.append(header.joined(separator: ","))
+        for date in allDates {
+            let dayRecords = records[date] ?? [:]
+            let counts = departments.map { String(dayRecords[$0, default: 0]) }
+            let total = String(dayRecords.values.reduce(0, +))
+            let note = dailyNotes[date] ?? ""
+            let row = [date] + counts + [total, escapeCSV(note)]
+            lines.append(row.joined(separator: ","))
+        }
+        return "\u{FEFF}" + lines.joined(separator: "\n")
+    }
+
+    private func escapeCSV(_ field: String) -> String {
+        if field.contains(",") || field.contains("\"") || field.contains("\n") {
+            return "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        return field
+    }
+
     func importJSON(from jsonString: String) -> Bool {
         guard let data = jsonString.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
@@ -292,6 +375,24 @@ final class DataStore {
     private func saveDailyNotes() {
         if let data = try? JSONEncoder().encode(dailyNotes) {
             UserDefaults.standard.set(data, forKey: dailyNotesKey)
+        }
+    }
+
+    private func saveJiraConfig() {
+        if let data = try? JSONEncoder().encode(jiraConfig) {
+            UserDefaults.standard.set(data, forKey: "jiraConfig")
+        }
+    }
+
+    private func saveJiraIssues() {
+        if let data = try? JSONEncoder().encode(jiraIssues) {
+            UserDefaults.standard.set(data, forKey: "jiraIssues")
+        }
+    }
+
+    private func saveJiraIssueCounts() {
+        if let data = try? JSONEncoder().encode(jiraIssueCounts) {
+            UserDefaults.standard.set(data, forKey: "jiraIssueCounts")
         }
     }
 
