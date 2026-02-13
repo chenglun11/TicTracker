@@ -312,7 +312,7 @@ private struct DataTab: View {
         guard let json = store.exportJSON() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "TechSupportData.json"
+        panel.nameFieldStringValue = "TicTrackerData.json"
         if panel.runModal() == .OK, let url = panel.url {
             try? json.write(to: url, atomically: true, encoding: .utf8)
         }
@@ -357,6 +357,12 @@ private struct AboutTab: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(3)
+
+            Button("检查更新") {
+                UpdateChecker.shared.checkNow()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
 
             Spacer()
 

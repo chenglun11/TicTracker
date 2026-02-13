@@ -46,9 +46,7 @@ final class HotkeyManager {
 
     private func handleHotkey(index: Int) {
         guard let store, index < store.departments.count else { return }
-        DispatchQueue.main.async {
-            store.increment(store.departments[index])
-        }
+        store.increment(store.departments[index])
     }
 
     private func unregisterAll() {

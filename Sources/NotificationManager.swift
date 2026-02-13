@@ -8,7 +8,9 @@ final class NotificationManager {
     private let reminderID = "daily-note-reminder"
 
     func requestPermission() {
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        Task {
+            try? await center.requestAuthorization(options: [.alert, .sound])
+        }
     }
 
     func scheduleReminder(hour: Int, minute: Int) {
@@ -25,7 +27,9 @@ final class NotificationManager {
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
 
         let request = UNNotificationRequest(identifier: reminderID, content: content, trigger: trigger)
-        center.add(request)
+        Task {
+            try? await center.add(request)
+        }
     }
 
     func cancelReminder() {

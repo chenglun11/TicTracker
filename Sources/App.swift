@@ -21,6 +21,7 @@ struct TicTrackerApp: App {
                     if appDelegate.store == nil {
                         appDelegate.store = store
                         HotkeyManager.shared.setup(store: store)
+                        UpdateChecker.shared.checkInBackground()
                     }
                 }
         } label: {

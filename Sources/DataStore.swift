@@ -166,7 +166,8 @@ final class DataStore {
         for daysAgo in 0..<365 {
             let d = calendar.date(byAdding: .day, value: -daysAgo, to: Date())!
             let key = fmt.string(from: d)
-            let hasData = records[key] != nil || (dailyNotes[key].map { !$0.isEmpty } ?? false)
+            let dayTotal = records[key]?.values.reduce(0, +) ?? 0
+            let hasData = dayTotal > 0 || (dailyNotes[key].map { !$0.isEmpty } ?? false)
             if hasData {
                 streak += 1
             } else if daysAgo == 0 {
