@@ -24,21 +24,41 @@ private struct NoteContentView: View {
 
 struct RecentNotesView: View {
     @Bindable var store: DataStore
+    @State private var searchText = ""
 
-    private var recentNotes: [(date: String, display: String, note: String)] {
-        let calendar = Calendar.current
-        let today = Date()
+    private struct DayEntry: Identifiable {
+        let id: String // date key
+        let display: String
+        let records: [String: Int]
+        let total: Int
+        let note: String
+    }
+
+    private var allEntries: [DayEntry] {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         let displayFmt = DateFormatter()
         displayFmt.dateFormat = "M/d (EEE)"
         displayFmt.locale = Locale(identifier: "zh_CN")
 
-        return (0..<14).compactMap { offset in
-            let date = calendar.date(byAdding: .day, value: -offset, to: today)!
-            let key = fmt.string(from: date)
-            guard let note = store.dailyNotes[key], !note.isEmpty else { return nil }
-            return (key, displayFmt.string(from: date), note)
+        let allKeys = Set(store.records.keys).union(store.dailyNotes.keys).sorted().reversed()
+        return allKeys.compactMap { key in
+            let records = store.records[key] ?? [:]
+            let total = records.values.reduce(0, +)
+            let note = store.dailyNotes[key] ?? ""
+            guard total > 0 || !note.isEmpty else { return nil }
+            guard let date = fmt.date(from: key) else { return nil }
+            return DayEntry(id: key, display: displayFmt.string(from: date), records: records, total: total, note: note)
+        }
+    }
+
+    private var filteredEntries: [DayEntry] {
+        guard !searchText.isEmpty else { return allEntries }
+        let query = searchText.lowercased()
+        return allEntries.filter {
+            $0.note.lowercased().contains(query) ||
+            $0.display.contains(query) ||
+            $0.records.keys.contains(where: { $0.lowercased().contains(query) })
         }
     }
 
@@ -48,25 +68,99 @@ struct RecentNotesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if recentNotes.isEmpty {
-                Text("暂无日报记录")
+            if allEntries.isEmpty {
+                Text("暂无记录")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(recentNotes, id: \.date) { item in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.display)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        NoteContentView(text: item.note, inlineMarkdown: inlineMarkdown)
+                List(filteredEntries) { item in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(item.display)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            if item.total > 0 {
+                                Text("共 \(item.total) 次")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if item.total > 0 {
+                            let sorted = store.departments.filter { item.records[$0, default: 0] > 0 }
+                                + item.records.keys.filter { !store.departments.contains($0) && item.records[$0, default: 0] > 0 }.sorted()
+                            FlowLayout(spacing: 6) {
+                                ForEach(sorted, id: \.self) { dept in
+                                    Text("\(dept) \(item.records[dept]!)")
+                                        .font(.caption)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.accentColor.opacity(0.12))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+
+                        if !item.note.isEmpty {
+                            NoteContentView(text: item.note, inlineMarkdown: inlineMarkdown)
+                        }
                     }
                     .padding(.vertical, 4)
                 }
             }
         }
+        .searchable(text: $searchText, prompt: "搜索记录")
         .navigationTitle("最近日报")
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+}
+
+// Simple flow layout for tags
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = computeRows(proposal: proposal, subviews: subviews)
+        var height: CGFloat = 0
+        for (i, row) in rows.enumerated() {
+            let rowHeight = row.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+            height += rowHeight + (i > 0 ? spacing : 0)
+        }
+        return CGSize(width: proposal.width ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let rows = computeRows(proposal: proposal, subviews: subviews)
+        var y = bounds.minY
+        for (i, row) in rows.enumerated() {
+            if i > 0 { y += spacing }
+            var x = bounds.minX
+            let rowHeight = row.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+            for view in row {
+                let size = view.sizeThatFits(.unspecified)
+                view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += rowHeight
+        }
+    }
+
+    private func computeRows(proposal: ProposedViewSize, subviews: Subviews) -> [[LayoutSubviews.Element]] {
+        let maxWidth = proposal.width ?? .infinity
+        var rows: [[LayoutSubviews.Element]] = [[]]
+        var x: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth && !rows[rows.count - 1].isEmpty {
+                rows.append([])
+                x = 0
+            }
+            rows[rows.count - 1].append(view)
+            x += size.width + spacing
+        }
+        return rows
     }
 }

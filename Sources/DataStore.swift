@@ -11,6 +11,12 @@ final class DataStore {
     var dailyNotes: [String: String] {
         didSet { saveDailyNotes() }
     }
+    var popoverTitle: String {
+        didSet { UserDefaults.standard.set(popoverTitle, forKey: "popoverTitle") }
+    }
+    var noteTitle: String {
+        didSet { UserDefaults.standard.set(noteTitle, forKey: "noteTitle") }
+    }
 
     private let departmentsKey = "departments"
     private let recordsKey = "records"
@@ -21,6 +27,10 @@ final class DataStore {
         fmt.dateFormat = "yyyy-MM-dd"
         return fmt
     }()
+
+    static func dateKey(from date: Date) -> String {
+        dateFormatter.string(from: date)
+    }
 
     init() {
         if let data = UserDefaults.standard.array(forKey: departmentsKey) as? [String] {
@@ -40,6 +50,8 @@ final class DataStore {
         } else {
             dailyNotes = [:]
         }
+        popoverTitle = UserDefaults.standard.string(forKey: "popoverTitle") ?? "今日技术支持"
+        noteTitle = UserDefaults.standard.string(forKey: "noteTitle") ?? "今日小记"
     }
 
     // MARK: - Today
@@ -65,17 +77,79 @@ final class DataStore {
     }
 
     func increment(_ dept: String) {
-        var day = records[todayKey] ?? [:]
-        day[dept, default: 0] += 1
-        records[todayKey] = day
+        incrementForKey(todayKey, dept: dept)
     }
 
     func decrement(_ dept: String) {
-        var day = records[todayKey] ?? [:]
+        decrementForKey(todayKey, dept: dept)
+    }
+
+    // MARK: - By Date Key
+
+    func recordsForKey(_ key: String) -> [String: Int] {
+        records[key] ?? [:]
+    }
+
+    func totalForKey(_ key: String) -> Int {
+        recordsForKey(key).values.reduce(0, +)
+    }
+
+    func incrementForKey(_ key: String, dept: String) {
+        var day = records[key] ?? [:]
+        day[dept, default: 0] += 1
+        records[key] = day
+    }
+
+    func decrementForKey(_ key: String, dept: String) {
+        var day = records[key] ?? [:]
         let current = day[dept, default: 0]
         guard current > 0 else { return }
         day[dept] = current - 1
-        records[todayKey] = day
+        records[key] = day
+    }
+
+    func noteForKey(_ key: String) -> String {
+        dailyNotes[key] ?? ""
+    }
+
+    func setNoteForKey(_ key: String, text: String) {
+        dailyNotes[key] = text.isEmpty ? nil : text
+    }
+
+    // MARK: - Weekly Trend
+
+    var past7DaysTotals: [(date: String, weekday: String, total: Int)] {
+        let calendar = Calendar.current
+        let fmt = Self.dateFormatter
+        let wFmt = DateFormatter()
+        wFmt.dateFormat = "EEE"
+        wFmt.locale = Locale(identifier: "zh_CN")
+
+        return (0..<7).reversed().map { daysAgo in
+            let d = calendar.date(byAdding: .day, value: -daysAgo, to: Date())!
+            let key = fmt.string(from: d)
+            let total = records[key]?.values.reduce(0, +) ?? 0
+            return (key, wFmt.string(from: d), total)
+        }
+    }
+
+    var currentStreak: Int {
+        let calendar = Calendar.current
+        let fmt = Self.dateFormatter
+        var streak = 0
+        for daysAgo in 0..<365 {
+            let d = calendar.date(byAdding: .day, value: -daysAgo, to: Date())!
+            let key = fmt.string(from: d)
+            let hasData = records[key] != nil || (dailyNotes[key].map { !$0.isEmpty } ?? false)
+            if hasData {
+                streak += 1
+            } else if daysAgo == 0 {
+                continue // 今天还没记也没关系
+            } else {
+                break
+            }
+        }
+        return streak
     }
 
     // MARK: - Departments

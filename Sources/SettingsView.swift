@@ -7,13 +7,15 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             DepartmentTab(store: store)
-                .tabItem { Label("部门管理", systemImage: "building.2") }
-            GeneralTab()
+                .tabItem { Label("项目", systemImage: "building.2") }
+            GeneralTab(store: store)
                 .tabItem { Label("通用", systemImage: "gearshape") }
             DataTab(store: store)
                 .tabItem { Label("数据", systemImage: "externaldrive") }
+            AboutTab()
+                .tabItem { Label("关于", systemImage: "info.circle") }
         }
-        .frame(minWidth: 380, minHeight: 320)
+        .frame(minWidth: 460, minHeight: 420)
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
@@ -29,7 +31,7 @@ private struct DepartmentTab: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                TextField("新部门名称", text: $newDept)
+                TextField("新项目名称", text: $newDept)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { add() }
                 Button("添加", action: add)
@@ -67,10 +69,28 @@ private struct DepartmentTab: View {
 // MARK: - General Tab
 
 private struct GeneralTab: View {
+    @Bindable var store: DataStore
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var reminderEnabled = UserDefaults.standard.bool(forKey: "reminderEnabled")
+    @State private var reminderHour: Int = {
+        let h = UserDefaults.standard.integer(forKey: "reminderHour")
+        return h == 0 && !UserDefaults.standard.bool(forKey: "reminderEnabled") ? 17 : h
+    }()
+    @State private var reminderMinute: Int = {
+        let m = UserDefaults.standard.integer(forKey: "reminderMinute")
+        return m == 0 && !UserDefaults.standard.bool(forKey: "reminderEnabled") ? 30 : m
+    }()
+    @State private var reminderSaved = false
 
     var body: some View {
         Form {
+            Section("显示名称") {
+                TextField("主标题", text: Bindable(store).popoverTitle)
+                    .textFieldStyle(.roundedBorder)
+                TextField("小记标题", text: Bindable(store).noteTitle)
+                    .textFieldStyle(.roundedBorder)
+            }
+
             Section("启动") {
                 Toggle("开机自动启动", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, newValue in
@@ -86,11 +106,69 @@ private struct GeneralTab: View {
                     }
             }
 
-            Section("关于") {
-                LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
+            Section("日报提醒") {
+                Toggle("每天提醒写日报", isOn: $reminderEnabled)
+                    .onChange(of: reminderEnabled) { _, on in
+                        UserDefaults.standard.set(on, forKey: "reminderEnabled")
+                        if on {
+                            applyReminder()
+                        } else {
+                            NotificationManager.shared.cancelReminder()
+                        }
+                    }
+                if reminderEnabled {
+                    HStack {
+                        Text("提醒时间")
+                        Spacer()
+                        Picker("时", selection: $reminderHour) {
+                            ForEach(0..<24, id: \.self) { h in
+                                Text(String(format: "%02d", h)).tag(h)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 70)
+                        Text(":")
+                        Picker("分", selection: $reminderMinute) {
+                            ForEach(Array(stride(from: 0, to: 60, by: 5)), id: \.self) { m in
+                                Text(String(format: "%02d", m)).tag(m)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 70)
+                        Button(reminderSaved ? "已保存 ✓" : "保存") {
+                            applyReminder()
+                            reminderSaved = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                reminderSaved = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+            }
+
+            Section("全局快捷键") {
+                Text("在任意应用中按 ⌃⇧+数字键 快速记录")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Array(store.departments.prefix(9).enumerated()), id: \.offset) { i, dept in
+                    LabeledContent("⌃⇧\(i + 1)", value: "\(dept) +1")
+                }
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            NotificationManager.shared.requestPermission()
+        }
+    }
+
+    private func applyReminder() {
+        UserDefaults.standard.set(reminderHour, forKey: "reminderHour")
+        UserDefaults.standard.set(reminderMinute, forKey: "reminderMinute")
+        NotificationManager.shared.scheduleReminder(hour: reminderHour, minute: reminderMinute)
     }
 }
 
@@ -170,5 +248,45 @@ private struct DataTab: View {
            let content = try? String(contentsOf: url, encoding: .utf8) {
             importResult = store.importJSON(from: content) ? "导入成功" : "导入失败：格式不正确"
         }
+    }
+}
+
+// MARK: - About Tab
+
+private struct AboutTab: View {
+    private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    private let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 96, height: 96)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .shadow(color: .black.opacity(0.15), radius: 6, y: 3)
+
+            Text("计数工具")
+                .font(.title2.bold())
+
+            Text("版本 \(version)（\(build)）")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("轻量级菜单栏计数器\n快捷键记录，日报提醒，周报汇总")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+
+            Spacer()
+
+            Text("Made with ☕ by Max Li")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

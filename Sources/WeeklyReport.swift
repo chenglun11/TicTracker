@@ -53,6 +53,32 @@ struct WeeklyReport {
         let grand = totals.values.reduce(0, +)
         lines.append("合计: \(grand) 次")
 
+        // Daily breakdown
+        let weekdayFmt = DateFormatter()
+        weekdayFmt.dateFormat = "M/d（EEE）"
+        weekdayFmt.locale = Locale(identifier: "zh_CN")
+
+        var detailLines: [String] = []
+        var detailDate = monday
+        while detailDate <= today {
+            let key = fmt.string(from: detailDate)
+            if let dayRecords = store.records[key] {
+                let parts = allDepts
+                    .filter { dayRecords[$0, default: 0] > 0 }
+                    .map { "\($0)×\(dayRecords[$0]!)" }
+                if !parts.isEmpty {
+                    let label = weekdayFmt.string(from: detailDate)
+                    detailLines.append("\(label): \(parts.joined(separator: ", "))")
+                }
+            }
+            detailDate = calendar.date(byAdding: .day, value: 1, to: detailDate)!
+        }
+        if !detailLines.isEmpty {
+            lines.append("")
+            lines.append("--- 每日明细 ---")
+            lines.append(contentsOf: detailLines)
+        }
+
         // Append daily notes
         var noteLines: [String] = []
         var noteDate = monday
