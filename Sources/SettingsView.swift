@@ -151,11 +151,20 @@ private struct GeneralTab: View {
             }
 
             Section("全局快捷键") {
-                Text("在任意应用中按 ⌃⇧+数字键 快速记录")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("修饰键")
+                    Spacer()
+                    Picker("", selection: Bindable(store).hotkeyModifier) {
+                        ForEach(DataStore.modifierOptions, id: \.id) { opt in
+                            Text(opt.label).tag(opt.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 80)
+                }
                 ForEach(Array(store.departments.prefix(9).enumerated()), id: \.offset) { i, dept in
-                    LabeledContent("⌃⇧\(i + 1)", value: "\(dept) +1")
+                    LabeledContent("\(store.currentModifierLabel)\(i + 1)", value: "\(dept) +1")
                 }
             }
         }

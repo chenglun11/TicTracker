@@ -49,15 +49,15 @@ struct MenuBarView: View {
                 .disabled(isToday)
             }
 
-            if !isToday {
-                Button("回到今天") {
-                    selectedDate = Date()
-                    noteText = store.noteForKey(store.todayKey)
-                }
-                .font(.caption)
-                .buttonStyle(.borderless)
-                .foregroundStyle(Color.accentColor)
+            Button("回到今天") {
+                selectedDate = Date()
+                noteText = store.noteForKey(store.todayKey)
             }
+            .font(.caption)
+            .buttonStyle(.borderless)
+            .foregroundStyle(Color.accentColor)
+            .opacity(isToday ? 0 : 1)
+            .disabled(isToday)
 
             if store.departments.isEmpty {
                 Text("暂无项目，请在设置中添加")
@@ -111,7 +111,8 @@ struct MenuBarView: View {
                 TextEditor(text: $noteText)
                     .font(.body)
                     .scrollContentBackground(.hidden)
-                    .frame(height: 64)
+                    .scrollIndicators(.hidden)
+                    .frame(height: 80)
                     .overlay(alignment: .topLeading) {
                         if noteText.isEmpty {
                             Text("记录今天做了什么…")

@@ -17,6 +17,28 @@ final class DataStore {
     var noteTitle: String {
         didSet { UserDefaults.standard.set(noteTitle, forKey: "noteTitle") }
     }
+    var hotkeyModifier: String {
+        didSet {
+            UserDefaults.standard.set(hotkeyModifier, forKey: "hotkeyModifier")
+            HotkeyManager.shared.rebindHotkeys()
+        }
+    }
+
+    static let modifierOptions: [(id: String, label: String, carbonFlags: Int)] = [
+        ("ctrl_shift", "⌃⇧", 0x1000 | 0x0200),   // controlKey | shiftKey
+        ("cmd_shift",  "⌘⇧", 0x0100 | 0x0200),    // cmdKey | shiftKey
+        ("opt_shift",  "⌥⇧", 0x0800 | 0x0200),    // optionKey | shiftKey
+        ("ctrl_opt",   "⌃⌥", 0x1000 | 0x0800),     // controlKey | optionKey
+        ("cmd_ctrl",   "⌘⌃", 0x0100 | 0x1000),     // cmdKey | controlKey
+    ]
+
+    var currentModifierLabel: String {
+        Self.modifierOptions.first { $0.id == hotkeyModifier }?.label ?? "⌃⇧"
+    }
+
+    var currentCarbonFlags: UInt32 {
+        UInt32(Self.modifierOptions.first { $0.id == hotkeyModifier }?.carbonFlags ?? (0x1000 | 0x0200))
+    }
 
     private let departmentsKey = "departments"
     private let recordsKey = "records"
@@ -59,6 +81,7 @@ final class DataStore {
         }
         popoverTitle = UserDefaults.standard.string(forKey: "popoverTitle") ?? "今日技术支持"
         noteTitle = UserDefaults.standard.string(forKey: "noteTitle") ?? "今日小记"
+        hotkeyModifier = UserDefaults.standard.string(forKey: "hotkeyModifier") ?? "ctrl_shift"
     }
 
     // MARK: - Today
