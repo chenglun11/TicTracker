@@ -185,6 +185,24 @@ final class DataStore {
         departments.append(trimmed)
     }
 
+    func renameDepartment(from oldName: String, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !departments.contains(trimmed),
+              let idx = departments.firstIndex(of: oldName) else { return }
+        departments[idx] = trimmed
+        // Migrate historical records
+        for key in records.keys {
+            if let count = records[key]?[oldName] {
+                records[key]?[trimmed] = count
+                records[key]?.removeValue(forKey: oldName)
+            }
+        }
+    }
+
+    func totalCountForDepartment(_ dept: String) -> Int {
+        records.values.compactMap { $0[dept] }.reduce(0, +)
+    }
+
     // MARK: - Data Management
 
     func clearToday() {

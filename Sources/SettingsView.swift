@@ -27,6 +27,9 @@ struct SettingsView: View {
 private struct DepartmentTab: View {
     @Bindable var store: DataStore
     @State private var newDept = ""
+    @State private var editingDept: String?
+    @State private var editText = ""
+    @State private var deletingDept: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,15 +45,35 @@ private struct DepartmentTab: View {
             List {
                 ForEach(store.departments, id: \.self) { dept in
                     HStack {
-                        Text(dept)
-                        Spacer()
-                        Button {
-                            store.departments.removeAll { $0 == dept }
-                        } label: {
-                            Image(systemName: "trash")
-                                .foregroundStyle(.red)
+                        if editingDept == dept {
+                            TextField("项目名称", text: $editText)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { commitRename(dept) }
+                            Button("确定") { commitRename(dept) }
+                                .buttonStyle(.borderless)
+                            Button("取消") { editingDept = nil }
+                                .buttonStyle(.borderless)
+                        } else {
+                            Text(dept)
+                            Spacer()
+                            Text("\(store.totalCountForDepartment(dept))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                editingDept = dept
+                                editText = dept
+                            } label: {
+                                Image(systemName: "pencil")
+                            }
+                            .buttonStyle(.borderless)
+                            Button {
+                                deletingDept = dept
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.borderless)
                         }
-                        .buttonStyle(.borderless)
                     }
                 }
                 .onMove { from, to in
@@ -58,11 +81,31 @@ private struct DepartmentTab: View {
                 }
             }
         }
+        .alert("确认删除「\(deletingDept ?? "")」？", isPresented: Binding(
+            get: { deletingDept != nil },
+            set: { if !$0 { deletingDept = nil } }
+        )) {
+            Button("取消", role: .cancel) { deletingDept = nil }
+            Button("删除", role: .destructive) {
+                if let dept = deletingDept {
+                    store.departments.removeAll { $0 == dept }
+                }
+                deletingDept = nil
+            }
+        } message: {
+            let count = store.totalCountForDepartment(deletingDept ?? "")
+            Text(count > 0 ? "该项目已有 \(count) 条历史记录，删除后项目名将从列表移除" : "确定要删除这个项目吗？")
+        }
     }
 
     private func add() {
         store.addDepartment(newDept)
         newDept = ""
+    }
+
+    private func commitRename(_ oldName: String) {
+        store.renameDepartment(from: oldName, to: editText)
+        editingDept = nil
     }
 }
 
