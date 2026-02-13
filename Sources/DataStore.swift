@@ -28,6 +28,13 @@ final class DataStore {
         return fmt
     }()
 
+    private static let weekdayFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "EEE"
+        fmt.locale = Locale(identifier: "zh_CN")
+        return fmt
+    }()
+
     static func dateKey(from date: Date) -> String {
         dateFormatter.string(from: date)
     }
@@ -120,16 +127,11 @@ final class DataStore {
 
     var past7DaysTotals: [(date: String, weekday: String, total: Int)] {
         let calendar = Calendar.current
-        let fmt = Self.dateFormatter
-        let wFmt = DateFormatter()
-        wFmt.dateFormat = "EEE"
-        wFmt.locale = Locale(identifier: "zh_CN")
-
         return (0..<7).reversed().map { daysAgo in
             let d = calendar.date(byAdding: .day, value: -daysAgo, to: Date())!
-            let key = fmt.string(from: d)
+            let key = Self.dateFormatter.string(from: d)
             let total = records[key]?.values.reduce(0, +) ?? 0
-            return (key, wFmt.string(from: d), total)
+            return (key, Self.weekdayFormatter.string(from: d), total)
         }
     }
 

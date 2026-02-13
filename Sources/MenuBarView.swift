@@ -63,18 +63,20 @@ struct MenuBarView: View {
                 Text("暂无项目，请在设置中添加")
                     .foregroundStyle(.secondary)
             } else {
+                let dayRecords = store.recordsForKey(selectedKey)
                 ForEach(store.departments, id: \.self) { dept in
                     HStack {
                         Text(dept)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        Text("\(store.recordsForKey(selectedKey)[dept, default: 0])")
+                        let count = dayRecords[dept, default: 0]
+                        Text("\(count)")
                             .monospacedDigit()
                             .frame(width: 30, alignment: .trailing)
                         Button { store.decrementForKey(selectedKey, dept: dept) } label: {
                             Image(systemName: "minus.circle")
                         }
                         .buttonStyle(.borderless)
-                        .disabled(store.recordsForKey(selectedKey)[dept, default: 0] == 0)
+                        .disabled(count == 0)
                         Button { store.incrementForKey(selectedKey, dept: dept) } label: {
                             Image(systemName: "plus.circle.fill")
                         }
@@ -84,22 +86,20 @@ struct MenuBarView: View {
             }
 
             // Mini weekly trend chart
-            if store.past7DaysTotals.contains(where: { $0.total > 0 }) {
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("本周趋势")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        if store.currentStreak > 0 {
-                            Text("🔥 连续 \(store.currentStreak) 天")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
+            Divider()
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("本周趋势")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if store.currentStreak > 0 {
+                        Text("🔥 连续 \(store.currentStreak) 天")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
-                    MiniChartView(data: store.past7DaysTotals, todayKey: store.todayKey)
                 }
+                MiniChartView(data: store.past7DaysTotals, todayKey: store.todayKey)
             }
 
             Divider()
