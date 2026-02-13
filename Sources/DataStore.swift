@@ -25,6 +25,18 @@ final class DataStore {
         }
     }
 
+    // MARK: - RSS
+
+    var rssFeeds: [RSSFeed] {
+        didSet { saveRSSFeeds() }
+    }
+    var rssItems: [String: [RSSItem]] {  // feedID.uuidString -> items
+        didSet { saveRSSItems() }
+    }
+    var rssPollingInterval: Int {  // minutes, default 10
+        didSet { UserDefaults.standard.set(rssPollingInterval, forKey: "rssPollingInterval") }
+    }
+
     static let modifierOptions: [(id: String, label: String, carbonFlags: Int)] = [
         ("ctrl_shift", "⌃⇧", 0x1000 | 0x0200),   // controlKey | shiftKey
         ("cmd_shift",  "⌘⇧", 0x0100 | 0x0200),    // cmdKey | shiftKey
@@ -83,6 +95,21 @@ final class DataStore {
         popoverTitle = UserDefaults.standard.string(forKey: "popoverTitle") ?? "今日技术支持"
         noteTitle = UserDefaults.standard.string(forKey: "noteTitle") ?? "今日小记"
         hotkeyModifier = UserDefaults.standard.string(forKey: "hotkeyModifier") ?? "ctrl_shift"
+
+        // RSS
+        if let data = UserDefaults.standard.data(forKey: "rssFeeds"),
+           let decoded = try? JSONDecoder().decode([RSSFeed].self, from: data) {
+            rssFeeds = decoded
+        } else {
+            rssFeeds = []
+        }
+        if let data = UserDefaults.standard.data(forKey: "rssItems"),
+           let decoded = try? JSONDecoder().decode([String: [RSSItem]].self, from: data) {
+            rssItems = decoded
+        } else {
+            rssItems = [:]
+        }
+        rssPollingInterval = UserDefaults.standard.object(forKey: "rssPollingInterval") as? Int ?? 10
     }
 
     // MARK: - Today
@@ -265,6 +292,18 @@ final class DataStore {
     private func saveDailyNotes() {
         if let data = try? JSONEncoder().encode(dailyNotes) {
             UserDefaults.standard.set(data, forKey: dailyNotesKey)
+        }
+    }
+
+    private func saveRSSFeeds() {
+        if let data = try? JSONEncoder().encode(rssFeeds) {
+            UserDefaults.standard.set(data, forKey: "rssFeeds")
+        }
+    }
+
+    private func saveRSSItems() {
+        if let data = try? JSONEncoder().encode(rssItems) {
+            UserDefaults.standard.set(data, forKey: "rssItems")
         }
     }
 }

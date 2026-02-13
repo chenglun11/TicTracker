@@ -10,13 +10,15 @@ struct SettingsView: View {
                 .tabItem { Label("项目", systemImage: "building.2") }
             GeneralTab(store: store)
                 .tabItem { Label("通用", systemImage: "gearshape") }
+            RSSTab(store: store)
+                .tabItem { Label("RSS", systemImage: "dot.radiowaves.up.forward") }
             DataTab(store: store)
                 .tabItem { Label("数据", systemImage: "externaldrive") }
             AboutTab()
                 .tabItem { Label("关于", systemImage: "info.circle") }
         }
         .tabViewStyle(.sidebarAdaptable)
-        .frame(minWidth: 460, minHeight: 420)
+        .frame(minWidth: 560, minHeight: 420)
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
@@ -250,6 +252,178 @@ private struct GeneralTab: View {
     }
 }
 
+// MARK: - RSS Tab
+
+private struct RSSTab: View {
+    @Bindable var store: DataStore
+    @State private var newFeedName = ""
+    @State private var newFeedURL = ""
+    @State private var checking = false
+    @State private var checkResult: String?
+    @State private var deletingFeed: RSSFeed?
+
+    var body: some View {
+        Form {
+            Section("添加订阅源") {
+                TextField("名称", text: $newFeedName)
+                    .textFieldStyle(.roundedBorder)
+                TextField("URL", text: $newFeedURL)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("添加") { addFeed() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(newFeedName.trimmingCharacters(in: .whitespaces).isEmpty ||
+                                  newFeedURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
+            Section("订阅列表") {
+                if store.rssFeeds.isEmpty {
+                    Text("暂无订阅源")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(store.rssFeeds.enumerated()), id: \.element.id) { i, feed in
+                        HStack(spacing: 8) {
+                            Toggle("", isOn: Binding(
+                                get: { feed.enabled },
+                                set: { store.rssFeeds[i].enabled = $0 }
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(feed.name).font(.body)
+                                Text(feed.url)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer()
+
+                            Text("\(store.rssItems[feed.id.uuidString]?.count ?? 0) 条")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Button {
+                                testFeed(feed)
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(checking)
+                            .help("立即检查")
+
+                            Button {
+                                deletingFeed = feed
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                                    .foregroundStyle(.red.opacity(0.7))
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            }
+
+            Section("轮询设置") {
+                HStack {
+                    Text("检查间隔")
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: { store.rssPollingInterval },
+                        set: {
+                            store.rssPollingInterval = $0
+                            RSSFeedManager.shared.restartPolling()
+                        }
+                    )) {
+                        Text("5 分钟").tag(5)
+                        Text("10 分钟").tag(10)
+                        Text("15 分钟").tag(15)
+                        Text("30 分钟").tag(30)
+                        Text("60 分钟").tag(60)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 100)
+                }
+
+                Button(checking ? "检查中…" : "立即检查全部") {
+                    checkAll()
+                }
+                .controlSize(.small)
+                .disabled(checking || store.rssFeeds.isEmpty)
+            }
+
+            if let result = checkResult {
+                Text(result)
+                    .font(.caption)
+                    .foregroundStyle(result.contains("失败") || result.contains("无效") ? .red : .green)
+            }
+        }
+        .formStyle(.grouped)
+        .alert("确认删除「\(deletingFeed?.name ?? "")」？", isPresented: Binding(
+            get: { deletingFeed != nil },
+            set: { if !$0 { deletingFeed = nil } }
+        )) {
+            Button("取消", role: .cancel) { deletingFeed = nil }
+            Button("删除", role: .destructive) {
+                if let feed = deletingFeed {
+                    store.rssFeeds.removeAll { $0.id == feed.id }
+                    store.rssItems.removeValue(forKey: feed.id.uuidString)
+                }
+                deletingFeed = nil
+            }
+        }
+    }
+
+    private func addFeed() {
+        let name = newFeedName.trimmingCharacters(in: .whitespaces)
+        let url = newFeedURL.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !url.isEmpty, URL(string: url)?.scheme != nil else { return }
+        let feed = RSSFeed(name: name, url: url)
+        store.rssFeeds.append(feed)
+        newFeedName = ""
+        newFeedURL = ""
+    }
+
+    private func testFeed(_ feed: RSSFeed) {
+        checking = true
+        checkResult = nil
+        Task {
+            let result = await RSSFeedManager.shared.checkFeed(feed)
+            switch result {
+            case .success(let newCount, let totalCount):
+                checkResult = newCount > 0
+                    ? "获取到 \(newCount) 条新条目（共 \(totalCount) 条）"
+                    : "已是最新（共 \(totalCount) 条）"
+            case .empty:
+                checkResult = "连接成功，但该 feed 暂无条目"
+            case .fetchError:
+                checkResult = "获取失败，请检查网络或 URL"
+            case .invalidURL:
+                checkResult = "URL 格式无效"
+            }
+            checking = false
+        }
+    }
+
+    private func checkAll() {
+        checking = true
+        checkResult = nil
+        Task {
+            await RSSFeedManager.shared.checkAllFeeds()
+            let total = store.rssFeeds.reduce(0) { $0 + (store.rssItems[$1.id.uuidString]?.count ?? 0) }
+            checkResult = "检查完成，共 \(total) 条"
+            checking = false
+        }
+    }
+}
+
 // MARK: - Data Tab
 
 private struct DataTab: View {
@@ -348,7 +522,7 @@ private struct AboutTab: View {
             Text("TicTracker")
                 .font(.title2.bold())
 
-            Text("版本 \(version)（\(build)）")
+            Text("版本 \(version) · Build \(build)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

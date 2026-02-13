@@ -20,8 +20,11 @@ struct TicTrackerApp: App {
                 .onAppear {
                     if appDelegate.store == nil {
                         appDelegate.store = store
+                        DevLog.shared.info("App", "启动 TicTracker")
                         HotkeyManager.shared.setup(store: store)
                         UpdateChecker.shared.checkInBackground()
+                        RSSFeedManager.shared.setup(store: store)
+                        RSSFeedManager.shared.startPolling()
                     }
                 }
         } label: {
@@ -35,11 +38,21 @@ struct TicTrackerApp: App {
         Window("设置", id: "settings") {
             SettingsView(store: store)
         }
-        .defaultSize(width: 500, height: 460)
+        .defaultSize(width: 600, height: 460)
 
         Window("最近日报", id: "recent-notes") {
             RecentNotesView(store: store)
         }
         .defaultSize(width: 360, height: 420)
+
+        Window("RSS 订阅", id: "rss-reader") {
+            RSSReaderView(store: store)
+        }
+        .defaultSize(width: 650, height: 500)
+
+        Window("开发者日志", id: "dev-log") {
+            DevLogView()
+        }
+        .defaultSize(width: 700, height: 450)
     }
 }

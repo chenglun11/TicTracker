@@ -28,6 +28,7 @@ final class UpdateChecker {
 
     private func check(silent: Bool) {
         guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else { return }
+        DevLog.shared.info("Update", "检查更新 (silent=\(silent))")
 
         Task {
             do {
@@ -37,6 +38,7 @@ final class UpdateChecker {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                     let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                    DevLog.shared.error("Update", "GitHub HTTP \(code)")
                     if !silent { showError("GitHub 返回错误（HTTP \(code)）") }
                     return
                 }
@@ -54,6 +56,7 @@ final class UpdateChecker {
                 let latestVersion = tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName
 
                 if isNewer(latestVersion, than: currentVersion) {
+                    DevLog.shared.info("Update", "发现新版本 \(latestVersion)（当前 \(currentVersion)）")
                     let skipped = UserDefaults.standard.string(forKey: "skippedVersion")
                     if silent && skipped == latestVersion { return }
                     showUpdateAlert(version: latestVersion, zipURL: zipURL)

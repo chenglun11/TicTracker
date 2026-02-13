@@ -13,6 +13,7 @@ final class HotkeyManager {
         self.store = store
         installCarbonHandler()
         rebindHotkeys()
+        DevLog.shared.info("Hotkey", "快捷键初始化，\(store.departments.count) 个项目，修饰键 \(store.currentModifierLabel)")
     }
 
     func rebindHotkeys() {
@@ -29,6 +30,7 @@ final class HotkeyManager {
                 hotKeyRefs.append(ref)
             }
         }
+        DevLog.shared.info("Hotkey", "注册 \(count) 个快捷键")
     }
 
     private func installCarbonHandler() {
@@ -46,7 +48,9 @@ final class HotkeyManager {
 
     private func handleHotkey(index: Int) {
         guard let store, index < store.departments.count else { return }
-        store.increment(store.departments[index])
+        let dept = store.departments[index]
+        store.increment(dept)
+        DevLog.shared.info("Hotkey", "\(dept) +1")
     }
 
     private func unregisterAll() {

@@ -147,32 +147,54 @@ struct MenuBarView: View {
                         copied = false
                     }
                 }
-                Spacer()
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "recent-notes")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "clock.arrow.circlepath")
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 12) {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "rss-reader")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "dot.radiowaves.up.forward")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("RSS 订阅")
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "recent-notes")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("查看日报")
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "dev-log")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "terminal")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("开发者日志")
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "settings")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("设置")
+                    Button {
+                        NSApp.terminate(nil)
+                    } label: {
+                        Image(systemName: "power")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("退出")
                 }
-                .buttonStyle(.borderless)
-                .help("查看日报")
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "settings")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .help("设置")
-                Button {
-                    NSApp.terminate(nil)
-                } label: {
-                    Image(systemName: "power")
-                }
-                .buttonStyle(.borderless)
-                .help("退出")
+                .fixedSize()
             }
         }
         .padding()

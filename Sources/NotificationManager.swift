@@ -9,7 +9,8 @@ final class NotificationManager {
     func requestPermission() {
         let center = UNUserNotificationCenter.current()
         Task {
-            try? await center.requestAuthorization(options: [.alert, .sound])
+            let granted = try? await center.requestAuthorization(options: [.alert, .sound])
+            DevLog.shared.info("Notify", "通知权限: \(granted == true ? "已授权" : "未授权")")
         }
     }
 
@@ -35,5 +36,23 @@ final class NotificationManager {
 
     func cancelReminder() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [reminderID])
+    }
+
+    // MARK: - RSS Notifications
+
+    func notifyRSSItem(feedName: String, title: String, link: String) {
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = "[\(feedName)] 新条目"
+        content.body = title
+        content.sound = .default
+        content.userInfo = ["link": link]
+
+        let id = "rss-\(UUID().uuidString)"
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        Task {
+            try? await center.add(request)
+        }
+        DevLog.shared.info("Notify", "RSS 通知: [\(feedName)] \(title)")
     }
 }
