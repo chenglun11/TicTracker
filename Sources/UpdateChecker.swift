@@ -31,9 +31,13 @@ final class UpdateChecker {
 
         Task {
             do {
-                let (data, response) = try await URLSession.shared.data(from: url)
+                var request = URLRequest(url: url, timeoutInterval: 15)
+                request.setValue("TicTracker/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+
+                let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                    if !silent { showError("无法连接到 GitHub") }
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                    if !silent { showError("GitHub 返回错误（HTTP \(code)）") }
                     return
                 }
                 guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
