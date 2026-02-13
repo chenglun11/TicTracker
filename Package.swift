@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "TechSupportTracker",
+    name: "TicTracker",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "TechSupportTracker",
+            name: "TicTracker",
             path: "Sources"
         )
     ]

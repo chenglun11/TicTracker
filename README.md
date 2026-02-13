@@ -27,7 +27,7 @@
 bash build.sh
 
 # 启动
-open TechSupportTracker.app
+open TicTracker.app
 ```
 
 脚本会自动完成 release 编译、组装 .app bundle、ad-hoc 签名。

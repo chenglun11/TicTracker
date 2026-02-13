@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct TechSupportTrackerApp: App {
+struct TicTrackerApp: App {
     @State private var store = DataStore()
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 

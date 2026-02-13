@@ -26,7 +26,7 @@ jobs:
       - name: Build & Package
         run: |
           bash build.sh
-          ditto -c -k --keepParent TechSupportTracker.app TicTracker-${{ github.ref_name }}.zip
+          ditto -c -k --keepParent TicTracker.app TicTracker-${{ github.ref_name }}.zip
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:

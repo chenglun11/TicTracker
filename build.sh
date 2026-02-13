@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-APP_NAME="TechSupportTracker"
+APP_NAME="TicTracker"
 BUILD_DIR=".build/arm64-apple-macosx/release"
 APP_BUNDLE="${APP_NAME}.app"
 CONTENTS_DIR="${APP_BUNDLE}/Contents"

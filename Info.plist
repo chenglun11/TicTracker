@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.maxli.TechSupportTracker</string>
+	<string>com.maxli.TicTracker</string>
 	<key>CFBundleName</key>
 	<string>计数工具</string>
 	<key>CFBundleDisplayName</key>
 	<string>计数工具</string>
 	<key>CFBundleExecutable</key>
-	<string>TechSupportTracker</string>
+	<string>TicTracker</string>
 	<key>CFBundleVersion</key>
 	<string>3</string>
 	<key>CFBundleShortVersionString</key>
