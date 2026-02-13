@@ -3,6 +3,7 @@ name: Build
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -13,3 +14,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: swift build -c release
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & Package
+        run: |
+          bash build.sh
+          ditto -c -k --keepParent TechSupportTracker.app TicTracker-${{ github.ref_name }}.zip
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: TicTracker-${{ github.ref_name }}.zip
+          generate_release_notes: true
