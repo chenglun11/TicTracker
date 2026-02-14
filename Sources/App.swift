@@ -23,9 +23,14 @@ struct TicTrackerApp: App {
                         DevLog.shared.info("App", "启动 TicTracker")
                         HotkeyManager.shared.setup(store: store)
                         NotificationManager.shared.refreshReminderIfNeeded()
+                        NotificationManager.shared.sendWelcome()
                         UpdateChecker.shared.checkInBackground()
                         RSSFeedManager.shared.setup(store: store)
                         RSSFeedManager.shared.startPolling()
+                        JiraService.shared.setup(store: store)
+                        if store.jiraConfig.enabled {
+                            JiraService.shared.startPolling()
+                        }
                     }
                 }
         } label: {
@@ -51,9 +56,19 @@ struct TicTrackerApp: App {
         }
         .defaultSize(width: 650, height: 500)
 
+        Window("Jira 工单", id: "jira") {
+            JiraView(store: store)
+        }
+        .defaultSize(width: 700, height: 500)
+
         Window("开发者日志", id: "dev-log") {
             DevLogView()
         }
         .defaultSize(width: 700, height: 450)
+
+        Window("统计", id: "statistics") {
+            StatisticsView(store: store)
+        }
+        .defaultSize(width: 650, height: 500)
     }
 }

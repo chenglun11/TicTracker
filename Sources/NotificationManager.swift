@@ -42,6 +42,19 @@ final class NotificationManager {
         DevLog.shared.info("Notify", "启动时刷新日报提醒 \(String(format: "%02d:%02d", hour, minute))")
     }
 
+    func sendWelcome() {
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = "TicTracker 已就绪"
+        content.body = "今天也要加油哦 💪"
+        content.sound = .default
+
+        let request = UNNotificationRequest(identifier: "welcome", content: content, trigger: nil)
+        Task {
+            try? await center.add(request)
+        }
+    }
+
     func cancelReminder() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [reminderID])
     }
