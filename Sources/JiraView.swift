@@ -256,6 +256,8 @@ struct JiraView: View {
             let ok = await JiraService.shared.doTransition(issueKey: issueKey, transitionID: transitionID)
             if ok {
                 _ = await JiraService.shared.fetchMyIssues()
+                store.jiraTransitioned(todayKey, issueKey: issueKey)
+                DevLog.shared.info("Jira", "\(issueKey) 流转 +1")
             } else {
                 errorMessage = "流转失败，请重试"
             }

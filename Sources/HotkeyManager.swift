@@ -13,30 +13,36 @@ final class HotkeyManager {
         self.store = store
         installCarbonHandler()
         rebindHotkeys()
-        DevLog.shared.info("Hotkey", "快捷键初始化，\(store.departments.count) 个项目，修饰键 \(store.currentModifierLabel)")
+        DevLog.shared.info("Hotkey", "快捷键初始化，\(store.hotkeyBindings.count) 个绑定")
     }
 
     func rebindHotkeys() {
         unregisterAll()
         guard let store else { return }
-        let count = min(store.departments.count, 9)
-        let keyCodes: [UInt32] = [0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19]
-        let modifiers: UInt32 = store.currentCarbonFlags
-        for i in 0..<count {
-            let hotKeyID = EventHotKeyID(signature: OSType(0x5453_5448), id: UInt32(i))
+
+        // Register per-project bindings
+        for dept in store.departments {
+            guard let binding = store.hotkeyBindings[dept],
+                  let deptIndex = store.departments.firstIndex(of: dept) else { continue }
+            let hotKeyID = EventHotKeyID(signature: OSType(0x5453_5448), id: UInt32(deptIndex))
             var hotKeyRef: EventHotKeyRef?
-            let status = RegisterEventHotKey(keyCodes[i], modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+            let status = RegisterEventHotKey(UInt32(binding.keyCode), binding.carbonModifiers,
+                                             hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
             if status == noErr, let ref = hotKeyRef {
                 hotKeyRefs.append(ref)
             }
         }
-        // Quick note: modifier+0
+
+        // Quick note: first bound department's modifiers + 0, fallback ⌃⇧
+        let noteModifiers: UInt32 = store.departments
+            .compactMap { store.hotkeyBindings[$0]?.carbonModifiers }
+            .first ?? (UInt32(controlKey) | UInt32(shiftKey))
         let noteID = EventHotKeyID(signature: OSType(0x5453_5448), id: 100)
         var noteRef: EventHotKeyRef?
-        if RegisterEventHotKey(0x1D, modifiers, noteID, GetApplicationEventTarget(), 0, &noteRef) == noErr, let ref = noteRef {
+        if RegisterEventHotKey(0x1D, noteModifiers, noteID, GetApplicationEventTarget(), 0, &noteRef) == noErr, let ref = noteRef {
             hotKeyRefs.append(ref)
         }
-        DevLog.shared.info("Hotkey", "注册 \(count) 个快捷键 + 快速日报")
+        DevLog.shared.info("Hotkey", "注册 \(store.hotkeyBindings.count) 个快捷键 + 快速日报")
     }
 
     private func installCarbonHandler() {

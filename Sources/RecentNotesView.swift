@@ -25,13 +25,25 @@ private struct NoteContentView: View {
 struct RecentNotesView: View {
     @Bindable var store: DataStore
     @State private var searchText = ""
+    @State private var copied = false
 
     private struct DayEntry: Identifiable {
         let id: String // date key
+        let date: Date
         let display: String
         let records: [String: Int]
         let total: Int
         let note: String
+        let jiraCounts: [String: Int]
+        let jiraTotal: Int
+        let timestamps: [String: [String]]  // dept → ["HH:mm:ss", ...]
+    }
+
+    private struct WeekGroup: Identifiable {
+        let id: String          // e.g. "2026-W07"
+        let label: String       // e.g. "2/10 — 2/16"
+        let entries: [DayEntry]
+        let isCurrentWeek: Bool
     }
 
     private static let dateFmt: DateFormatter = {
@@ -47,15 +59,27 @@ struct RecentNotesView: View {
         return fmt
     }()
 
+    private static let weekLabelFmt: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d"
+        return fmt
+    }()
+
     private var allEntries: [DayEntry] {
-        let allKeys = Set(store.records.keys).union(store.dailyNotes.keys).sorted().reversed()
+        let allKeys = Set(store.records.keys)
+            .union(store.dailyNotes.keys)
+            .union(store.jiraIssueCounts.keys)
+            .sorted().reversed()
         return allKeys.compactMap { key in
             let records = store.records[key] ?? [:]
             let total = records.values.reduce(0, +)
             let note = store.dailyNotes[key] ?? ""
-            guard total > 0 || !note.isEmpty else { return nil }
+            let jiraCounts = store.jiraIssueCounts[key] ?? [:]
+            let jiraTotal = jiraCounts.values.reduce(0, +)
+            guard total > 0 || !note.isEmpty || jiraTotal > 0 else { return nil }
             guard let date = Self.dateFmt.date(from: key) else { return nil }
-            return DayEntry(id: key, display: Self.displayFmt.string(from: date), records: records, total: total, note: note)
+            let timestamps = store.tapTimestamps[key] ?? [:]
+            return DayEntry(id: key, date: date, display: Self.displayFmt.string(from: date), records: records, total: total, note: note, jiraCounts: jiraCounts, jiraTotal: jiraTotal, timestamps: timestamps)
         }
     }
 
@@ -69,59 +93,180 @@ struct RecentNotesView: View {
         }
     }
 
+    private var weekGroups: [WeekGroup] {
+        let calendar = Calendar.current
+        let today = Date()
+        let currentMonday = mondayOfWeek(containing: today, calendar: calendar)
+
+        var grouped: [(monday: Date, entries: [DayEntry])] = []
+        for entry in filteredEntries {
+            let monday = mondayOfWeek(containing: entry.date, calendar: calendar)
+            if let last = grouped.last, last.monday == monday {
+                grouped[grouped.count - 1].entries.append(entry)
+            } else {
+                grouped.append((monday, [entry]))
+            }
+        }
+
+        return grouped.map { monday, entries in
+            let sunday = calendar.date(byAdding: .day, value: 6, to: monday)!
+            let label = "\(Self.weekLabelFmt.string(from: monday)) — \(Self.weekLabelFmt.string(from: sunday))"
+            let weekNum = calendar.component(.weekOfYear, from: monday)
+            let year = calendar.component(.yearForWeekOfYear, from: monday)
+            return WeekGroup(
+                id: "\(year)-W\(String(format: "%02d", weekNum))",
+                label: label,
+                entries: entries,
+                isCurrentWeek: monday == currentMonday
+            )
+        }
+    }
+
+    private func mondayOfWeek(containing date: Date, calendar: Calendar) -> Date {
+        let weekday = calendar.component(.weekday, from: date)
+        let daysFromMonday = (weekday + 5) % 7
+        return calendar.startOfDay(for: calendar.date(byAdding: .day, value: -daysFromMonday, to: date)!)
+    }
+
     private func inlineMarkdown(_ text: String) -> AttributedString {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Toolbar
+            HStack(spacing: 10) {
+                Text("最近日报")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    WeeklyReport.copyToClipboard(from: store)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        copied = false
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        Text(copied ? "已复制" : "复制本周周报")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+
+            Divider()
+
             if allEntries.isEmpty {
                 Text("暂无记录")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(filteredEntries) { item in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(item.display)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            if item.total > 0 {
-                                Text("共 \(item.total) 次")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                List {
+                    ForEach(weekGroups) { week in
+                        Section {
+                            ForEach(week.entries) { item in
+                                dayRow(item)
                             }
-                        }
-
-                        if item.total > 0 {
-                            let sorted = store.departments.filter { item.records[$0, default: 0] > 0 }
-                                + item.records.keys.filter { !store.departments.contains($0) && item.records[$0, default: 0] > 0 }.sorted()
-                            FlowLayout(spacing: 6) {
-                                ForEach(sorted, id: \.self) { dept in
-                                    Text("\(dept) \(item.records[dept]!)")
+                        } header: {
+                            HStack {
+                                Text(week.label)
+                                    .font(.subheadline.bold())
+                                if week.isCurrentWeek {
+                                    Text("本周")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.accentColor, in: Capsule())
+                                        .foregroundStyle(.white)
+                                }
+                                Spacer()
+                                let weekTotal = week.entries.reduce(0) { $0 + $1.total }
+                                let weekJira = week.entries.reduce(0) { $0 + $1.jiraTotal }
+                                if weekTotal > 0 {
+                                    Text("项目 \(weekTotal)")
                                         .font(.caption)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(Color.accentColor.opacity(0.12))
-                                        .clipShape(Capsule())
+                                        .foregroundStyle(.secondary)
+                                }
+                                if weekJira > 0 {
+                                    Text("工单 \(weekJira)")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
                                 }
                             }
                         }
-
-                        if !item.note.isEmpty {
-                            NoteContentView(text: item.note, inlineMarkdown: inlineMarkdown)
-                        }
                     }
-                    .padding(.vertical, 4)
                 }
+                .listStyle(.inset)
             }
         }
         .searchable(text: $searchText, prompt: "搜索记录")
-        .navigationTitle("最近日报")
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    @ViewBuilder
+    private func dayRow(_ item: DayEntry) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(item.display)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if item.total > 0 {
+                    Text("项目 \(item.total)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if item.jiraTotal > 0 {
+                    Text("工单 \(item.jiraTotal)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            if item.total > 0 {
+                let sorted = store.departments.filter { item.records[$0, default: 0] > 0 }
+                    + item.records.keys.filter { !store.departments.contains($0) && item.records[$0, default: 0] > 0 }.sorted()
+                FlowLayout(spacing: 6) {
+                    ForEach(sorted, id: \.self) { dept in
+                        let times = item.timestamps[dept] ?? []
+                        Text("\(dept) \(item.records[dept]!)")
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(Capsule())
+                            .help(times.isEmpty ? "" : times.map { String($0.prefix(5)) }.joined(separator: "  "))
+                    }
+                }
+            }
+
+            if item.jiraTotal > 0 {
+                let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
+                let sortedJira = item.jiraCounts.sorted { $0.value > $1.value }
+                FlowLayout(spacing: 6) {
+                    ForEach(sortedJira, id: \.key) { issueKey, count in
+                        let label = issueMap[issueKey].map { "\(issueKey) \($0)" } ?? issueKey
+                        Text("\(label) ×\(count)")
+                            .font(.caption)
+                            .lineLimit(1)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.orange.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+
+            if !item.note.isEmpty {
+                NoteContentView(text: item.note, inlineMarkdown: inlineMarkdown)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 

@@ -84,17 +84,27 @@ struct WeeklyReport {
         weekdayFmt.locale = Locale(identifier: "zh_CN")
 
         var detailLines: [String] = []
+        let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
         var detailDate = monday
         while detailDate <= today {
             let key = fmt.string(from: detailDate)
+            var parts: [String] = []
             if let dayRecords = store.records[key] {
-                let parts = allDepts
+                parts += allDepts
                     .filter { dayRecords[$0, default: 0] > 0 }
                     .map { "\($0)×\(dayRecords[$0]!)" }
-                if !parts.isEmpty {
-                    let label = weekdayFmt.string(from: detailDate)
-                    detailLines.append("\(label): \(parts.joined(separator: ", "))")
-                }
+            }
+            if let dayCounts = store.jiraIssueCounts[key] {
+                let jiraParts = dayCounts.sorted(by: { $0.value > $1.value })
+                    .map { issueKey, count in
+                        let summary = issueMap[issueKey] ?? issueKey
+                        return "\(summary)×\(count)"
+                    }
+                parts += jiraParts
+            }
+            if !parts.isEmpty {
+                let label = weekdayFmt.string(from: detailDate)
+                detailLines.append("\(label): \(parts.joined(separator: ", "))")
             }
             detailDate = calendar.date(byAdding: .day, value: 1, to: detailDate)!
         }

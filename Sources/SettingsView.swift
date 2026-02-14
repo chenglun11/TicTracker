@@ -8,6 +8,7 @@ let departmentColors: [Color] = [.blue, .purple, .orange, .green, .pink, .cyan, 
 private struct UnderlineTextFieldStyle: TextFieldStyle {
     func _body(configuration: TextField<Self._Label>) -> some View {
         configuration
+            .multilineTextAlignment(.leading)
             .padding(.vertical, 4)
             .overlay(alignment: .bottom) {
                 Rectangle()
@@ -62,83 +63,70 @@ private struct DepartmentTab: View {
     @State private var deletingDept: String?
 
     var body: some View {
-        Form {
-            Section("添加项目") {
-                HStack(spacing: 8) {
-                    TextField("新项目名称", text: $newDept)
-                        .textFieldStyle(UnderlineTextFieldStyle())
-                        .onSubmit { add() }
-                    Button("添加", action: add)
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(newDept.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
+        VStack(spacing: 0) {
+            // Add row
+            HStack(spacing: 8) {
+                TextField("新项目名称", text: $newDept)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { add() }
+                Button("添加", action: add)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(newDept.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
 
-            Section("项目列表") {
-                if store.departments.isEmpty {
-                    Text("暂无项目")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(store.departments.enumerated()), id: \.element) { i, dept in
-                        if editingDept == dept {
-                            HStack(spacing: 8) {
-                                TextField("项目名称", text: $editText)
-                                    .textFieldStyle(UnderlineTextFieldStyle())
-                                    .onSubmit { commitRename(dept) }
-                                Button("确定") { commitRename(dept) }
-                                    .buttonStyle(.borderedProminent)
-                                    .controlSize(.small)
-                                Button("取消") { editingDept = nil }
-                                    .controlSize(.small)
-                            }
-                        } else {
-                            HStack(spacing: 10) {
-                                Circle()
-                                    .fill(departmentColors[i % departmentColors.count].gradient)
-                                    .frame(width: 8, height: 8)
-                                Text(dept)
-                                    .font(.body)
-                                if i < 9 {
-                                    Text("\(store.currentModifierLabel)\(i + 1)")
-                                        .font(.caption2)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 2)
-                                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
-                                }
-                                Spacer()
-                                Text("\(store.totalCountForDepartment(dept)) 次")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .monospacedDigit()
-                                Button {
-                                    editingDept = dept
-                                    editText = dept
-                                } label: {
-                                    Image(systemName: "pencil")
-                                        .font(.caption)
-                                }
-                                .buttonStyle(.borderless)
-                                .foregroundStyle(.secondary)
-                                Button {
-                                    deletingDept = dept
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .font(.caption)
-                                        .foregroundStyle(.red.opacity(0.7))
-                                }
-                                .buttonStyle(.borderless)
-                            }
-                            .padding(.vertical, 2)
+            Divider()
+
+            // Sort buttons
+            HStack {
+                Text("项目列表")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("按名称") {
+                    withAnimation { store.departments.sort() }
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+                Button("按次数") {
+                    withAnimation {
+                        store.departments.sort {
+                            store.totalCountForDepartment($0) > store.totalCountForDepartment($1)
                         }
                     }
-                    .onMove { from, to in
-                        store.departments.move(fromOffsets: from, toOffset: to)
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+
+            // Department list — native List drag reorder
+            List {
+                ForEach(Array(store.departments.enumerated()), id: \.element) { i, dept in
+                    if editingDept == dept {
+                        HStack(spacing: 8) {
+                            TextField("项目名称", text: $editText)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { commitRename(dept) }
+                            Button("确定") { commitRename(dept) }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            Button("取消") { editingDept = nil }
+                                .controlSize(.small)
+                        }
+                    } else {
+                        deptRow(i: i, dept: dept)
                     }
                 }
+                .onMove { from, to in
+                    store.departments.move(fromOffsets: from, toOffset: to)
+                }
             }
+            .listStyle(.inset(alternatesRowBackgrounds: true))
         }
-        .formStyle(.grouped)
         .alert("确认删除「\(deletingDept ?? "")」？", isPresented: Binding(
             get: { deletingDept != nil },
             set: { if !$0 { deletingDept = nil } }
@@ -147,6 +135,7 @@ private struct DepartmentTab: View {
             Button("删除", role: .destructive) {
                 if let dept = deletingDept {
                     store.departments.removeAll { $0 == dept }
+                    store.hotkeyBindings.removeValue(forKey: dept)
                 }
                 deletingDept = nil
             }
@@ -154,6 +143,47 @@ private struct DepartmentTab: View {
             let count = store.totalCountForDepartment(deletingDept ?? "")
             Text(count > 0 ? "该项目已有 \(count) 条历史记录，删除后项目名将从列表移除" : "确定要删除这个项目吗？")
         }
+    }
+
+    @ViewBuilder
+    private func deptRow(i: Int, dept: String) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(departmentColors[i % departmentColors.count].gradient)
+                .frame(width: 8, height: 8)
+            Text(dept)
+                .font(.body)
+            if let binding = store.hotkeyBindings[dept] {
+                Text(binding.displayString)
+                    .font(.caption2)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+            }
+            Spacer()
+            Text("\(store.totalCountForDepartment(dept)) 次")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            Button {
+                editingDept = dept
+                editText = dept
+            } label: {
+                Image(systemName: "pencil")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            Button {
+                deletingDept = dept
+            } label: {
+                Image(systemName: "trash")
+                    .font(.caption)
+                    .foregroundStyle(.red.opacity(0.7))
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 8)
     }
 
     private func add() {
@@ -182,6 +212,7 @@ private struct GeneralTab: View {
         return m == 0 && !UserDefaults.standard.bool(forKey: "reminderEnabled") ? 30 : m
     }()
     @State private var reminderSaved = false
+    @State private var summaryEnabled: Bool = UserDefaults.standard.object(forKey: "summaryEnabled") as? Bool ?? true
 
     var body: some View {
         Form {
@@ -249,25 +280,44 @@ private struct GeneralTab: View {
                         .controlSize(.small)
                     }
                 }
+                if reminderEnabled {
+                    Toggle("下班工作摘要", isOn: $summaryEnabled)
+                        .onChange(of: summaryEnabled) { _, on in
+                            UserDefaults.standard.set(on, forKey: "summaryEnabled")
+                            if on {
+                                applyReminder()
+                            } else {
+                                NotificationManager.shared.cancelSummary()
+                            }
+                        }
+                    Text("在日报提醒 30 分钟后推送今日工作统计")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            Section("全局快捷键") {
-                HStack {
-                    Text("修饰键")
-                    Spacer()
-                    Picker("", selection: Bindable(store).hotkeyModifier) {
-                        ForEach(DataStore.modifierOptions, id: \.id) { opt in
-                            Text(opt.label).tag(opt.id)
-                        }
+            Section("快捷键") {
+                ForEach(store.departments, id: \.self) { dept in
+                    HStack {
+                        Text(dept)
+                        Spacer()
+                        HotkeyRecorderView(
+                            binding: Binding(
+                                get: { store.hotkeyBindings[dept] },
+                                set: {
+                                    if let b = $0 {
+                                        store.hotkeyBindings[dept] = b
+                                    } else {
+                                        store.hotkeyBindings.removeValue(forKey: dept)
+                                    }
+                                }
+                            ),
+                            allBindings: store.hotkeyBindings,
+                            currentDept: dept
+                        )
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 80)
                 }
-                ForEach(Array(store.departments.prefix(9).enumerated()), id: \.offset) { i, dept in
-                    LabeledContent("\(store.currentModifierLabel)\(i + 1)", value: "\(dept) +1")
-                }
-                LabeledContent("\(store.currentModifierLabel)0", value: "快速日报")
+                LabeledContent("快速日报", value: "首个修饰键+0")
             }
         }
         .formStyle(.grouped)
@@ -464,18 +514,39 @@ private struct JiraTab: View {
     @State private var testResult: String?
     @State private var testSuccess = false
 
+    private let jqlPresets: [(label: String, jql: String)] = [
+        ("待处理", "assignee=currentUser() AND resolution=Unresolved ORDER BY updated DESC"),
+        ("本周完成", "assignee=currentUser() AND resolved >= startOfWeek() ORDER BY resolved DESC"),
+        ("近7天完成", "assignee=currentUser() AND resolved >= -7d ORDER BY resolved DESC"),
+        ("全部", "assignee=currentUser() ORDER BY updated DESC"),
+    ]
+
     var body: some View {
         Form {
             Section("连接") {
                 TextField("服务器地址", text: Bindable(store).jiraConfig.serverURL, prompt: Text("https://jira.example.com"))
                     .textFieldStyle(UnderlineTextFieldStyle())
-                TextField("用户名", text: Bindable(store).jiraConfig.username)
-                    .textFieldStyle(UnderlineTextFieldStyle())
-                SecureField("API Token", text: $tokenInput)
-                    .textFieldStyle(UnderlineTextFieldStyle())
-                    .onSubmit { saveToken() }
+                Picker("认证方式", selection: Bindable(store).jiraConfig.authMode) {
+                    Text("用户名 + 密码").tag(JiraAuthMode.password)
+                    Text("Personal Access Token").tag(JiraAuthMode.pat)
+                }
+                .pickerStyle(.segmented)
+                if store.jiraConfig.authMode == .password {
+                    TextField("用户名", text: Bindable(store).jiraConfig.username)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                    SecureField("密码", text: $tokenInput)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .onSubmit { saveToken() }
+                } else {
+                    SecureField("Token", text: $tokenInput)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .onSubmit { saveToken() }
+                    Text("在 Jira 个人设置中生成 Personal Access Token")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 HStack {
-                    Button("保存 Token") { saveToken() }
+                    Button("保存") { saveToken() }
                         .controlSize(.small)
                         .disabled(tokenInput.isEmpty)
                     Button(testing ? "测试中…" : "测试连接") {
@@ -484,7 +555,8 @@ private struct JiraTab: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(testing || store.jiraConfig.serverURL.isEmpty || store.jiraConfig.username.isEmpty || tokenInput.isEmpty)
+                    .disabled(testing || store.jiraConfig.serverURL.isEmpty || tokenInput.isEmpty ||
+                              (store.jiraConfig.authMode == .password && store.jiraConfig.username.isEmpty))
 
                     if let result = testResult {
                         Text(result)
@@ -495,6 +567,24 @@ private struct JiraTab: View {
             }
 
             Section("查询") {
+                HStack(spacing: 6) {
+                    Text("预设")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(jqlPresets, id: \.label) { preset in
+                        Button(preset.label) {
+                            store.jiraConfig.jql = preset.jql
+                        }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(store.jiraConfig.jql == preset.jql
+                                    ? Color.accentColor : Color.secondary.opacity(0.12),
+                                    in: Capsule())
+                        .foregroundStyle(store.jiraConfig.jql == preset.jql ? .white : .primary)
+                    }
+                }
                 TextField("JQL", text: Bindable(store).jiraConfig.jql)
                     .textFieldStyle(UnderlineTextFieldStyle())
                     .font(.callout.monospaced())
@@ -517,6 +607,28 @@ private struct JiraTab: View {
                         }
                     }
                 }
+                HStack {
+                    Text("轮询时段")
+                    Spacer()
+                    Picker("", selection: Bindable(store).jiraConfig.pollingStartHour) {
+                        ForEach(0..<24, id: \.self) { h in
+                            Text(String(format: "%02d:00", h)).tag(h)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 80)
+                    Text("—")
+                        .foregroundStyle(.tertiary)
+                    Picker("", selection: Bindable(store).jiraConfig.pollingEndHour) {
+                        ForEach(0..<24, id: \.self) { h in
+                            Text(String(format: "%02d:00", h)).tag(h)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 80)
+                }
             }
 
             Section("显示") {
@@ -531,42 +643,57 @@ private struct JiraTab: View {
                 Toggle("在菜单栏显示工单列表", isOn: Bindable(store).jiraConfig.showInMenuBar)
             }
 
-            Section("工单→项目映射") {
-                if store.jiraIssues.isEmpty {
-                    Text("请先启用并刷新工单")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(store.jiraIssues) { issue in
-                        HStack(spacing: 8) {
-                            Text(issue.key)
-                                .font(.caption.monospaced())
-                                .frame(width: 90, alignment: .leading)
-                            Text(issue.summary)
-                                .font(.caption)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Picker("", selection: Binding(
-                                get: { store.jiraConfig.deptMapping[issue.key] ?? "" },
-                                set: { newValue in
-                                    if newValue.isEmpty {
-                                        store.jiraConfig.deptMapping.removeValue(forKey: issue.key)
-                                    } else {
-                                        store.jiraConfig.deptMapping[issue.key] = newValue
-                                    }
-                                }
-                            )) {
-                                Text("无").tag("")
-                                ForEach(store.departments, id: \.self) { dept in
-                                    Text(dept).tag(dept)
-                                }
+            Section("自动映射规则") {
+                Text("工单按字段自动关联到项目，从上到下匹配第一条命中的规则")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Array(store.jiraConfig.mappingRules.enumerated()), id: \.element.id) { i, rule in
+                    HStack(spacing: 6) {
+                        Picker("", selection: Bindable(store).jiraConfig.mappingRules[i].field) {
+                            ForEach(JiraMappingField.allCases, id: \.self) { f in
+                                Text(f.label).tag(f)
                             }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .frame(width: 100)
                         }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 80)
+
+                        Text("=")
+                            .foregroundStyle(.secondary)
+
+                        TextField("值", text: Bindable(store).jiraConfig.mappingRules[i].value)
+                            .textFieldStyle(UnderlineTextFieldStyle())
+                            .frame(width: 100)
+
+                        Text("→")
+                            .foregroundStyle(.secondary)
+
+                        Picker("", selection: Bindable(store).jiraConfig.mappingRules[i].department) {
+                            Text("无").tag("")
+                            ForEach(store.departments, id: \.self) { dept in
+                                Text(dept).tag(dept)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 100)
+
+                        Button {
+                            store.jiraConfig.mappingRules.remove(at: i)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                                .foregroundStyle(.red.opacity(0.7))
+                        }
+                        .buttonStyle(.borderless)
                     }
                 }
+                Button("添加规则") {
+                    store.jiraConfig.mappingRules.append(
+                        JiraMappingRule(field: .issueType, value: "", department: "")
+                    )
+                }
+                .controlSize(.small)
             }
         }
         .formStyle(.grouped)

@@ -1,18 +1,76 @@
 import SwiftUI
+import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var store: DataStore?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
         if let store {
             HotkeyManager.shared.setup(store: store)
         }
     }
+
+    // Show banner + sound even when app is in foreground
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    // Handle notification action buttons
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let actionID = response.actionIdentifier
+        let link = response.notification.request.content.userInfo["link"] as? String
+        let capturedStore = store
+
+        MainActor.assumeIsolated {
+            switch actionID {
+            case NotificationManager.actionOpenDaily:
+                NSApp.activate(ignoringOtherApps: true)
+                NotificationCenter.default.post(name: .openWindowRequest, object: "recent-notes")
+
+            case NotificationManager.actionSnooze:
+                NotificationManager.shared.snoozeReminder()
+
+            case NotificationManager.actionOpenRSSLink:
+                if let link, let url = URL(string: link) {
+                    NSWorkspace.shared.open(url)
+                }
+
+            case NotificationManager.actionCopyWeekly:
+                if let capturedStore {
+                    WeeklyReport.copyToClipboard(from: capturedStore)
+                    DevLog.shared.info("Notify", "周报已复制到剪贴板")
+                }
+
+            case NotificationManager.actionViewStats:
+                NSApp.activate(ignoringOtherApps: true)
+                NotificationCenter.default.post(name: .openWindowRequest, object: "statistics")
+
+            case UNNotificationDefaultActionIdentifier:
+                NSApp.activate(ignoringOtherApps: true)
+
+            default:
+                break
+            }
+        }
+
+        completionHandler()
+    }
+}
+
+extension Notification.Name {
+    static let openWindowRequest = Notification.Name("openWindowRequest")
 }
 
 @main
 struct TicTrackerApp: App {
     @State private var store = DataStore()
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         MenuBarExtra {
@@ -31,6 +89,11 @@ struct TicTrackerApp: App {
                         if store.jiraConfig.enabled {
                             JiraService.shared.startPolling()
                         }
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .openWindowRequest)) { notification in
+                    if let windowID = notification.object as? String {
+                        openWindow(id: windowID)
                     }
                 }
         } label: {

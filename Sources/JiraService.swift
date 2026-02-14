@@ -26,11 +26,18 @@ final class JiraService {
         guard let store, store.jiraConfig.enabled else { return }
         pollingTask = Task {
             while !Task.isCancelled {
-                _ = await fetchMyIssues()
+                if isInPollingWindow(config: store.jiraConfig) {
+                    _ = await fetchMyIssues()
+                }
                 let minutes = store.jiraConfig.pollingInterval
                 try? await Task.sleep(for: .seconds(minutes * 60))
             }
         }
+    }
+
+    private func isInPollingWindow(config: JiraConfig) -> Bool {
+        let hour = Calendar.current.component(.hour, from: Date())
+        return hour >= config.pollingStartHour && hour < config.pollingEndHour
     }
 
     func stopPolling() {
@@ -48,8 +55,9 @@ final class JiraService {
     func fetchMyIssues() async -> String? {
         guard let store else { return "未初始化" }
         let config = store.jiraConfig
-        guard !config.serverURL.isEmpty, !config.username.isEmpty else { return "请先配置服务器和用户名" }
-        guard let token = loadToken(), !token.isEmpty else { return "API Token 未设置" }
+        guard !config.serverURL.isEmpty else { return "请先配置服务器地址" }
+        if config.authMode == .password, config.username.isEmpty { return "请先配置用户名" }
+        guard let token = loadToken(), !token.isEmpty else { return "密码 / Token 未设置" }
 
         let base = config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard var components = URLComponents(string: "\(base)/rest/api/2/search") else { return "URL 无效" }
@@ -124,7 +132,7 @@ final class JiraService {
         guard let store else { return .networkError("未初始化") }
         let config = store.jiraConfig
         guard !config.serverURL.isEmpty else { return .networkError("服务器地址为空") }
-        guard !config.username.isEmpty else { return .authError }
+        if config.authMode == .password, config.username.isEmpty { return .authError }
         guard let token = loadToken(), !token.isEmpty else { return .authError }
 
         let base = config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -154,9 +162,15 @@ final class JiraService {
     }
 
     private func applyAuth(_ request: inout URLRequest, username: String, token: String) {
-        let cred = "\(username):\(token)"
-        if let data = cred.data(using: .utf8) {
-            request.setValue("Basic \(data.base64EncodedString())", forHTTPHeaderField: "Authorization")
+        guard let store else { return }
+        switch store.jiraConfig.authMode {
+        case .password:
+            let cred = "\(username):\(token)"
+            if let data = cred.data(using: .utf8) {
+                request.setValue("Basic \(data.base64EncodedString())", forHTTPHeaderField: "Authorization")
+            }
+        case .pat:
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
     }
 

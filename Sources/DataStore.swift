@@ -18,9 +18,9 @@ final class DataStore {
     var noteTitle: String {
         didSet { UserDefaults.standard.set(noteTitle, forKey: "noteTitle") }
     }
-    var hotkeyModifier: String {
+    var hotkeyBindings: [String: HotkeyBinding] {
         didSet {
-            UserDefaults.standard.set(hotkeyModifier, forKey: "hotkeyModifier")
+            saveHotkeyBindings()
             HotkeyManager.shared.rebindHotkeys()
         }
     }
@@ -36,6 +36,9 @@ final class DataStore {
     var jiraIssueCounts: [String: [String: Int]] {  // dateKey → issueKey → count
         didSet { saveJiraIssueCounts() }
     }
+    var jiraTransitionLog: [String: [String]] {  // dateKey → [issueKey] (已流转，每天每工单只计一次)
+        didSet { saveJiraTransitionLog() }
+    }
 
     // MARK: - RSS
 
@@ -49,21 +52,12 @@ final class DataStore {
         didSet { UserDefaults.standard.set(rssPollingInterval, forKey: "rssPollingInterval") }
     }
 
-    static let modifierOptions: [(id: String, label: String, carbonFlags: Int)] = [
-        ("ctrl_shift", "⌃⇧", 0x1000 | 0x0200),   // controlKey | shiftKey
-        ("cmd_shift",  "⌘⇧", 0x0100 | 0x0200),    // cmdKey | shiftKey
-        ("opt_shift",  "⌥⇧", 0x0800 | 0x0200),    // optionKey | shiftKey
-        ("ctrl_opt",   "⌃⌥", 0x1000 | 0x0800),     // controlKey | optionKey
-        ("cmd_ctrl",   "⌘⌃", 0x0100 | 0x1000),     // cmdKey | controlKey
-    ]
+    // MARK: - Tap Timestamps
 
-    var currentModifierLabel: String {
-        Self.modifierOptions.first { $0.id == hotkeyModifier }?.label ?? "⌃⇧"
+    var tapTimestamps: [String: [String: [String]]] {  // dateKey → dept → ["HH:mm:ss", ...]
+        didSet { saveTapTimestamps() }
     }
 
-    var currentCarbonFlags: UInt32 {
-        UInt32(Self.modifierOptions.first { $0.id == hotkeyModifier }?.carbonFlags ?? (0x1000 | 0x0200))
-    }
 
     private let departmentsKey = "departments"
     private let recordsKey = "records"
@@ -79,6 +73,12 @@ final class DataStore {
         let fmt = DateFormatter()
         fmt.dateFormat = "EEE"
         fmt.locale = Locale(identifier: "zh_CN")
+        return fmt
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm:ss"
         return fmt
     }()
 
@@ -106,7 +106,14 @@ final class DataStore {
         }
         popoverTitle = UserDefaults.standard.string(forKey: "popoverTitle") ?? "今日技术支持"
         noteTitle = UserDefaults.standard.string(forKey: "noteTitle") ?? "今日小记"
-        hotkeyModifier = UserDefaults.standard.string(forKey: "hotkeyModifier") ?? "ctrl_shift"
+
+        // Initialize hotkeyBindings (migration happens after all stored properties are set)
+        if let data = UserDefaults.standard.data(forKey: "hotkeyBindings"),
+           let decoded = try? JSONDecoder().decode([String: HotkeyBinding].self, from: data) {
+            hotkeyBindings = decoded
+        } else {
+            hotkeyBindings = [:]
+        }
 
         // Jira
         if let data = UserDefaults.standard.data(forKey: "jiraConfig"),
@@ -127,6 +134,12 @@ final class DataStore {
         } else {
             jiraIssueCounts = [:]
         }
+        if let data = UserDefaults.standard.data(forKey: "jiraTransitionLog"),
+           let decoded = try? JSONDecoder().decode([String: [String]].self, from: data) {
+            jiraTransitionLog = decoded
+        } else {
+            jiraTransitionLog = [:]
+        }
 
         // RSS
         if let data = UserDefaults.standard.data(forKey: "rssFeeds"),
@@ -142,6 +155,35 @@ final class DataStore {
             rssItems = [:]
         }
         rssPollingInterval = UserDefaults.standard.object(forKey: "rssPollingInterval") as? Int ?? 10
+
+        // Tap timestamps
+        if let data = UserDefaults.standard.data(forKey: "tapTimestamps"),
+           let decoded = try? JSONDecoder().decode([String: [String: [String]]].self, from: data) {
+            tapTimestamps = decoded
+        } else {
+            tapTimestamps = [:]
+        }
+
+        // Migrate legacy hotkeyModifier → per-project bindings
+        if hotkeyBindings.isEmpty, UserDefaults.standard.string(forKey: "hotkeyModifier") != nil {
+            let legacyMod = UserDefaults.standard.string(forKey: "hotkeyModifier") ?? "ctrl_shift"
+            let legacyFlags: UInt32 = {
+                let map: [String: UInt32] = [
+                    "ctrl_shift": 0x1000 | 0x0200,
+                    "cmd_shift":  0x0100 | 0x0200,
+                    "opt_shift":  0x0800 | 0x0200,
+                    "ctrl_opt":   0x1000 | 0x0800,
+                    "cmd_ctrl":   0x0100 | 0x1000,
+                ]
+                return map[legacyMod] ?? (0x1000 | 0x0200)
+            }()
+            let keyCodes: [UInt16] = [0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19]
+            var migrated: [String: HotkeyBinding] = [:]
+            for (i, dept) in departments.prefix(9).enumerated() {
+                migrated[dept] = HotkeyBinding(keyCode: keyCodes[i], carbonModifiers: legacyFlags)
+            }
+            hotkeyBindings = migrated
+        }
     }
 
     // MARK: - Today
@@ -188,6 +230,13 @@ final class DataStore {
         var day = records[key] ?? [:]
         day[dept, default: 0] += 1
         records[key] = day
+
+        // Record timestamp
+        var dayTaps = tapTimestamps[key] ?? [:]
+        var deptTaps = dayTaps[dept] ?? []
+        deptTaps.append(Self.timeFormatter.string(from: Date()))
+        dayTaps[dept] = deptTaps
+        tapTimestamps[key] = dayTaps
     }
 
     func decrementForKey(_ key: String, dept: String) {
@@ -196,6 +245,14 @@ final class DataStore {
         guard current > 0 else { return }
         day[dept] = current - 1
         records[key] = day
+
+        // Remove last timestamp
+        var dayTaps = tapTimestamps[key] ?? [:]
+        if var deptTaps = dayTaps[dept], !deptTaps.isEmpty {
+            deptTaps.removeLast()
+            dayTaps[dept] = deptTaps.isEmpty ? nil : deptTaps
+            tapTimestamps[key] = dayTaps.isEmpty ? nil : dayTaps
+        }
     }
 
     func noteForKey(_ key: String) -> String {
@@ -248,7 +305,8 @@ final class DataStore {
         var day = jiraIssueCounts[dateKey] ?? [:]
         day[issueKey, default: 0] += 1
         jiraIssueCounts[dateKey] = day
-        if let dept = jiraConfig.deptMapping[issueKey], !dept.isEmpty {
+        if let issue = jiraIssues.first(where: { $0.key == issueKey }),
+           let dept = jiraConfig.matchedDepartment(for: issue) {
             incrementForKey(dateKey, dept: dept)
         }
     }
@@ -259,8 +317,22 @@ final class DataStore {
         guard current > 0 else { return }
         day[issueKey] = current - 1
         jiraIssueCounts[dateKey] = day
-        if let dept = jiraConfig.deptMapping[issueKey], !dept.isEmpty {
+        if let issue = jiraIssues.first(where: { $0.key == issueKey }),
+           let dept = jiraConfig.matchedDepartment(for: issue) {
             decrementForKey(dateKey, dept: dept)
+        }
+    }
+
+    /// 流转成功后调用，每天每工单只计一次到关联项目
+    func jiraTransitioned(_ dateKey: String, issueKey: String) {
+        var log = jiraTransitionLog[dateKey] ?? []
+        guard !log.contains(issueKey) else { return }
+        log.append(issueKey)
+        jiraTransitionLog[dateKey] = log
+        // 关联到项目 +1
+        if let issue = jiraIssues.first(where: { $0.key == issueKey }),
+           let dept = jiraConfig.matchedDepartment(for: issue) {
+            incrementForKey(dateKey, dept: dept)
         }
     }
 
@@ -292,6 +364,18 @@ final class DataStore {
                 records[key]?.removeValue(forKey: oldName)
             }
         }
+        // Migrate tap timestamps
+        for key in tapTimestamps.keys {
+            if let taps = tapTimestamps[key]?[oldName] {
+                tapTimestamps[key]?[trimmed] = taps
+                tapTimestamps[key]?.removeValue(forKey: oldName)
+            }
+        }
+        // Migrate hotkey binding
+        if let binding = hotkeyBindings[oldName] {
+            hotkeyBindings[trimmed] = binding
+            hotkeyBindings.removeValue(forKey: oldName)
+        }
     }
 
     func totalCountForDepartment(_ dept: String) -> Int {
@@ -303,11 +387,14 @@ final class DataStore {
     func clearToday() {
         records.removeValue(forKey: todayKey)
         dailyNotes.removeValue(forKey: todayKey)
+        tapTimestamps.removeValue(forKey: todayKey)
     }
 
     func clearAllHistory() {
         records = [:]
         dailyNotes = [:]
+        tapTimestamps = [:]
+        jiraTransitionLog = [:]
     }
 
     var totalDaysTracked: Int {
@@ -319,11 +406,14 @@ final class DataStore {
     }
 
     func exportJSON() -> String? {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "departments": departments,
             "records": records,
             "dailyNotes": dailyNotes
         ]
+        if !tapTimestamps.isEmpty {
+            payload["tapTimestamps"] = tapTimestamps
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
         return String(data: data, encoding: .utf8)
     }
@@ -363,6 +453,9 @@ final class DataStore {
         if let notes = obj["dailyNotes"] as? [String: String] {
             dailyNotes = notes
         }
+        if let taps = obj["tapTimestamps"] as? [String: [String: [String]]] {
+            tapTimestamps = taps
+        }
         return true
     }
 
@@ -384,6 +477,12 @@ final class DataStore {
         }
     }
 
+    private func saveHotkeyBindings() {
+        if let data = try? JSONEncoder().encode(hotkeyBindings) {
+            UserDefaults.standard.set(data, forKey: "hotkeyBindings")
+        }
+    }
+
     private func saveJiraConfig() {
         if let data = try? JSONEncoder().encode(jiraConfig) {
             UserDefaults.standard.set(data, forKey: "jiraConfig")
@@ -402,6 +501,12 @@ final class DataStore {
         }
     }
 
+    private func saveJiraTransitionLog() {
+        if let data = try? JSONEncoder().encode(jiraTransitionLog) {
+            UserDefaults.standard.set(data, forKey: "jiraTransitionLog")
+        }
+    }
+
     private func saveRSSFeeds() {
         if let data = try? JSONEncoder().encode(rssFeeds) {
             UserDefaults.standard.set(data, forKey: "rssFeeds")
@@ -411,6 +516,12 @@ final class DataStore {
     private func saveRSSItems() {
         if let data = try? JSONEncoder().encode(rssItems) {
             UserDefaults.standard.set(data, forKey: "rssItems")
+        }
+    }
+
+    private func saveTapTimestamps() {
+        if let data = try? JSONEncoder().encode(tapTimestamps) {
+            UserDefaults.standard.set(data, forKey: "tapTimestamps")
         }
     }
 }
