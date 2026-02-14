@@ -6,6 +6,12 @@ struct MenuBarView: View {
     @State private var copied = false
     @State private var noteText = ""
     @State private var selectedDate = Date()
+    @State private var trendExpanded = true
+    @State private var jiraExpanded = true
+    @State private var jiraRefreshing = false
+    @State private var jiraTransitionsFor: String?
+    @State private var jiraTransitions: [JiraTransition] = []
+    @State private var jiraTransitioning = false
 
     private var selectedKey: String {
         DataStore.dateKey(from: selectedDate)
@@ -89,13 +95,29 @@ struct MenuBarView: View {
                 }
             }
 
+            // Jira section
+            if store.jiraConfig.showInMenuBar {
+                Divider()
+                jiraSection
+            }
+
             // Mini weekly trend chart
             Divider()
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("本周趋势")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Button {
+                        withAnimation { trendExpanded.toggle() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: trendExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                                .frame(width: 10)
+                            Text("本周趋势")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.borderless)
                     Spacer()
                     if store.currentStreak > 0 {
                         Text("🔥 连续 \(store.currentStreak) 天")
@@ -103,7 +125,9 @@ struct MenuBarView: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                MiniChartView(data: store.past7DaysBreakdown, departments: store.departments, todayKey: store.todayKey)
+                if trendExpanded {
+                    MiniChartView(data: store.past7DaysBreakdown, departments: store.departments, todayKey: store.todayKey)
+                }
             }
 
             Divider()
@@ -217,7 +241,184 @@ struct MenuBarView: View {
         }
         .padding()
         .frame(width: 300)
-        .onAppear { noteText = store.noteForKey(selectedKey) }
+        .onAppear {
+            selectedDate = Date()
+            noteText = store.noteForKey(selectedKey)
+        }
+    }
+
+    // MARK: - Jira Section
+
+    @ViewBuilder
+    private var jiraSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Button {
+                    withAnimation { jiraExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: jiraExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .frame(width: 10)
+                        Text("Jira 工单")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        if store.jiraConfig.enabled {
+                            Text("(\(store.jiraIssues.count))")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.borderless)
+
+                Spacer()
+
+                if store.jiraConfig.enabled {
+                    Button {
+                        jiraRefreshing = true
+                        Task {
+                            _ = await JiraService.shared.fetchMyIssues()
+                            jiraRefreshing = false
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(jiraRefreshing)
+                }
+            }
+
+            if jiraExpanded {
+                if !store.jiraConfig.enabled {
+                    Text("请先在设置中配置 Jira")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                } else if store.jiraIssues.isEmpty {
+                    Text("暂无工单")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(store.jiraIssues) { issue in
+                        jiraIssueRow(issue)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func jiraIssueRow(_ issue: JiraIssue) -> some View {
+        let todayCount = store.jiraTodayCount(issueKey: issue.key)
+        HStack(spacing: 4) {
+            Circle()
+                .fill(jiraStatusColor(issue.statusCategoryKey))
+                .frame(width: 6, height: 6)
+
+            Text(issue.key)
+                .font(.caption.monospaced())
+                .foregroundStyle(.blue)
+                .lineLimit(1)
+                .onTapGesture { openJiraIssue(issue.key) }
+                .onHover { inside in
+                    if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
+
+            Text(issue.summary)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text("\(todayCount)")
+                .font(.caption.monospacedDigit())
+                .frame(width: 20, alignment: .trailing)
+
+            Button { store.jiraDecrementForKey(selectedKey, issueKey: issue.key) } label: {
+                Image(systemName: "minus.circle")
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .disabled(todayCount == 0)
+
+            Button { store.jiraIncrementForKey(selectedKey, issueKey: issue.key) } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+
+            Button { loadJiraTransitions(issue.key) } label: {
+                Image(systemName: "arrow.right.circle")
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .help("状态流转")
+            .popover(isPresented: Binding(
+                get: { jiraTransitionsFor == issue.key },
+                set: { if !$0 { jiraTransitionsFor = nil } }
+            )) {
+                jiraTransitionPopover(issueKey: issue.key)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func jiraTransitionPopover(issueKey: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("流转到")
+                .font(.caption.bold())
+                .padding(.bottom, 2)
+            if jiraTransitions.isEmpty {
+                Text("无可用流转")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(jiraTransitions) { t in
+                    Button {
+                        jiraTransitioning = true
+                        Task {
+                            let ok = await JiraService.shared.doTransition(issueKey: issueKey, transitionID: t.id)
+                            if ok {
+                                _ = await JiraService.shared.fetchMyIssues()
+                            }
+                            jiraTransitioning = false
+                            jiraTransitionsFor = nil
+                        }
+                    } label: {
+                        Text(t.name)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(jiraTransitioning)
+                }
+            }
+        }
+        .padding(8)
+        .frame(minWidth: 120)
+    }
+
+    private func openJiraIssue(_ key: String) {
+        let base = store.jiraConfig.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/browse/\(key)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func loadJiraTransitions(_ issueKey: String) {
+        jiraTransitions = []
+        jiraTransitionsFor = issueKey
+        Task {
+            jiraTransitions = await JiraService.shared.fetchTransitions(issueKey: issueKey)
+        }
+    }
+
+    private func jiraStatusColor(_ categoryKey: String) -> Color {
+        switch categoryKey {
+        case "new": return .blue
+        case "indeterminate": return .yellow
+        case "done": return .green
+        default: return .gray
+        }
     }
 
     private func shiftDate(_ days: Int) {

@@ -519,7 +519,7 @@ private struct JiraTab: View {
                 }
             }
 
-            Section("启用") {
+            Section("显示") {
                 Toggle("自动轮询 Jira 工单", isOn: Bindable(store).jiraConfig.enabled)
                     .onChange(of: store.jiraConfig.enabled) { _, enabled in
                         if enabled {
@@ -528,6 +528,45 @@ private struct JiraTab: View {
                             JiraService.shared.stopPolling()
                         }
                     }
+                Toggle("在菜单栏显示工单列表", isOn: Bindable(store).jiraConfig.showInMenuBar)
+            }
+
+            Section("工单→项目映射") {
+                if store.jiraIssues.isEmpty {
+                    Text("请先启用并刷新工单")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.jiraIssues) { issue in
+                        HStack(spacing: 8) {
+                            Text(issue.key)
+                                .font(.caption.monospaced())
+                                .frame(width: 90, alignment: .leading)
+                            Text(issue.summary)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Picker("", selection: Binding(
+                                get: { store.jiraConfig.deptMapping[issue.key] ?? "" },
+                                set: { newValue in
+                                    if newValue.isEmpty {
+                                        store.jiraConfig.deptMapping.removeValue(forKey: issue.key)
+                                    } else {
+                                        store.jiraConfig.deptMapping[issue.key] = newValue
+                                    }
+                                }
+                            )) {
+                                Text("无").tag("")
+                                ForEach(store.departments, id: \.self) { dept in
+                                    Text(dept).tag(dept)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 100)
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)

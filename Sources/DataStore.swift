@@ -248,6 +248,9 @@ final class DataStore {
         var day = jiraIssueCounts[dateKey] ?? [:]
         day[issueKey, default: 0] += 1
         jiraIssueCounts[dateKey] = day
+        if let dept = jiraConfig.deptMapping[issueKey], !dept.isEmpty {
+            incrementForKey(dateKey, dept: dept)
+        }
     }
 
     func jiraDecrementForKey(_ dateKey: String, issueKey: String) {
@@ -256,6 +259,9 @@ final class DataStore {
         guard current > 0 else { return }
         day[issueKey] = current - 1
         jiraIssueCounts[dateKey] = day
+        if let dept = jiraConfig.deptMapping[issueKey], !dept.isEmpty {
+            decrementForKey(dateKey, dept: dept)
+        }
     }
 
     func jiraTodayCount(issueKey: String) -> Int {

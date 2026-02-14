@@ -30,7 +30,13 @@ final class HotkeyManager {
                 hotKeyRefs.append(ref)
             }
         }
-        DevLog.shared.info("Hotkey", "注册 \(count) 个快捷键")
+        // Quick note: modifier+0
+        let noteID = EventHotKeyID(signature: OSType(0x5453_5448), id: 100)
+        var noteRef: EventHotKeyRef?
+        if RegisterEventHotKey(0x1D, modifiers, noteID, GetApplicationEventTarget(), 0, &noteRef) == noErr, let ref = noteRef {
+            hotKeyRefs.append(ref)
+        }
+        DevLog.shared.info("Hotkey", "注册 \(count) 个快捷键 + 快速日报")
     }
 
     private func installCarbonHandler() {
@@ -47,7 +53,13 @@ final class HotkeyManager {
     }
 
     private func handleHotkey(index: Int) {
-        guard let store, index < store.departments.count else { return }
+        guard let store else { return }
+        if index == 100 {
+            QuickNotePanel.shared.toggle(store: store)
+            DevLog.shared.info("Hotkey", "快速日报面板")
+            return
+        }
+        guard index < store.departments.count else { return }
         let dept = store.departments[index]
         store.increment(dept)
         DevLog.shared.info("Hotkey", "\(dept) +1")
