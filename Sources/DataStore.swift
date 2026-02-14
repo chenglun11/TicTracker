@@ -141,6 +141,26 @@ final class DataStore {
             jiraTransitionLog = [:]
         }
 
+        // Jira
+        if let data = UserDefaults.standard.data(forKey: "jiraConfig"),
+           let decoded = try? JSONDecoder().decode(JiraConfig.self, from: data) {
+            jiraConfig = decoded
+        } else {
+            jiraConfig = JiraConfig()
+        }
+        if let data = UserDefaults.standard.data(forKey: "jiraIssues"),
+           let decoded = try? JSONDecoder().decode([JiraIssue].self, from: data) {
+            jiraIssues = decoded
+        } else {
+            jiraIssues = []
+        }
+        if let data = UserDefaults.standard.data(forKey: "jiraIssueCounts"),
+           let decoded = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
+            jiraIssueCounts = decoded
+        } else {
+            jiraIssueCounts = [:]
+        }
+
         // RSS
         if let data = UserDefaults.standard.data(forKey: "rssFeeds"),
            let decoded = try? JSONDecoder().decode([RSSFeed].self, from: data) {
