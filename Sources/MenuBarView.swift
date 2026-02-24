@@ -100,66 +100,70 @@ struct MenuBarView: View {
             }
 
             // Mini weekly trend chart
-            Divider()
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Button {
-                        withAnimation { trendExpanded.toggle() }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: trendExpanded ? "chevron.down" : "chevron.right")
-                                .font(.caption2)
-                                .frame(width: 10)
-                            Text("本周趋势")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+            if store.trendChartEnabled {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Button {
+                            withAnimation { trendExpanded.toggle() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: trendExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                    .frame(width: 10)
+                                Text("本周趋势")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                        Spacer()
+                        if store.currentStreak > 0 {
+                            Text("🔥 连续 \(store.currentStreak) 天")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
                         }
                     }
-                    .buttonStyle(.borderless)
-                    Spacer()
-                    if store.currentStreak > 0 {
-                        Text("🔥 连续 \(store.currentStreak) 天")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                    if trendExpanded {
+                        MiniChartView(data: store.past7DaysBreakdown, departments: store.departments, todayKey: store.todayKey)
                     }
-                }
-                if trendExpanded {
-                    MiniChartView(data: store.past7DaysBreakdown, departments: store.departments, todayKey: store.todayKey)
                 }
             }
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(store.noteTitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $noteText)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .scrollIndicators(.hidden)
-                    .frame(height: 80)
-                    .overlay(alignment: .topLeading) {
-                        if noteText.isEmpty {
-                            Text("记录今天做了什么…")
-                                .font(.body)
-                                .foregroundStyle(.tertiary)
-                                .padding(.leading, 5)
-                                .padding(.top, 1)
-                                .allowsHitTesting(false)
+            if store.dailyNoteEnabled {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(store.noteTitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $noteText)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                        .scrollIndicators(.hidden)
+                        .frame(height: 80)
+                        .overlay(alignment: .topLeading) {
+                            if noteText.isEmpty {
+                                Text("记录今天做了什么…")
+                                    .font(.body)
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.leading, 5)
+                                    .padding(.top, 1)
+                                    .allowsHitTesting(false)
+                            }
                         }
-                    }
-                    .padding(4)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.3))
-                    )
-                    .onChange(of: noteText) { _, newValue in
-                        store.setNoteForKey(selectedKey, text: newValue)
-                    }
-            }
+                        .padding(4)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.3))
+                        )
+                        .onChange(of: noteText) { _, newValue in
+                            store.setNoteForKey(selectedKey, text: newValue)
+                        }
+                }
 
-            Divider()
+                Divider()
+            }
 
             HStack {
                 Button {
@@ -174,17 +178,19 @@ struct MenuBarView: View {
 
                 Spacer()
 
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "rss-reader")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "dot.radiowaves.up.forward")
-                }
-                .buttonStyle(.borderless)
-                .help("RSS 订阅")
+                if store.rssEnabled {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "rss-reader")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "dot.radiowaves.up.forward")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("RSS 订阅")
 
-                Spacer()
+                    Spacer()
+                }
 
                 Button {
                     NSApp.setActivationPolicy(.regular)
@@ -198,17 +204,19 @@ struct MenuBarView: View {
 
                 Spacer()
 
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "recent-notes")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                }
-                .buttonStyle(.borderless)
-                .help("查看日报")
+                if store.dailyNoteEnabled {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "recent-notes")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("查看日报")
 
-                Spacer()
+                    Spacer()
+                }
 
                 Button {
                     NSApp.setActivationPolicy(.regular)

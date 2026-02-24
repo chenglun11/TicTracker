@@ -238,6 +238,23 @@ private struct GeneralTab: View {
                     }
             }
 
+            Section {
+                Toggle("日报记录", isOn: Bindable(store).dailyNoteEnabled)
+                Text("关闭后隐藏菜单栏中的日报编辑区和查看日报入口")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("本周趋势图", isOn: Bindable(store).trendChartEnabled)
+                Text("关闭后隐藏菜单栏中的 7 日趋势图")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("时间戳记录", isOn: Bindable(store).timestampEnabled)
+                Text("关闭后点击计数时不再记录具体时间")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("功能模块")
+            }
+
             Section("日报提醒") {
                 Toggle("每天提醒写日报", isOn: $reminderEnabled)
                     .onChange(of: reminderEnabled) { _, on in
@@ -297,27 +314,33 @@ private struct GeneralTab: View {
             }
 
             Section("快捷键") {
-                ForEach(store.departments, id: \.self) { dept in
-                    HStack {
-                        Text(dept)
-                        Spacer()
-                        HotkeyRecorderView(
-                            binding: Binding(
-                                get: { store.hotkeyBindings[dept] },
-                                set: {
-                                    if let b = $0 {
-                                        store.hotkeyBindings[dept] = b
-                                    } else {
-                                        store.hotkeyBindings.removeValue(forKey: dept)
+                Toggle("启用全局快捷键", isOn: Bindable(store).hotkeyEnabled)
+                Text("关闭后所有全局快捷键将被注销")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if store.hotkeyEnabled {
+                    ForEach(store.departments, id: \.self) { dept in
+                        HStack {
+                            Text(dept)
+                            Spacer()
+                            HotkeyRecorderView(
+                                binding: Binding(
+                                    get: { store.hotkeyBindings[dept] },
+                                    set: {
+                                        if let b = $0 {
+                                            store.hotkeyBindings[dept] = b
+                                        } else {
+                                            store.hotkeyBindings.removeValue(forKey: dept)
+                                        }
                                     }
-                                }
-                            ),
-                            allBindings: store.hotkeyBindings,
-                            currentDept: dept
-                        )
+                                ),
+                                allBindings: store.hotkeyBindings,
+                                currentDept: dept
+                            )
+                        }
                     }
+                    LabeledContent("快速日报", value: "首个修饰键+0")
                 }
-                LabeledContent("快速日报", value: "首个修饰键+0")
             }
         }
         .formStyle(.grouped)
@@ -345,105 +368,114 @@ private struct RSSTab: View {
 
     var body: some View {
         Form {
-            Section("添加订阅源") {
-                TextField("名称", text: $newFeedName)
-                    .textFieldStyle(UnderlineTextFieldStyle())
-                TextField("URL", text: $newFeedURL)
-                    .textFieldStyle(UnderlineTextFieldStyle())
-                HStack {
-                    Button("添加") { addFeed() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(newFeedName.trimmingCharacters(in: .whitespaces).isEmpty ||
-                                  newFeedURL.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
+            Section("RSS 订阅") {
+                Toggle("启用 RSS 订阅", isOn: Bindable(store).rssEnabled)
+                Text("关闭后停止轮询和推送通知，菜单栏中隐藏 RSS 入口")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            Section("订阅列表") {
-                if store.rssFeeds.isEmpty {
-                    Text("暂无订阅源")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(store.rssFeeds.enumerated()), id: \.element.id) { i, feed in
-                        HStack(spacing: 8) {
-                            Toggle("", isOn: Binding(
-                                get: { feed.enabled },
-                                set: { store.rssFeeds[i].enabled = $0 }
-                            ))
-                            .labelsHidden()
-                            .toggleStyle(.switch)
+            if store.rssEnabled {
+                Section("添加订阅源") {
+                    TextField("名称", text: $newFeedName)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                    TextField("URL", text: $newFeedURL)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                    HStack {
+                        Button("添加") { addFeed() }
+                            .buttonStyle(.borderedProminent)
                             .controlSize(.small)
+                            .disabled(newFeedName.trimmingCharacters(in: .whitespaces).isEmpty ||
+                                      newFeedURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
 
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(feed.name).font(.body)
-                                Text(feed.url)
+                Section("订阅列表") {
+                    if store.rssFeeds.isEmpty {
+                        Text("暂无订阅源")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(store.rssFeeds.enumerated()), id: \.element.id) { i, feed in
+                            HStack(spacing: 8) {
+                                Toggle("", isOn: Binding(
+                                    get: { feed.enabled },
+                                    set: { store.rssFeeds[i].enabled = $0 }
+                                ))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(feed.name).font(.body)
+                                    Text(feed.url)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer()
+
+                                Text("\(store.rssItems[feed.id.uuidString]?.count ?? 0) 条")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+
+                                Button {
+                                    testFeed(feed)
+                                } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(checking)
+                                .help("立即检查")
+
+                                Button {
+                                    deletingFeed = feed
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.caption)
+                                        .foregroundStyle(.red.opacity(0.7))
+                                }
+                                .buttonStyle(.borderless)
                             }
-
-                            Spacer()
-
-                            Text("\(store.rssItems[feed.id.uuidString]?.count ?? 0) 条")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Button {
-                                testFeed(feed)
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.borderless)
-                            .disabled(checking)
-                            .help("立即检查")
-
-                            Button {
-                                deletingFeed = feed
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.caption)
-                                    .foregroundStyle(.red.opacity(0.7))
-                            }
-                            .buttonStyle(.borderless)
                         }
                     }
                 }
-            }
 
-            Section("轮询设置") {
-                HStack {
-                    Text("检查间隔")
-                    Spacer()
-                    Picker("", selection: Binding(
-                        get: { store.rssPollingInterval },
-                        set: {
-                            store.rssPollingInterval = $0
-                            RSSFeedManager.shared.restartPolling()
+                Section("轮询设置") {
+                    HStack {
+                        Text("检查间隔")
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { store.rssPollingInterval },
+                            set: {
+                                store.rssPollingInterval = $0
+                                RSSFeedManager.shared.restartPolling()
+                            }
+                        )) {
+                            Text("5 分钟").tag(5)
+                            Text("10 分钟").tag(10)
+                            Text("15 分钟").tag(15)
+                            Text("30 分钟").tag(30)
+                            Text("60 分钟").tag(60)
                         }
-                    )) {
-                        Text("5 分钟").tag(5)
-                        Text("10 分钟").tag(10)
-                        Text("15 分钟").tag(15)
-                        Text("30 分钟").tag(30)
-                        Text("60 分钟").tag(60)
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 100)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 100)
+
+                    Button(checking ? "检查中…" : "立即检查全部") {
+                        checkAll()
+                    }
+                    .controlSize(.small)
+                    .disabled(checking || store.rssFeeds.isEmpty)
                 }
 
-                Button(checking ? "检查中…" : "立即检查全部") {
-                    checkAll()
+                if let result = checkResult {
+                    Text(result)
+                        .font(.caption)
+                        .foregroundStyle(result.contains("失败") || result.contains("无效") ? .red : .green)
                 }
-                .controlSize(.small)
-                .disabled(checking || store.rssFeeds.isEmpty)
-            }
-
-            if let result = checkResult {
-                Text(result)
-                    .font(.caption)
-                    .foregroundStyle(result.contains("失败") || result.contains("无效") ? .red : .green)
             }
         }
         .formStyle(.grouped)

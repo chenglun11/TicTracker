@@ -84,7 +84,9 @@ struct TicTrackerApp: App {
                         NotificationManager.shared.sendWelcome()
                         UpdateChecker.shared.checkInBackground()
                         RSSFeedManager.shared.setup(store: store)
-                        RSSFeedManager.shared.startPolling()
+                        if store.rssEnabled {
+                            RSSFeedManager.shared.startPolling()
+                        }
                         JiraService.shared.setup(store: store)
                         if store.jiraConfig.enabled {
                             JiraService.shared.startPolling()

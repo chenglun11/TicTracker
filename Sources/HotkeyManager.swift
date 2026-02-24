@@ -18,7 +18,7 @@ final class HotkeyManager {
 
     func rebindHotkeys() {
         unregisterAll()
-        guard let store else { return }
+        guard let store, store.hotkeyEnabled else { return }
 
         // Register per-project bindings
         for dept in store.departments {
@@ -61,6 +61,7 @@ final class HotkeyManager {
     private func handleHotkey(index: Int) {
         guard let store else { return }
         if index == 100 {
+            guard store.dailyNoteEnabled else { return }
             QuickNotePanel.shared.toggle(store: store)
             DevLog.shared.info("Hotkey", "快速日报面板")
             return
@@ -71,7 +72,7 @@ final class HotkeyManager {
         DevLog.shared.info("Hotkey", "\(dept) +1")
     }
 
-    private func unregisterAll() {
+    func unregisterAll() {
         for ref in hotKeyRefs {
             UnregisterEventHotKey(ref)
         }

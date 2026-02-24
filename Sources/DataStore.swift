@@ -58,6 +58,37 @@ final class DataStore {
         didSet { saveTapTimestamps() }
     }
 
+    // MARK: - Feature Toggles
+
+    var dailyNoteEnabled: Bool {
+        didSet { UserDefaults.standard.set(dailyNoteEnabled, forKey: "dailyNoteEnabled") }
+    }
+    var trendChartEnabled: Bool {
+        didSet { UserDefaults.standard.set(trendChartEnabled, forKey: "trendChartEnabled") }
+    }
+    var timestampEnabled: Bool {
+        didSet { UserDefaults.standard.set(timestampEnabled, forKey: "timestampEnabled") }
+    }
+    var hotkeyEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(hotkeyEnabled, forKey: "hotkeyEnabled")
+            if hotkeyEnabled {
+                HotkeyManager.shared.rebindHotkeys()
+            } else {
+                HotkeyManager.shared.unregisterAll()
+            }
+        }
+    }
+    var rssEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(rssEnabled, forKey: "rssEnabled")
+            if rssEnabled {
+                RSSFeedManager.shared.startPolling()
+            } else {
+                RSSFeedManager.shared.stopPolling()
+            }
+        }
+    }
 
     private let departmentsKey = "departments"
     private let recordsKey = "records"
@@ -141,26 +172,6 @@ final class DataStore {
             jiraTransitionLog = [:]
         }
 
-        // Jira
-        if let data = UserDefaults.standard.data(forKey: "jiraConfig"),
-           let decoded = try? JSONDecoder().decode(JiraConfig.self, from: data) {
-            jiraConfig = decoded
-        } else {
-            jiraConfig = JiraConfig()
-        }
-        if let data = UserDefaults.standard.data(forKey: "jiraIssues"),
-           let decoded = try? JSONDecoder().decode([JiraIssue].self, from: data) {
-            jiraIssues = decoded
-        } else {
-            jiraIssues = []
-        }
-        if let data = UserDefaults.standard.data(forKey: "jiraIssueCounts"),
-           let decoded = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
-            jiraIssueCounts = decoded
-        } else {
-            jiraIssueCounts = [:]
-        }
-
         // RSS
         if let data = UserDefaults.standard.data(forKey: "rssFeeds"),
            let decoded = try? JSONDecoder().decode([RSSFeed].self, from: data) {
@@ -183,6 +194,13 @@ final class DataStore {
         } else {
             tapTimestamps = [:]
         }
+
+        // Feature toggles (default: all enabled)
+        dailyNoteEnabled = UserDefaults.standard.object(forKey: "dailyNoteEnabled") as? Bool ?? true
+        trendChartEnabled = UserDefaults.standard.object(forKey: "trendChartEnabled") as? Bool ?? true
+        timestampEnabled = UserDefaults.standard.object(forKey: "timestampEnabled") as? Bool ?? true
+        hotkeyEnabled = UserDefaults.standard.object(forKey: "hotkeyEnabled") as? Bool ?? true
+        rssEnabled = UserDefaults.standard.object(forKey: "rssEnabled") as? Bool ?? true
 
         // Migrate legacy hotkeyModifier → per-project bindings
         if hotkeyBindings.isEmpty, UserDefaults.standard.string(forKey: "hotkeyModifier") != nil {
@@ -252,11 +270,13 @@ final class DataStore {
         records[key] = day
 
         // Record timestamp
-        var dayTaps = tapTimestamps[key] ?? [:]
-        var deptTaps = dayTaps[dept] ?? []
-        deptTaps.append(Self.timeFormatter.string(from: Date()))
-        dayTaps[dept] = deptTaps
-        tapTimestamps[key] = dayTaps
+        if timestampEnabled {
+            var dayTaps = tapTimestamps[key] ?? [:]
+            var deptTaps = dayTaps[dept] ?? []
+            deptTaps.append(Self.timeFormatter.string(from: Date()))
+            dayTaps[dept] = deptTaps
+            tapTimestamps[key] = dayTaps
+        }
     }
 
     func decrementForKey(_ key: String, dept: String) {
