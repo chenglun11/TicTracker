@@ -90,6 +90,15 @@ final class DataStore {
         }
     }
 
+    // MARK: - AI
+
+    var aiConfig: AIConfig {
+        didSet { saveAIConfig() }
+    }
+    var aiEnabled: Bool {
+        didSet { UserDefaults.standard.set(aiEnabled, forKey: "aiEnabled") }
+    }
+
     private let departmentsKey = "departments"
     private let recordsKey = "records"
     private let dailyNotesKey = "dailyNotes"
@@ -201,6 +210,19 @@ final class DataStore {
         timestampEnabled = UserDefaults.standard.object(forKey: "timestampEnabled") as? Bool ?? true
         hotkeyEnabled = UserDefaults.standard.object(forKey: "hotkeyEnabled") as? Bool ?? true
         rssEnabled = UserDefaults.standard.object(forKey: "rssEnabled") as? Bool ?? true
+
+        // AI
+        if let data = UserDefaults.standard.data(forKey: "aiConfig"),
+           let decoded = try? JSONDecoder().decode(AIConfig.self, from: data) {
+            aiConfig = decoded
+        } else {
+            aiConfig = AIConfig()
+        }
+        aiEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? false
+
+        // Restore base URL / model from Keychain (survives reinstall)
+        if let url = AIService.shared.loadBaseURL() { aiConfig.baseURL = url }
+        if let model = AIService.shared.loadModel() { aiConfig.model = model }
 
         // Migrate legacy hotkeyModifier → per-project bindings
         if hotkeyBindings.isEmpty, UserDefaults.standard.string(forKey: "hotkeyModifier") != nil {
@@ -562,6 +584,12 @@ final class DataStore {
     private func saveTapTimestamps() {
         if let data = try? JSONEncoder().encode(tapTimestamps) {
             UserDefaults.standard.set(data, forKey: "tapTimestamps")
+        }
+    }
+
+    private func saveAIConfig() {
+        if let data = try? JSONEncoder().encode(aiConfig) {
+            UserDefaults.standard.set(data, forKey: "aiConfig")
         }
     }
 }

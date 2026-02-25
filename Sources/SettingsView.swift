@@ -40,6 +40,8 @@ struct SettingsView: View {
                 .tabItem { Label("RSS", systemImage: "dot.radiowaves.up.forward") }
             JiraTab(store: store)
                 .tabItem { Label("Jira", systemImage: "server.rack") }
+            AITab(store: store)
+                .tabItem { Label("AI", systemImage: "sparkles") }
             DataTab(store: store)
                 .tabItem { Label("数据", systemImage: "externaldrive") }
             AboutTab()
@@ -763,6 +765,133 @@ private struct JiraTab: View {
             }
             testing = false
         }
+    }
+}
+
+// MARK: - AI Tab
+
+private struct AITab: View {
+    @Bindable var store: DataStore
+    @State private var apiKeyInput = ""
+    @State private var baseURLInput = ""
+    @State private var modelInput = ""
+    @State private var saved = false
+    @State private var showClearAlert = false
+
+    var body: some View {
+        Form {
+            Section("AI 周报") {
+                Toggle("启用 AI 周报生成", isOn: Bindable(store).aiEnabled)
+                Text("开启后可在「最近日报」中使用 AI 生成周报摘要")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if store.aiEnabled {
+                Section("服务商") {
+                    Picker("AI 服务", selection: Bindable(store).aiConfig.provider) {
+                        ForEach(AIProvider.allCases, id: \.self) { provider in
+                            Text(provider.rawValue).tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section("连接") {
+                    TextField("Base URL（留空使用默认）", text: $baseURLInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout.monospaced())
+                        .onChange(of: baseURLInput) { _, val in
+                            store.aiConfig.baseURL = val
+                            AIService.shared.saveBaseURL(val)
+                        }
+                    Text("默认: \(store.aiConfig.effectiveBaseURL)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("模型（留空使用默认）", text: $modelInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout.monospaced())
+                        .onChange(of: modelInput) { _, val in
+                            store.aiConfig.model = val
+                            AIService.shared.saveModel(val)
+                        }
+                    Text("默认: \(store.aiConfig.effectiveModel)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    SecureField("API Key", text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { saveKey() }
+
+                    HStack {
+                        Button(saved ? "已保存" : "保存 Key") { saveKey() }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(apiKeyInput.isEmpty)
+                    }
+                }
+
+                Section("Prompt") {
+                    TextEditor(text: Bindable(store).aiConfig.customPrompt)
+                        .font(.callout)
+                        .frame(height: 120)
+                        .overlay(alignment: .topLeading) {
+                            if store.aiConfig.customPrompt.isEmpty {
+                                Text("留空使用默认 Prompt")
+                                    .font(.callout)
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.leading, 5)
+                                    .padding(.top, 8)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    if store.aiConfig.customPrompt.isEmpty {
+                        Text("默认: 生成简洁周报摘要，按项目总结，提炼日报要点，不写展望")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("恢复默认") {
+                            store.aiConfig.customPrompt = ""
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+                Section {
+                    Button("清空所有 AI 配置", role: .destructive) {
+                        showClearAlert = true
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            apiKeyInput = AIService.shared.loadAPIKey() ?? ""
+            baseURLInput = AIService.shared.loadBaseURL() ?? store.aiConfig.baseURL
+            modelInput = AIService.shared.loadModel() ?? store.aiConfig.model
+        }
+        .alert("确认清空所有 AI 配置？", isPresented: $showClearAlert) {
+            Button("取消", role: .cancel) {}
+            Button("清空", role: .destructive) { clearAll() }
+        } message: {
+            Text("将清除 API Key、Base URL、模型和自定义 Prompt")
+        }
+    }
+
+    private func saveKey() {
+        AIService.shared.saveAPIKey(apiKeyInput)
+        saved = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { saved = false }
+    }
+
+    private func clearAll() {
+        AIService.shared.clearAll()
+        apiKeyInput = ""
+        baseURLInput = ""
+        modelInput = ""
+        store.aiConfig = AIConfig()
     }
 }
 

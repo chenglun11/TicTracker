@@ -26,6 +26,9 @@ struct RecentNotesView: View {
     @Bindable var store: DataStore
     @State private var searchText = ""
     @State private var copied = false
+    @State private var aiGenerating = false
+    @State private var aiResult: String?
+    @State private var aiError: String?
 
     private struct DayEntry: Identifiable {
         let id: String // date key
@@ -139,6 +142,25 @@ struct RecentNotesView: View {
                 Text("最近日报")
                     .font(.headline)
                 Spacer()
+                if store.aiEnabled {
+                    Button {
+                        generateAIReport()
+                    } label: {
+                        HStack(spacing: 4) {
+                            if aiGenerating {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("生成中…")
+                            } else {
+                                Image(systemName: "sparkles")
+                                Text("AI 周报")
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(aiGenerating)
+                }
                 Button {
                     WeeklyReport.copyToClipboard(from: store)
                     copied = true
@@ -148,7 +170,7 @@ struct RecentNotesView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        Text(copied ? "已复制" : "复制本周周报")
+                        Text(copied ? "已复制" : "复制周报")
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -203,6 +225,12 @@ struct RecentNotesView: View {
             }
         }
         .searchable(text: $searchText, prompt: "搜索记录")
+        .sheet(isPresented: Binding(
+            get: { aiResult != nil || aiError != nil },
+            set: { if !$0 { aiResult = nil; aiError = nil } }
+        )) {
+            aiResultSheet
+        }
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
@@ -267,6 +295,68 @@ struct RecentNotesView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - AI Report
+
+    @ViewBuilder
+    private var aiResultSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("AI 周报")
+                    .font(.headline)
+                Spacer()
+                if aiResult != nil {
+                    Button("复制") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(aiResult!, forType: .string)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                Button("关闭") {
+                    aiResult = nil
+                    aiError = nil
+                }
+                .controlSize(.small)
+            }
+
+            Divider()
+
+            if let error = aiError {
+                Text(error)
+                    .foregroundStyle(.red)
+                    .font(.callout)
+            } else if let result = aiResult {
+                ScrollView {
+                    Text(result)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding()
+        .frame(minWidth: 500, maxWidth: 500, minHeight: 300, maxHeight: 600)
+    }
+
+    private func generateAIReport() {
+        aiGenerating = true
+        aiResult = nil
+        aiError = nil
+        let rawReport = WeeklyReport.generate(from: store)
+        let config = store.aiConfig
+        Task {
+            do {
+                let result = try await AIService.shared.generateWeeklyReport(
+                    rawReport: rawReport, config: config
+                )
+                aiResult = result
+            } catch {
+                aiError = error.localizedDescription
+            }
+            aiGenerating = false
+        }
     }
 }
 
