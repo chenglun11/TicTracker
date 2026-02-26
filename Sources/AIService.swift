@@ -56,47 +56,50 @@ final class AIService {
     private let keychainBaseURLAccount = "base-url"
     private let keychainModelAccount = "model"
 
-    func saveAPIKey(_ key: String) {
-        if let data = key.data(using: .utf8) {
-            KeychainHelper.save(service: keychainService, account: keychainAccount, data: data)
-        }
+    struct StoredConfig {
+        var apiKey: String
+        var baseURL: String
+        var model: String
     }
 
-    func loadAPIKey() -> String? {
-        guard let data = KeychainHelper.load(service: keychainService, account: keychainAccount) else { return nil }
-        return String(data: data, encoding: .utf8)
+    func loadAll() -> StoredConfig {
+        StoredConfig(
+            apiKey: load(keychainAccount) ?? "",
+            baseURL: load(keychainBaseURLAccount) ?? "",
+            model: load(keychainModelAccount) ?? ""
+        )
     }
 
-    func deleteAPIKey() {
-        KeychainHelper.delete(service: keychainService, account: keychainAccount)
+    func saveAll(apiKey: String, baseURL: String, model: String) {
+        save(keychainAccount, value: apiKey)
+        save(keychainBaseURLAccount, value: baseURL)
+        save(keychainModelAccount, value: model)
     }
 
-    func saveBaseURL(_ url: String) {
-        if let data = url.data(using: .utf8) {
-            KeychainHelper.save(service: keychainService, account: keychainBaseURLAccount, data: data)
-        }
-    }
+    func saveAPIKey(_ key: String) { save(keychainAccount, value: key) }
+    func loadAPIKey() -> String? { load(keychainAccount) }
 
-    func loadBaseURL() -> String? {
-        guard let data = KeychainHelper.load(service: keychainService, account: keychainBaseURLAccount) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
+    func saveBaseURL(_ url: String) { save(keychainBaseURLAccount, value: url) }
+    func loadBaseURL() -> String? { load(keychainBaseURLAccount) }
 
-    func saveModel(_ model: String) {
-        if let data = model.data(using: .utf8) {
-            KeychainHelper.save(service: keychainService, account: keychainModelAccount, data: data)
-        }
-    }
-
-    func loadModel() -> String? {
-        guard let data = KeychainHelper.load(service: keychainService, account: keychainModelAccount) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
+    func saveModel(_ model: String) { save(keychainModelAccount, value: model) }
+    func loadModel() -> String? { load(keychainModelAccount) }
 
     func clearAll() {
-        KeychainHelper.delete(service: keychainService, account: keychainAccount)
-        KeychainHelper.delete(service: keychainService, account: keychainBaseURLAccount)
-        KeychainHelper.delete(service: keychainService, account: keychainModelAccount)
+        for account in [keychainAccount, keychainBaseURLAccount, keychainModelAccount] {
+            KeychainHelper.delete(service: keychainService, account: account)
+        }
+    }
+
+    private func save(_ account: String, value: String) {
+        if let data = value.data(using: .utf8) {
+            KeychainHelper.save(service: keychainService, account: account, data: data)
+        }
+    }
+
+    private func load(_ account: String) -> String? {
+        guard let data = KeychainHelper.load(service: keychainService, account: account) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     enum AIError: LocalizedError {

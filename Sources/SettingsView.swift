@@ -240,21 +240,31 @@ private struct GeneralTab: View {
                     }
             }
 
-            Section {
-                Toggle("日报记录", isOn: Bindable(store).dailyNoteEnabled)
-                Text("关闭后隐藏菜单栏中的日报编辑区和查看日报入口")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("本周趋势图", isOn: Bindable(store).trendChartEnabled)
-                Text("关闭后隐藏菜单栏中的 7 日趋势图")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("时间戳记录", isOn: Bindable(store).timestampEnabled)
-                Text("关闭后点击计数时不再记录具体时间")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("功能模块")
+            Section("功能模块") {
+                Toggle(isOn: Bindable(store).dailyNoteEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("日报记录")
+                        Text("关闭后隐藏菜单栏中的日报编辑区和查看日报入口")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: Bindable(store).trendChartEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("本周趋势图")
+                        Text("关闭后隐藏菜单栏中的 7 日趋势图")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: Bindable(store).timestampEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("时间戳记录")
+                        Text("关闭后点击计数时不再记录具体时间")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Section("日报提醒") {
@@ -300,26 +310,34 @@ private struct GeneralTab: View {
                     }
                 }
                 if reminderEnabled {
-                    Toggle("下班工作摘要", isOn: $summaryEnabled)
-                        .onChange(of: summaryEnabled) { _, on in
-                            UserDefaults.standard.set(on, forKey: "summaryEnabled")
-                            if on {
-                                applyReminder()
-                            } else {
-                                NotificationManager.shared.cancelSummary()
-                            }
+                    Toggle(isOn: $summaryEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("下班工作摘要")
+                            Text("在日报提醒 30 分钟后推送今日工作统计")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                    Text("在日报提醒 30 分钟后推送今日工作统计")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    }
+                    .onChange(of: summaryEnabled) { _, on in
+                        UserDefaults.standard.set(on, forKey: "summaryEnabled")
+                        if on {
+                            applyReminder()
+                        } else {
+                            NotificationManager.shared.cancelSummary()
+                        }
+                    }
                 }
             }
 
             Section("快捷键") {
-                Toggle("启用全局快捷键", isOn: Bindable(store).hotkeyEnabled)
-                Text("关闭后所有全局快捷键将被注销")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: Bindable(store).hotkeyEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用全局快捷键")
+                        Text("关闭后所有全局快捷键将被注销")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if store.hotkeyEnabled {
                     ForEach(store.departments, id: \.self) { dept in
                         HStack {
@@ -371,10 +389,14 @@ private struct RSSTab: View {
     var body: some View {
         Form {
             Section("RSS 订阅") {
-                Toggle("启用 RSS 订阅", isOn: Bindable(store).rssEnabled)
-                Text("关闭后停止轮询和推送通知，菜单栏中隐藏 RSS 入口")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: Bindable(store).rssEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用 RSS 订阅")
+                        Text("关闭后停止轮询和推送通知，菜单栏中隐藏 RSS 入口")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             if store.rssEnabled {
@@ -557,6 +579,25 @@ private struct JiraTab: View {
 
     var body: some View {
         Form {
+            Section("Jira 集成") {
+                Toggle(isOn: Bindable(store).jiraConfig.enabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用 Jira 工单轮询")
+                        Text("开启后自动轮询并推送工单变更通知")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: store.jiraConfig.enabled) { _, enabled in
+                    if enabled {
+                        JiraService.shared.startPolling()
+                    } else {
+                        JiraService.shared.stopPolling()
+                    }
+                }
+                Toggle("在菜单栏显示工单列表", isOn: Bindable(store).jiraConfig.showInMenuBar)
+            }
+
             Section("连接") {
                 TextField("服务器地址", text: Bindable(store).jiraConfig.serverURL, prompt: Text("https://jira.example.com"))
                     .textFieldStyle(UnderlineTextFieldStyle())
@@ -565,6 +606,11 @@ private struct JiraTab: View {
                     Text("Personal Access Token").tag(JiraAuthMode.pat)
                 }
                 .pickerStyle(.segmented)
+                if store.jiraConfig.authMode == .pat {
+                    Text("在 Jira 个人设置中生成 Personal Access Token")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if store.jiraConfig.authMode == .password {
                     TextField("用户名", text: Bindable(store).jiraConfig.username)
                         .textFieldStyle(UnderlineTextFieldStyle())
@@ -575,9 +621,6 @@ private struct JiraTab: View {
                     SecureField("Token", text: $tokenInput)
                         .textFieldStyle(UnderlineTextFieldStyle())
                         .onSubmit { saveToken() }
-                    Text("在 Jira 个人设置中生成 Personal Access Token")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 HStack {
                     Button("保存") { saveToken() }
@@ -663,18 +706,6 @@ private struct JiraTab: View {
                     .pickerStyle(.menu)
                     .frame(width: 80)
                 }
-            }
-
-            Section("显示") {
-                Toggle("自动轮询 Jira 工单", isOn: Bindable(store).jiraConfig.enabled)
-                    .onChange(of: store.jiraConfig.enabled) { _, enabled in
-                        if enabled {
-                            JiraService.shared.startPolling()
-                        } else {
-                            JiraService.shared.stopPolling()
-                        }
-                    }
-                Toggle("在菜单栏显示工单列表", isOn: Bindable(store).jiraConfig.showInMenuBar)
             }
 
             Section("自动映射规则") {
@@ -781,10 +812,14 @@ private struct AITab: View {
     var body: some View {
         Form {
             Section("AI 周报") {
-                Toggle("启用 AI 周报生成", isOn: Bindable(store).aiEnabled)
-                Text("开启后可在「最近日报」中使用 AI 生成周报摘要")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: Bindable(store).aiEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用 AI 周报生成")
+                        Text("开启后可在「最近日报」中使用 AI 生成周报摘要")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             if store.aiEnabled {
@@ -798,34 +833,25 @@ private struct AITab: View {
                 }
 
                 Section("连接") {
+                    SecureField("API Key", text: $apiKeyInput)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+
                     TextField("Base URL（留空使用默认）", text: $baseURLInput)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(UnderlineTextFieldStyle())
                         .font(.callout.monospaced())
-                        .onChange(of: baseURLInput) { _, val in
-                            store.aiConfig.baseURL = val
-                            AIService.shared.saveBaseURL(val)
-                        }
                     Text("默认: \(store.aiConfig.effectiveBaseURL)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     TextField("模型（留空使用默认）", text: $modelInput)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(UnderlineTextFieldStyle())
                         .font(.callout.monospaced())
-                        .onChange(of: modelInput) { _, val in
-                            store.aiConfig.model = val
-                            AIService.shared.saveModel(val)
-                        }
                     Text("默认: \(store.aiConfig.effectiveModel)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    SecureField("API Key", text: $apiKeyInput)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { saveKey() }
-
                     HStack {
-                        Button(saved ? "已保存" : "保存 Key") { saveKey() }
+                        Button(saved ? "已保存 ✓" : "保存配置") { saveAll() }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                             .disabled(apiKeyInput.isEmpty)
@@ -868,9 +894,10 @@ private struct AITab: View {
         }
         .formStyle(.grouped)
         .onAppear {
-            apiKeyInput = AIService.shared.loadAPIKey() ?? ""
-            baseURLInput = AIService.shared.loadBaseURL() ?? store.aiConfig.baseURL
-            modelInput = AIService.shared.loadModel() ?? store.aiConfig.model
+            let stored = AIService.shared.loadAll()
+            apiKeyInput = stored.apiKey
+            baseURLInput = stored.baseURL.isEmpty ? store.aiConfig.baseURL : stored.baseURL
+            modelInput = stored.model.isEmpty ? store.aiConfig.model : stored.model
         }
         .alert("确认清空所有 AI 配置？", isPresented: $showClearAlert) {
             Button("取消", role: .cancel) {}
@@ -880,8 +907,12 @@ private struct AITab: View {
         }
     }
 
-    private func saveKey() {
+    private func saveAll() {
         AIService.shared.saveAPIKey(apiKeyInput)
+        store.aiConfig.baseURL = baseURLInput
+        AIService.shared.saveBaseURL(baseURLInput)
+        store.aiConfig.model = modelInput
+        AIService.shared.saveModel(modelInput)
         saved = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { saved = false }
     }
@@ -1020,6 +1051,12 @@ private struct AboutTab: View {
                 UpdateChecker.shared.checkNow()
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+
+            Button("GitHub") {
+                NSWorkspace.shared.open(URL(string: "https://github.com/chenglun11/TicTracker")!)
+            }
+            .buttonStyle(.bordered)
             .controlSize(.small)
 
             Spacer()

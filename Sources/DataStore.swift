@@ -221,8 +221,9 @@ final class DataStore {
         aiEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? false
 
         // Restore base URL / model from Keychain (survives reinstall)
-        if let url = AIService.shared.loadBaseURL() { aiConfig.baseURL = url }
-        if let model = AIService.shared.loadModel() { aiConfig.model = model }
+        let stored = AIService.shared.loadAll()
+        if !stored.baseURL.isEmpty { aiConfig.baseURL = stored.baseURL }
+        if !stored.model.isEmpty { aiConfig.model = stored.model }
 
         // Migrate legacy hotkeyModifier → per-project bindings
         if hotkeyBindings.isEmpty, UserDefaults.standard.string(forKey: "hotkeyModifier") != nil {
