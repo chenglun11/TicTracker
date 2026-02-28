@@ -4,12 +4,12 @@
 
 **轻量级 macOS 菜单栏技术支持计数器**
 
-快捷键一键记录 · 日报提醒 · 周报汇总 · Jira 集成 · RSS 订阅
+快捷键一键记录 · 日报提醒 · AI 周报 · Jira 集成 · RSS 订阅
 
 [![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange?logo=swift&logoColor=white)](https://swift.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.10.0-brightgreen)](https://github.com/chenglun11/TicTracker/releases)
+[![Version](https://img.shields.io/badge/version-1.15.0-brightgreen)](https://github.com/chenglun11/TicTracker/releases)
 
 <p>
   <img src="image/menubar.png" width="320" alt="菜单栏主界面" />
@@ -40,6 +40,7 @@
 - 日期范围统计视图（Swift Charts）
 - 连续打卡天数 🔥
 - 一键复制周报汇总
+- AI 周报生成 — 支持 Claude / OpenAI，自定义 Prompt，Markdown 富文本渲染
 
 ### 🔔 智能通知
 | 通知类型 | 操作按钮 | 说明 |
@@ -56,8 +57,12 @@
 - 流转自动计数（每天每工单仅一次）
 
 ### 📡 RSS 订阅
-- 多源订阅，可配置轮询间隔
+- 多源订阅，每个订阅源可独立配置轮询间隔
 - 新条目桌面通知，支持直接打开链接
+
+### 🎛️ 功能模块开关
+- 日报记录、趋势图、时间戳、快捷键、RSS 可独立启停
+- 所有设置自动保存，凭证失焦即存入 Keychain
 
 ### 💾 数据管理
 - 数据导出 / 导入（JSON、CSV）

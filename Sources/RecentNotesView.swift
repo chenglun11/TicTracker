@@ -1,24 +1,48 @@
 import SwiftUI
 
-private struct NoteContentView: View {
+private struct MarkdownContentView: View {
     let text: String
-    let inlineMarkdown: (String) -> AttributedString
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                if line.hasPrefix("### ") {
+                    Text(inline(String(line.dropFirst(4))))
+                        .font(.subheadline.bold())
+                        .padding(.top, 4)
+                } else if line.hasPrefix("## ") {
+                    Text(inline(String(line.dropFirst(3))))
+                        .font(.headline)
+                        .padding(.top, 6)
+                } else if line.hasPrefix("# ") {
+                    Text(inline(String(line.dropFirst(2))))
+                        .font(.title3.bold())
+                        .padding(.top, 8)
+                } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
                     HStack(alignment: .top, spacing: 4) {
                         Text("•")
-                        Text(inlineMarkdown(String(line.dropFirst(2))))
+                        Text(inline(String(line.dropFirst(2))))
                     }
+                } else if let match = line.wholeMatch(of: /^(\d+)\.\s+(.+)$/) {
+                    HStack(alignment: .top, spacing: 4) {
+                        Text("\(match.1).")
+                            .monospacedDigit()
+                            .frame(width: 20, alignment: .trailing)
+                        Text(inline(String(match.2)))
+                    }
+                } else if line.hasPrefix("---") || line.hasPrefix("***") {
+                    Divider().padding(.vertical, 2)
                 } else if line.isEmpty {
                     Spacer().frame(height: 4)
                 } else {
-                    Text(inlineMarkdown(line))
+                    Text(inline(line))
                 }
             }
         }
+    }
+
+    private func inline(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
     }
 }
 
@@ -129,10 +153,6 @@ struct RecentNotesView: View {
         let weekday = calendar.component(.weekday, from: date)
         let daysFromMonday = (weekday + 5) % 7
         return calendar.startOfDay(for: calendar.date(byAdding: .day, value: -daysFromMonday, to: date)!)
-    }
-
-    private func inlineMarkdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
     }
 
     var body: some View {
@@ -291,7 +311,7 @@ struct RecentNotesView: View {
             }
 
             if !item.note.isEmpty {
-                NoteContentView(text: item.note, inlineMarkdown: inlineMarkdown)
+                MarkdownContentView(text: item.note)
             }
         }
         .padding(.vertical, 4)
@@ -329,7 +349,7 @@ struct RecentNotesView: View {
                     .font(.callout)
             } else if let result = aiResult {
                 ScrollView {
-                    Text(result)
+                    MarkdownContentView(text: result)
                         .font(.callout)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)

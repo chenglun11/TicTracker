@@ -30,6 +30,27 @@ enum KeychainHelper {
         return result as? Data
     }
 
+    static func loadAll(service: String) -> [String: Data] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let items = result as? [[String: Any]] else { return [:] }
+        var dict: [String: Data] = [:]
+        for item in items {
+            if let account = item[kSecAttrAccount as String] as? String,
+               let data = item[kSecValueData as String] as? Data {
+                dict[account] = data
+            }
+        }
+        return dict
+    }
+
     static func delete(service: String = service, account: String = account) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

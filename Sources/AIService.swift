@@ -63,10 +63,11 @@ final class AIService {
     }
 
     func loadAll() -> StoredConfig {
-        StoredConfig(
-            apiKey: load(keychainAccount) ?? "",
-            baseURL: load(keychainBaseURLAccount) ?? "",
-            model: load(keychainModelAccount) ?? ""
+        let all = KeychainHelper.loadAll(service: keychainService)
+        return StoredConfig(
+            apiKey: all[keychainAccount].flatMap { String(data: $0, encoding: .utf8) } ?? "",
+            baseURL: all[keychainBaseURLAccount].flatMap { String(data: $0, encoding: .utf8) } ?? "",
+            model: all[keychainModelAccount].flatMap { String(data: $0, encoding: .utf8) } ?? ""
         )
     }
 

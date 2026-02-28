@@ -18,6 +18,38 @@ private struct UnderlineTextFieldStyle: TextFieldStyle {
     }
 }
 
+// MARK: - Auto-Save SecureField
+
+@MainActor
+private func autoSaveSecureField(
+    _ title: String,
+    text: Binding<String>,
+    saved: Binding<Bool>,
+    focused: FocusState<Bool>.Binding,
+    onSave: @escaping () -> Void
+) -> some View {
+    SecureField(title, text: text)
+        .textFieldStyle(UnderlineTextFieldStyle())
+        .focused(focused)
+        .onChange(of: focused.wrappedValue) { _, isFocused in
+            if !isFocused && !text.wrappedValue.isEmpty {
+                onSave()
+                saved.wrappedValue = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(0.8))
+                    saved.wrappedValue = false
+                }
+            }
+        }
+        .overlay(alignment: .trailing) {
+            if saved.wrappedValue {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .padding(.trailing, 8)
+            }
+        }
+}
+
 struct SettingsView: View {
     @Bindable var store: DataStore
 
@@ -213,7 +245,6 @@ private struct GeneralTab: View {
         let m = UserDefaults.standard.integer(forKey: "reminderMinute")
         return m == 0 && !UserDefaults.standard.bool(forKey: "reminderEnabled") ? 30 : m
     }()
-    @State private var reminderSaved = false
     @State private var summaryEnabled: Bool = UserDefaults.standard.object(forKey: "summaryEnabled") as? Bool ?? true
 
     var body: some View {
@@ -289,6 +320,7 @@ private struct GeneralTab: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(width: 70)
+                        .onChange(of: reminderHour) { _, _ in applyReminder() }
                         Text(":")
                         Picker("分", selection: $reminderMinute) {
                             ForEach(Array(stride(from: 0, to: 60, by: 5)), id: \.self) { m in
@@ -298,15 +330,7 @@ private struct GeneralTab: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(width: 70)
-                        Button(reminderSaved ? "已保存 ✓" : "保存") {
-                            applyReminder()
-                            reminderSaved = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                reminderSaved = false
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+                        .onChange(of: reminderMinute) { _, _ in applyReminder() }
                     }
                 }
                 if reminderEnabled {
@@ -339,8 +363,11 @@ private struct GeneralTab: View {
                     }
                 }
                 if store.hotkeyEnabled {
-                    ForEach(store.departments, id: \.self) { dept in
-                        HStack {
+                    ForEach(Array(store.departments.enumerated()), id: \.element) { i, dept in
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(departmentColors[i % departmentColors.count].gradient)
+                                .frame(width: 8, height: 8)
                             Text(dept)
                             Spacer()
                             HotkeyRecorderView(
@@ -359,7 +386,19 @@ private struct GeneralTab: View {
                             )
                         }
                     }
-                    LabeledContent("快速日报", value: "首个修饰键+0")
+                    HStack {
+                        Circle()
+                            .fill(.secondary.opacity(0.3))
+                            .frame(width: 8, height: 8)
+                        Text("快速日报")
+                        Spacer()
+                        Text("首个修饰键+0")
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -385,6 +424,7 @@ private struct RSSTab: View {
     @State private var checking = false
     @State private var checkResult: String?
     @State private var deletingFeed: RSSFeed?
+    @State private var expandedFeeds: Set<UUID> = []
 
     var body: some View {
         Form {
@@ -420,76 +460,112 @@ private struct RSSTab: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(Array(store.rssFeeds.enumerated()), id: \.element.id) { i, feed in
-                            HStack(spacing: 8) {
-                                Toggle("", isOn: Binding(
-                                    get: { feed.enabled },
-                                    set: { store.rssFeeds[i].enabled = $0 }
-                                ))
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-                                .controlSize(.small)
+                            VStack(alignment: .leading, spacing: 0) {
+                                // Main row
+                                HStack(spacing: 8) {
+                                    Toggle("", isOn: Binding(
+                                        get: { feed.enabled },
+                                        set: { store.rssFeeds[i].enabled = $0 }
+                                    ))
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                                    .controlSize(.small)
 
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(feed.name).font(.body)
-                                    Text(feed.url)
+                                    Text(feed.name)
+                                        .font(.body)
+
+                                    Spacer()
+
+                                    Text("\(store.rssItems[feed.id.uuidString]?.count ?? 0) 条")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
+                                        .monospacedDigit()
 
-                                Spacer()
-
-                                Picker("", selection: Binding(
-                                    get: { feed.pollingInterval },
-                                    set: {
-                                        store.rssFeeds[i].pollingInterval = $0
-                                        RSSFeedManager.shared.restartPolling(for: feed.id)
+                                    Button {
+                                        testFeed(feed)
+                                    } label: {
+                                        Image(systemName: "arrow.clockwise")
+                                            .font(.caption)
                                     }
-                                )) {
-                                    Text("5m").tag(5)
-                                    Text("10m").tag(10)
-                                    Text("15m").tag(15)
-                                    Text("30m").tag(30)
-                                    Text("60m").tag(60)
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                                .frame(width: 60)
-                                .help("轮询间隔")
+                                    .buttonStyle(.borderless)
+                                    .disabled(checking)
+                                    .help("立即检查")
 
-                                Text("\(store.rssItems[feed.id.uuidString]?.count ?? 0) 条")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    Button {
+                                        deletingFeed = feed
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .font(.caption)
+                                            .foregroundStyle(.red.opacity(0.7))
+                                    }
+                                    .buttonStyle(.borderless)
 
-                                Button {
-                                    testFeed(feed)
-                                } label: {
-                                    Image(systemName: "arrow.clockwise")
-                                        .font(.caption)
+                                    Button {
+                                        withAnimation {
+                                            if expandedFeeds.contains(feed.id) {
+                                                expandedFeeds.remove(feed.id)
+                                            } else {
+                                                expandedFeeds.insert(feed.id)
+                                            }
+                                        }
+                                    } label: {
+                                        Image(systemName: expandedFeeds.contains(feed.id) ? "chevron.up" : "chevron.down")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help(expandedFeeds.contains(feed.id) ? "收起详情" : "展开详情")
                                 }
-                                .buttonStyle(.borderless)
-                                .disabled(checking)
-                                .help("立即检查")
 
-                                Button {
-                                    deletingFeed = feed
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .font(.caption)
-                                        .foregroundStyle(.red.opacity(0.7))
+                                // Expanded details
+                                if expandedFeeds.contains(feed.id) {
+                                    HStack(spacing: 8) {
+                                        Text(feed.url)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text("轮询间隔")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Picker("", selection: Binding(
+                                            get: { feed.pollingInterval },
+                                            set: {
+                                                store.rssFeeds[i].pollingInterval = $0
+                                                RSSFeedManager.shared.restartPolling(for: feed.id)
+                                            }
+                                        )) {
+                                            Text("5m").tag(5)
+                                            Text("10m").tag(10)
+                                            Text("15m").tag(15)
+                                            Text("30m").tag(30)
+                                            Text("60m").tag(60)
+                                        }
+                                        .labelsHidden()
+                                        .pickerStyle(.menu)
+                                        .frame(width: 60)
+                                    }
+                                    .padding(.top, 6)
+                                    .padding(.leading, 32)
                                 }
-                                .buttonStyle(.borderless)
                             }
+                            .padding(.vertical, 4)
                         }
                     }
                 }
 
                 Section {
-                    Button(checking ? "检查中…" : "立即检查全部") {
-                        checkAll()
+                    HStack(spacing: 8) {
+                        Button(checking ? "检查中…" : "立即检查全部") {
+                            checkAll()
+                        }
+                        .controlSize(.small)
+                        .disabled(checking || store.rssFeeds.isEmpty)
+                        if checking {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
                     }
-                    .controlSize(.small)
-                    .disabled(checking || store.rssFeeds.isEmpty)
                 }
 
                 if let result = checkResult {
@@ -563,9 +639,11 @@ private struct RSSTab: View {
 private struct JiraTab: View {
     @Bindable var store: DataStore
     @State private var tokenInput = ""
+    @State private var tokenSaved = false
     @State private var testing = false
     @State private var testResult: String?
     @State private var testSuccess = false
+    @FocusState private var isTokenFocused: Bool
 
     private let jqlPresets: [(label: String, jql: String)] = [
         ("待处理", "assignee=currentUser() AND resolution=Unresolved ORDER BY updated DESC"),
@@ -595,7 +673,7 @@ private struct JiraTab: View {
                 Toggle("在菜单栏显示工单列表", isOn: Bindable(store).jiraConfig.showInMenuBar)
             }
 
-            Section("连接") {
+            Section("连接 🔒") {
                 TextField("服务器地址", text: Bindable(store).jiraConfig.serverURL, prompt: Text("https://jira.example.com"))
                     .textFieldStyle(UnderlineTextFieldStyle())
                 Picker("认证方式", selection: Bindable(store).jiraConfig.authMode) {
@@ -611,20 +689,15 @@ private struct JiraTab: View {
                 if store.jiraConfig.authMode == .password {
                     TextField("用户名", text: Bindable(store).jiraConfig.username)
                         .textFieldStyle(UnderlineTextFieldStyle())
-                    SecureField("密码", text: $tokenInput)
-                        .textFieldStyle(UnderlineTextFieldStyle())
-                        .onSubmit { saveToken() }
+                    autoSaveSecureField("密码", text: $tokenInput, saved: $tokenSaved, focused: $isTokenFocused, onSave: saveToken)
                 } else {
-                    SecureField("Token", text: $tokenInput)
-                        .textFieldStyle(UnderlineTextFieldStyle())
-                        .onSubmit { saveToken() }
+                    autoSaveSecureField("Token", text: $tokenInput, saved: $tokenSaved, focused: $isTokenFocused, onSave: saveToken)
                 }
                 HStack {
-                    Button("保存") { saveToken() }
-                        .controlSize(.small)
-                        .disabled(tokenInput.isEmpty)
                     Button(testing ? "测试中…" : "测试连接") {
-                        saveToken()
+                        if !tokenInput.isEmpty {
+                            saveToken()
+                        }
                         testConnection()
                     }
                     .buttonStyle(.borderedProminent)
@@ -710,45 +783,48 @@ private struct JiraTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(Array(store.jiraConfig.mappingRules.enumerated()), id: \.element.id) { i, rule in
-                    HStack(spacing: 6) {
-                        Picker("", selection: Bindable(store).jiraConfig.mappingRules[i].field) {
-                            ForEach(JiraMappingField.allCases, id: \.self) { f in
-                                Text(f.label).tag(f)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Picker("", selection: Bindable(store).jiraConfig.mappingRules[i].field) {
+                                ForEach(JiraMappingField.allCases, id: \.self) { f in
+                                    Text(f.label).tag(f)
+                                }
                             }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 80)
+                            Text("=")
+                                .foregroundStyle(.secondary)
+                            TextField("值", text: Bindable(store).jiraConfig.mappingRules[i].value)
+                                .textFieldStyle(UnderlineTextFieldStyle())
+                            Spacer()
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 80)
-
-                        Text("=")
-                            .foregroundStyle(.secondary)
-
-                        TextField("值", text: Bindable(store).jiraConfig.mappingRules[i].value)
-                            .textFieldStyle(UnderlineTextFieldStyle())
-                            .frame(width: 100)
-
-                        Text("→")
-                            .foregroundStyle(.secondary)
-
-                        Picker("", selection: Bindable(store).jiraConfig.mappingRules[i].department) {
-                            Text("无").tag("")
-                            ForEach(store.departments, id: \.self) { dept in
-                                Text(dept).tag(dept)
+                        HStack(spacing: 8) {
+                            Text("→")
+                                .foregroundStyle(.secondary)
+                            Picker("", selection: Bindable(store).jiraConfig.mappingRules[i].department) {
+                                Text("无").tag("")
+                                ForEach(store.departments, id: \.self) { dept in
+                                    Text(dept).tag(dept)
+                                }
                             }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 120)
+                            Spacer()
+                            Button {
+                                store.jiraConfig.mappingRules.remove(at: i)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                                    .foregroundStyle(.red.opacity(0.7))
+                            }
+                            .buttonStyle(.borderless)
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 100)
-
-                        Button {
-                            store.jiraConfig.mappingRules.remove(at: i)
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(.caption)
-                                .foregroundStyle(.red.opacity(0.7))
-                        }
-                        .buttonStyle(.borderless)
                     }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
                 }
                 Button("添加规则") {
                     store.jiraConfig.mappingRules.append(
@@ -803,8 +879,11 @@ private struct AITab: View {
     @State private var apiKeyInput = ""
     @State private var baseURLInput = ""
     @State private var modelInput = ""
-    @State private var saved = false
+    @State private var apiKeySaved = false
     @State private var showClearAlert = false
+    @FocusState private var isAPIKeyFocused: Bool
+    @FocusState private var isBaseURLFocused: Bool
+    @FocusState private var isModelFocused: Bool
 
     var body: some View {
         Form {
@@ -829,13 +908,21 @@ private struct AITab: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section("连接") {
-                    SecureField("API Key", text: $apiKeyInput)
-                        .textFieldStyle(UnderlineTextFieldStyle())
+                Section("连接 🔒") {
+                    autoSaveSecureField("API Key", text: $apiKeyInput, saved: $apiKeySaved, focused: $isAPIKeyFocused) {
+                        AIService.shared.saveAPIKey(apiKeyInput)
+                    }
 
                     TextField("Base URL（留空使用默认）", text: $baseURLInput)
                         .textFieldStyle(UnderlineTextFieldStyle())
                         .font(.callout.monospaced())
+                        .focused($isBaseURLFocused)
+                        .onChange(of: isBaseURLFocused) { _, focused in
+                            if !focused {
+                                store.aiConfig.baseURL = baseURLInput
+                                AIService.shared.saveBaseURL(baseURLInput)
+                            }
+                        }
                     Text("默认: \(store.aiConfig.effectiveBaseURL)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -843,16 +930,16 @@ private struct AITab: View {
                     TextField("模型（留空使用默认）", text: $modelInput)
                         .textFieldStyle(UnderlineTextFieldStyle())
                         .font(.callout.monospaced())
+                        .focused($isModelFocused)
+                        .onChange(of: isModelFocused) { _, focused in
+                            if !focused {
+                                store.aiConfig.model = modelInput
+                                AIService.shared.saveModel(modelInput)
+                            }
+                        }
                     Text("默认: \(store.aiConfig.effectiveModel)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-
-                    HStack {
-                        Button(saved ? "已保存 ✓" : "保存配置") { saveAll() }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .disabled(apiKeyInput.isEmpty)
-                    }
                 }
 
                 Section("Prompt") {
@@ -902,16 +989,6 @@ private struct AITab: View {
         } message: {
             Text("将清除 API Key、Base URL、模型和自定义 Prompt")
         }
-    }
-
-    private func saveAll() {
-        AIService.shared.saveAPIKey(apiKeyInput)
-        store.aiConfig.baseURL = baseURLInput
-        AIService.shared.saveBaseURL(baseURLInput)
-        store.aiConfig.model = modelInput
-        AIService.shared.saveModel(modelInput)
-        saved = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { saved = false }
     }
 
     private func clearAll() {
