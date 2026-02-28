@@ -5,7 +5,7 @@ import CryptoKit
 final class RSSFeedManager {
     static let shared = RSSFeedManager()
 
-    private var pollingTask: Task<Void, Never>?
+    private var pollingTasks: [UUID: Task<Void, Never>] = [:]
     private weak var store: DataStore?
 
     private let log = DevLog.shared
@@ -19,26 +19,42 @@ final class RSSFeedManager {
     // MARK: - Polling
 
     func startPolling() {
-        pollingTask?.cancel()
-        log.info(mod, "轮询启动，间隔 \(store?.rssPollingInterval ?? 10) 分钟")
-        pollingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.checkAllFeeds()
-                guard let store = self?.store else { break }
-                let minutes = max(store.rssPollingInterval, 1)
-                self?.log.info(self?.mod ?? "RSS", "下次检查: \(minutes) 分钟后")
-                try? await Task.sleep(for: .seconds(minutes * 60))
-            }
+        stopPolling()
+        guard let store else { return }
+        for feed in store.rssFeeds where feed.enabled {
+            startPolling(for: feed)
         }
     }
 
     func stopPolling() {
-        pollingTask?.cancel()
-        pollingTask = nil
+        pollingTasks.values.forEach { $0.cancel() }
+        pollingTasks.removeAll()
     }
 
     func restartPolling() {
         startPolling()
+    }
+
+    func restartPolling(for feedID: UUID) {
+        pollingTasks[feedID]?.cancel()
+        pollingTasks.removeValue(forKey: feedID)
+        guard let feed = store?.rssFeeds.first(where: { $0.id == feedID }), feed.enabled else { return }
+        startPolling(for: feed)
+    }
+
+    private func startPolling(for feed: RSSFeed) {
+        let minutes = max(feed.pollingInterval, 1)
+        log.info(mod, "轮询启动 [\(feed.name)]，间隔 \(minutes) 分钟")
+        pollingTasks[feed.id] = Task { [weak self] in
+            while !Task.isCancelled {
+                if let feed = self?.store?.rssFeeds.first(where: { $0.id == feed.id }), feed.enabled {
+                    await self?.checkFeed(feed)
+                }
+                let interval = self?.store?.rssFeeds.first(where: { $0.id == feed.id })?.pollingInterval ?? minutes
+                self?.log.info(self?.mod ?? "RSS", "[\(feed.name)] 下次检查: \(interval) 分钟后")
+                try? await Task.sleep(for: .seconds(max(interval, 1) * 60))
+            }
+        }
     }
 
     // MARK: - Feed Checking

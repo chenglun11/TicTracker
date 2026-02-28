@@ -439,6 +439,24 @@ private struct RSSTab: View {
 
                                 Spacer()
 
+                                Picker("", selection: Binding(
+                                    get: { feed.pollingInterval },
+                                    set: {
+                                        store.rssFeeds[i].pollingInterval = $0
+                                        RSSFeedManager.shared.restartPolling(for: feed.id)
+                                    }
+                                )) {
+                                    Text("5m").tag(5)
+                                    Text("10m").tag(10)
+                                    Text("15m").tag(15)
+                                    Text("30m").tag(30)
+                                    Text("60m").tag(60)
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(width: 60)
+                                .help("轮询间隔")
+
                                 Text("\(store.rssItems[feed.id.uuidString]?.count ?? 0) 条")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -466,28 +484,7 @@ private struct RSSTab: View {
                     }
                 }
 
-                Section("轮询设置") {
-                    HStack {
-                        Text("检查间隔")
-                        Spacer()
-                        Picker("", selection: Binding(
-                            get: { store.rssPollingInterval },
-                            set: {
-                                store.rssPollingInterval = $0
-                                RSSFeedManager.shared.restartPolling()
-                            }
-                        )) {
-                            Text("5 分钟").tag(5)
-                            Text("10 分钟").tag(10)
-                            Text("15 分钟").tag(15)
-                            Text("30 分钟").tag(30)
-                            Text("60 分钟").tag(60)
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 100)
-                    }
-
+                Section {
                     Button(checking ? "检查中…" : "立即检查全部") {
                         checkAll()
                     }
