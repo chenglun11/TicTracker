@@ -407,6 +407,30 @@ final class DataStore {
         jiraIssueCounts.values.compactMap { $0[issueKey] }.reduce(0, +)
     }
 
+    // MARK: - RSS Item Actions
+
+    func toggleRSSItemRead(feedID: UUID, itemID: String) {
+        guard var items = rssItems[feedID.uuidString],
+              let idx = items.firstIndex(where: { $0.id == itemID }) else { return }
+        items[idx].isRead.toggle()
+        rssItems[feedID.uuidString] = items
+    }
+
+    func toggleRSSItemFavorite(feedID: UUID, itemID: String) {
+        guard var items = rssItems[feedID.uuidString],
+              let idx = items.firstIndex(where: { $0.id == itemID }) else { return }
+        items[idx].isFavorite.toggle()
+        rssItems[feedID.uuidString] = items
+    }
+
+    func markAllRSSItemsRead(feedID: UUID) {
+        guard var items = rssItems[feedID.uuidString] else { return }
+        for i in items.indices {
+            items[i].isRead = true
+        }
+        rssItems[feedID.uuidString] = items
+    }
+
     // MARK: - Departments
 
     func addDepartment(_ name: String) {

@@ -7,6 +7,7 @@ struct MenuBarView: View {
     @State private var selectedDate = Date()
     @State private var trendExpanded = true
     @State private var jiraRefreshing = false
+    @State private var animatingDept: String?
 
     private var selectedKey: String {
         DataStore.dateKey(from: selectedDate)
@@ -87,8 +88,11 @@ struct MenuBarView: View {
                             DevLog.shared.info("Click", "\(dept) +1")
                         } label: {
                             Image(systemName: "plus.circle.fill")
+                                .scaleEffect(animatingDept == dept ? 1.3 : 1.0)
+                                .foregroundStyle(animatingDept == dept ? Color.green : Color.accentColor)
                         }
                         .buttonStyle(.borderless)
+                        .animation(.spring(response: 0.3, dampingFraction: 0.5), value: animatingDept)
                     }
                 }
             }
@@ -256,6 +260,14 @@ struct MenuBarView: View {
         .onAppear {
             selectedDate = Date()
             noteText = store.noteForKey(selectedKey)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .hotkeyTriggered)) { notification in
+            guard let dept = notification.object as? String else { return }
+            animatingDept = dept
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                animatingDept = nil
+            }
         }
     }
 

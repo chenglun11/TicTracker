@@ -9,7 +9,7 @@
 [![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange?logo=swift&logoColor=white)](https://swift.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.15.0-brightgreen)](https://github.com/chenglun11/TicTracker/releases)
+[![Version](https://img.shields.io/badge/version-1.16.0-brightgreen)](https://github.com/chenglun11/TicTracker/releases)
 
 <p>
   <img src="image/menubar.png" width="320" alt="菜单栏主界面" />
@@ -59,6 +59,12 @@
 ### 📡 RSS 订阅
 - 多源订阅，每个订阅源可独立配置轮询间隔
 - 新条目桌面通知，支持直接打开链接
+- 已读/收藏标记，左滑快速操作
+- 全部/未读/收藏筛选器
+
+### ⌨️ 快捷键视觉反馈
+- 快捷键触发时按钮动画反馈（放大 + 颜色变化）
+- 实时视觉确认，提升操作体验
 
 ### 🎛️ 功能模块开关
 - 日报记录、趋势图、时间戳、快捷键、RSS 可独立启停

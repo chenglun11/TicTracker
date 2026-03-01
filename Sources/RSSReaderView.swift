@@ -1,9 +1,16 @@
 import SwiftUI
 
+enum RSSFilter: String, CaseIterable {
+    case all = "全部"
+    case unread = "未读"
+    case favorite = "收藏"
+}
+
 struct RSSReaderView: View {
     @Bindable var store: DataStore
     @State private var selectedFeedID: UUID?
     @State private var searchText = ""
+    @State private var filter: RSSFilter = .all
 
     private var feeds: [RSSFeed] {
         store.rssFeeds
@@ -11,20 +18,70 @@ struct RSSReaderView: View {
 
     private var selectedItems: [RSSItem] {
         guard let feedID = selectedFeedID else { return [] }
-        let items = store.rssItems[feedID.uuidString] ?? []
-        if searchText.isEmpty { return items }
-        let query = searchText.lowercased()
-        return items.filter {
-            $0.title.lowercased().contains(query) ||
-            $0.summary.lowercased().contains(query)
+        var items = store.rssItems[feedID.uuidString] ?? []
+
+        // Apply filter
+        switch filter {
+        case .all: break
+        case .unread: items = items.filter { !$0.isRead }
+        case .favorite: items = items.filter { $0.isFavorite }
         }
+
+        // Apply search
+        if !searchText.isEmpty {
+            let query = searchText.lowercased()
+            items = items.filter {
+                $0.title.lowercased().contains(query) ||
+                $0.summary.lowercased().contains(query)
+            }
+        }
+
+        return items
+    }
+
+    private var unreadCount: Int {
+        guard let feedID = selectedFeedID else { return 0 }
+        return (store.rssItems[feedID.uuidString] ?? []).filter { !$0.isRead }.count
     }
 
     var body: some View {
         NavigationSplitView {
             feedList
         } detail: {
-            itemList
+            VStack(spacing: 0) {
+                // Filter toolbar
+                HStack(spacing: 12) {
+                    Picker("", selection: $filter) {
+                        ForEach(RSSFilter.allCases, id: \.self) { f in
+                            Text(f.rawValue).tag(f)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 200)
+
+                    if unreadCount > 0 {
+                        Text("\(unreadCount) 未读")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    if let feedID = selectedFeedID, unreadCount > 0 {
+                        Button("全部已读") {
+                            store.markAllRSSItemsRead(feedID: feedID)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                Divider()
+
+                itemList
+            }
         }
         .searchable(text: $searchText, prompt: "搜索条目")
         .frame(minWidth: 600, minHeight: 400)
@@ -72,7 +129,7 @@ struct RSSReaderView: View {
                 )
             } else {
                 List(selectedItems) { item in
-                    RSSItemRow(item: item)
+                    RSSItemRow(item: item, store: store)
                 }
             }
         }
@@ -83,6 +140,7 @@ struct RSSReaderView: View {
 
 private struct RSSItemRow: View {
     let item: RSSItem
+    @Bindable var store: DataStore
 
     private static let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
@@ -91,23 +149,36 @@ private struct RSSItemRow: View {
     }()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(item.title)
-                    .font(.headline)
-                    .lineLimit(2)
-                Spacer()
-                if let date = item.pubDate {
-                    Text(Self.dateFormatter.string(from: date))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            // Read indicator
+            Circle()
+                .fill(item.isRead ? Color.clear : Color.blue)
+                .frame(width: 6, height: 6)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(item.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                        .foregroundStyle(item.isRead ? .secondary : .primary)
+                    Spacer()
+                    if item.isFavorite {
+                        Image(systemName: "star.fill")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                    }
+                    if let date = item.pubDate {
+                        Text(Self.dateFormatter.string(from: date))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
-            if !item.summary.isEmpty {
-                Text(item.summary)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                if !item.summary.isEmpty {
+                    Text(item.summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
             }
         }
         .padding(.vertical, 4)
@@ -115,9 +186,35 @@ private struct RSSItemRow: View {
         .onTapGesture {
             if let url = URL(string: item.link) {
                 NSWorkspace.shared.open(url)
+                if !item.isRead {
+                    store.toggleRSSItemRead(feedID: item.feedID, itemID: item.id)
+                }
             }
         }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                store.toggleRSSItemRead(feedID: item.feedID, itemID: item.id)
+            } label: {
+                Label(item.isRead ? "未读" : "已读", systemImage: item.isRead ? "envelope.badge" : "envelope.open")
+            }
+            .tint(item.isRead ? .blue : .gray)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                store.toggleRSSItemFavorite(feedID: item.feedID, itemID: item.id)
+            } label: {
+                Label(item.isFavorite ? "取消收藏" : "收藏", systemImage: item.isFavorite ? "star.slash" : "star")
+            }
+            .tint(.yellow)
+        }
         .contextMenu {
+            Button(item.isRead ? "标记为未读" : "标记为已读") {
+                store.toggleRSSItemRead(feedID: item.feedID, itemID: item.id)
+            }
+            Button(item.isFavorite ? "取消收藏" : "收藏") {
+                store.toggleRSSItemFavorite(feedID: item.feedID, itemID: item.id)
+            }
+            Divider()
             Button("在浏览器中打开") {
                 if let url = URL(string: item.link) {
                     NSWorkspace.shared.open(url)

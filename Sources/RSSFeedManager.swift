@@ -254,7 +254,9 @@ private final class RSSXMLParserDelegate: NSObject, XMLParserDelegate {
             title: title,
             link: link,
             summary: String(summary.prefix(500)),
-            pubDate: pubDate
+            pubDate: pubDate,
+            isRead: false,
+            isFavorite: false
         )
         items.append(item)
     }

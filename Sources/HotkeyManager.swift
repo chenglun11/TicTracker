@@ -1,6 +1,10 @@
 import Cocoa
 import Carbon
 
+extension Notification.Name {
+    static let hotkeyTriggered = Notification.Name("hotkeyTriggered")
+}
+
 @MainActor
 final class HotkeyManager {
     static let shared = HotkeyManager()
@@ -70,6 +74,7 @@ final class HotkeyManager {
         let dept = store.departments[index]
         store.increment(dept)
         DevLog.shared.info("Hotkey", "\(dept) +1")
+        NotificationCenter.default.post(name: .hotkeyTriggered, object: dept)
     }
 
     func unregisterAll() {
