@@ -158,9 +158,9 @@ struct RecentNotesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Toolbar
-            HStack(spacing: 10) {
-                Text("最近日报")
-                    .font(.headline)
+            HStack(spacing: 12) {
+                Text("最近日记")
+                    .font(.title3.bold())
                 Spacer()
                 if store.aiEnabled {
                     Button {
@@ -171,9 +171,11 @@ struct RecentNotesView: View {
                                 ProgressView()
                                     .controlSize(.small)
                                 Text("生成中…")
+                                    .font(.caption)
                             } else {
                                 Image(systemName: "sparkles")
                                 Text("AI 周报")
+                                    .font(.caption)
                             }
                         }
                     }
@@ -191,20 +193,25 @@ struct RecentNotesView: View {
                     HStack(spacing: 4) {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         Text(copied ? "已复制" : "复制周报")
+                            .font(.caption)
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color(nsColor: .controlBackgroundColor))
 
             Divider()
 
             if allEntries.isEmpty {
-                Text("暂无记录")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView {
+                    Label("暂无记录", systemImage: "book.closed")
+                } description: {
+                    Text("开始记录你的日常工作吧")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
                     ForEach(weekGroups) { week in
@@ -213,14 +220,14 @@ struct RecentNotesView: View {
                                 dayRow(item)
                             }
                         } header: {
-                            HStack {
+                            HStack(spacing: 8) {
                                 Text(week.label)
-                                    .font(.subheadline.bold())
+                                    .font(.headline)
                                 if week.isCurrentWeek {
                                     Text("本周")
-                                        .font(.caption2)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
+                                        .font(.caption.bold())
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
                                         .background(Color.accentColor, in: Capsule())
                                         .foregroundStyle(.white)
                                 }
@@ -228,16 +235,25 @@ struct RecentNotesView: View {
                                 let weekTotal = week.entries.reduce(0) { $0 + $1.total }
                                 let weekJira = week.entries.reduce(0) { $0 + $1.jiraTotal }
                                 if weekTotal > 0 {
-                                    Text("项目 \(weekTotal)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "folder.fill")
+                                            .font(.caption2)
+                                        Text("\(weekTotal)")
+                                            .font(.caption.bold())
+                                    }
+                                    .foregroundStyle(.blue)
                                 }
                                 if weekJira > 0 {
-                                    Text("工单 \(weekJira)")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "ticket.fill")
+                                            .font(.caption2)
+                                        Text("\(weekJira)")
+                                            .font(.caption.bold())
+                                    }
+                                    .foregroundStyle(.orange)
                                 }
                             }
+                            .padding(.vertical, 4)
                         }
                     }
                 }
@@ -258,63 +274,89 @@ struct RecentNotesView: View {
 
     @ViewBuilder
     private func dayRow(_ item: DayEntry) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            // Date header
+            HStack(spacing: 8) {
                 Text(item.display)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline.bold())
                 Spacer()
                 if item.total > 0 {
-                    Text("项目 \(item.total)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder.fill")
+                            .font(.caption2)
+                        Text("\(item.total)")
+                            .font(.caption.bold())
+                    }
+                    .foregroundStyle(.blue)
                 }
                 if item.jiraTotal > 0 {
-                    Text("工单 \(item.jiraTotal)")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                    HStack(spacing: 4) {
+                        Image(systemName: "ticket.fill")
+                            .font(.caption2)
+                        Text("\(item.jiraTotal)")
+                            .font(.caption.bold())
+                    }
+                    .foregroundStyle(.orange)
                 }
             }
 
+            // Project tags
             if item.total > 0 {
                 let sorted = store.departments.filter { item.records[$0, default: 0] > 0 }
                     + item.records.keys.filter { !store.departments.contains($0) && item.records[$0, default: 0] > 0 }.sorted()
                 FlowLayout(spacing: 6) {
                     ForEach(sorted, id: \.self) { dept in
                         let times = item.timestamps[dept] ?? []
-                        Text("\(dept) \(item.records[dept]!)")
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Color.accentColor.opacity(0.12))
-                            .clipShape(Capsule())
-                            .help(times.isEmpty ? "" : times.map { String($0.prefix(5)) }.joined(separator: "  "))
+                        HStack(spacing: 4) {
+                            Text(dept)
+                            Text("\(item.records[dept]!)")
+                                .fontWeight(.bold)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.accentColor.opacity(0.15))
+                        .clipShape(Capsule())
+                        .help(times.isEmpty ? "" : times.map { String($0.prefix(5)) }.joined(separator: "  "))
                     }
                 }
             }
 
+            // Jira tags
             if item.jiraTotal > 0 {
                 let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
                 let sortedJira = item.jiraCounts.sorted { $0.value > $1.value }
                 FlowLayout(spacing: 6) {
                     ForEach(sortedJira, id: \.key) { issueKey, count in
                         let label = issueMap[issueKey].map { "\(issueKey) \($0)" } ?? issueKey
-                        Text("\(label) ×\(count)")
-                            .font(.caption)
-                            .lineLimit(1)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Color.orange.opacity(0.12))
-                            .clipShape(Capsule())
+                        HStack(spacing: 4) {
+                            Text(label)
+                                .lineLimit(1)
+                            Text("×\(count)")
+                                .fontWeight(.bold)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.15))
+                        .clipShape(Capsule())
                     }
                 }
             }
 
+            // Note content
             if !item.note.isEmpty {
-                MarkdownContentView(text: item.note)
+                VStack(alignment: .leading, spacing: 6) {
+                    Divider()
+                    MarkdownContentView(text: item.note)
+                        .padding(.top, 2)
+                }
             }
         }
-        .padding(.vertical, 4)
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
     }
 
     // MARK: - AI Report
@@ -328,8 +370,7 @@ struct RecentNotesView: View {
                 Spacer()
                 if aiResult != nil {
                     Button("复制") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(aiResult!, forType: .string)
+                        copyAIResult(aiResult!)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -376,6 +417,29 @@ struct RecentNotesView: View {
                 aiError = error.localizedDescription
             }
             aiGenerating = false
+        }
+    }
+
+    private func copyAIResult(_ markdown: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+
+        // 1. 纯文本（Markdown 原文）
+        pb.setString(markdown, forType: .string)
+
+        // 2. 转换为 AttributedString，用于生成富文本格式
+        guard let attributed = try? AttributedString(markdown: markdown) else { return }
+        let nsAttr = NSAttributedString(attributed)
+        let range = NSRange(location: 0, length: nsAttr.length)
+
+        // 3. RTF 富文本
+        if let rtfData = try? nsAttr.data(from: range, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
+            pb.setData(rtfData, forType: .rtf)
+        }
+
+        // 4. HTML（兼容更多应用）
+        if let htmlData = try? nsAttr.data(from: range, documentAttributes: [.documentType: NSAttributedString.DocumentType.html]) {
+            pb.setData(htmlData, forType: .html)
         }
     }
 }
