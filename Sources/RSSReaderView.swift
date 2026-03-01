@@ -48,39 +48,43 @@ struct RSSReaderView: View {
         NavigationSplitView {
             feedList
         } detail: {
-            VStack(spacing: 0) {
-                // Filter toolbar
-                HStack(spacing: 12) {
-                    Picker("", selection: $filter) {
-                        ForEach(RSSFilter.allCases, id: \.self) { f in
-                            Text(f.rawValue).tag(f)
+            if selectedFeedID == nil {
+                ContentUnavailableView("选择一个订阅源", systemImage: "dot.radiowaves.up.forward")
+            } else {
+                VStack(spacing: 0) {
+                    // Filter toolbar
+                    HStack(spacing: 12) {
+                        Picker("", selection: $filter) {
+                            ForEach(RSSFilter.allCases, id: \.self) { f in
+                                Text(f.rawValue).tag(f)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 200)
+
+                        if unreadCount > 0 {
+                            Text("\(unreadCount) 未读")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        if let feedID = selectedFeedID, unreadCount > 0 {
+                            Button("全部已读") {
+                                store.markAllRSSItemsRead(feedID: feedID)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 200)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
 
-                    if unreadCount > 0 {
-                        Text("\(unreadCount) 未读")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Divider()
 
-                    Spacer()
-
-                    if let feedID = selectedFeedID, unreadCount > 0 {
-                        Button("全部已读") {
-                            store.markAllRSSItemsRead(feedID: feedID)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
+                    itemList
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-
-                Divider()
-
-                itemList
             }
         }
         .searchable(text: $searchText, prompt: "搜索条目")
@@ -134,9 +138,7 @@ struct RSSReaderView: View {
 
     private var itemList: some View {
         Group {
-            if selectedFeedID == nil {
-                ContentUnavailableView("选择一个订阅源", systemImage: "dot.radiowaves.up.forward")
-            } else if selectedItems.isEmpty {
+            if selectedItems.isEmpty {
                 ContentUnavailableView(
                     searchText.isEmpty ? "暂无条目" : "无匹配结果",
                     systemImage: searchText.isEmpty ? "tray" : "magnifyingglass"
