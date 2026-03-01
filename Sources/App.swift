@@ -111,7 +111,7 @@ struct TicTrackerApp: App {
         }
         .defaultSize(width: 600, height: 460)
 
-        Window("最近日报", id: "recent-notes") {
+        Window("最近日记", id: "recent-notes") {
             RecentNotesView(store: store)
         }
         .defaultSize(width: 360, height: 420)

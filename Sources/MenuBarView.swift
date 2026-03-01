@@ -217,7 +217,7 @@ struct MenuBarView: View {
                         Image(systemName: "clock.arrow.circlepath")
                     }
                     .buttonStyle(.borderless)
-                    .help("查看日报")
+                    .help("查看日记")
 
                     Spacer()
                 }

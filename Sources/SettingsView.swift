@@ -274,8 +274,8 @@ private struct GeneralTab: View {
             Section("功能模块") {
                 Toggle(isOn: Bindable(store).dailyNoteEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("日报记录")
-                        Text("关闭后隐藏菜单栏中的日报编辑区和查看日报入口")
+                        Text("日记记录")
+                        Text("关闭后隐藏菜单栏中的日记编辑区和查看日记入口")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -891,7 +891,7 @@ private struct AITab: View {
                 Toggle(isOn: Bindable(store).aiEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("启用 AI 周报生成")
-                        Text("开启后可在「最近日报」中使用 AI 生成周报摘要")
+                        Text("开启后可在「最近日记」中使用 AI 生成周报摘要")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
