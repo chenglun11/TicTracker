@@ -99,21 +99,35 @@ struct RSSReaderView: View {
 
     private var feedList: some View {
         List(feeds, selection: $selectedFeedID) { feed in
-            HStack {
+            HStack(spacing: 8) {
                 Circle()
                     .fill(feed.enabled ? Color.green : Color.gray)
                     .frame(width: 8, height: 8)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(feed.name)
                         .font(.body)
-                    Text("\(store.rssItems[feed.id.uuidString]?.count ?? 0) 条")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        let totalCount = store.rssItems[feed.id.uuidString]?.count ?? 0
+                        let unreadCount = (store.rssItems[feed.id.uuidString] ?? []).filter { !$0.isRead }.count
+                        Text("\(totalCount) 条")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if unreadCount > 0 {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text("\(unreadCount) 未读")
+                                .font(.caption2)
+                                .foregroundStyle(.blue)
+                        }
+                    }
                 }
             }
+            .padding(.vertical, 2)
         }
         .listStyle(.sidebar)
-        .frame(minWidth: 160)
+        .frame(minWidth: 180)
     }
 
     // MARK: - Item List (Detail)

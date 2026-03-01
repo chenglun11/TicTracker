@@ -21,45 +21,64 @@ struct DevLogView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Toolbar
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
                 Picker("模块", selection: $filterModule) {
                     ForEach(modules, id: \.self) { Text($0).tag($0) }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 120)
+                .frame(width: 140)
 
                 TextField("搜索", text: $searchText)
                     .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 200)
+                    .frame(maxWidth: 250)
 
                 Spacer()
 
                 Text("\(filtered.count) 条")
-                    .font(.caption)
+                    .font(.caption.bold())
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
 
-                Button("清除") { DevLog.shared.clear() }
-                    .controlSize(.small)
+                Button {
+                    DevLog.shared.clear()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash")
+                        Text("清除")
+                            .font(.caption)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .padding(8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color(nsColor: .controlBackgroundColor))
 
             Divider()
 
             // Log entries
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(filtered) { entry in
-                            HStack(alignment: .top, spacing: 0) {
+                            HStack(alignment: .top, spacing: 8) {
+                                // Level badge
+                                levelBadge(entry.level)
+                                    .frame(width: 40)
+
+                                // Log content
                                 Text(DevLog.shared.formatted(entry))
                                     .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(colorFor(entry.level))
+                                    .foregroundStyle(.primary)
                                     .textSelection(.enabled)
-                                Spacer(minLength: 0)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 1)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(entry.level == .error ? Color.red.opacity(0.05) :
+                                       entry.level == .warn ? Color.orange.opacity(0.05) :
+                                       Color.clear)
                             .id(entry.id)
                         }
                     }
@@ -76,6 +95,21 @@ struct DevLogView: View {
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    @ViewBuilder
+    private func levelBadge(_ level: DevLog.Level) -> some View {
+        let (text, color) = switch level {
+        case .info: ("INFO", Color.blue)
+        case .warn: ("WARN", Color.orange)
+        case .error: ("ERR", Color.red)
+        }
+        Text(text)
+            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(color, in: RoundedRectangle(cornerRadius: 3))
     }
 
     private func colorFor(_ level: DevLog.Level) -> Color {

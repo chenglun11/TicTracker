@@ -75,71 +75,86 @@ struct StatisticsView: View {
     var body: some View {
         let items = computeFilteredData()
         let grandTotal = items.reduce(0) { $0 + $1.count }
-        VStack(spacing: 16) {
-            // Date range presets + pickers
-            VStack(spacing: 10) {
-                HStack(spacing: 8) {
-                    ForEach(presets, id: \.label) { preset in
-                        Button(preset.label) {
-                            startDate = preset.start
-                            endDate = Date()
+        VStack(spacing: 0) {
+            // Header with stats cards
+            VStack(spacing: 16) {
+                // Stats cards
+                HStack(spacing: 12) {
+                    statCard(title: "总计", value: "\(grandTotal)", subtitle: "次支持", color: .blue)
+                    statCard(title: "天数", value: "\(dayCount)", subtitle: "天", color: .green)
+                    statCard(title: "日均", value: dayCount > 0 ? String(format: "%.1f", Double(grandTotal) / Double(dayCount)) : "0", subtitle: "次/天", color: .orange)
+                    statCard(title: "项目", value: "\(items.count)", subtitle: "个", color: .purple)
+                }
+                .padding(.horizontal)
+
+                // Date range presets + pickers
+                VStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        ForEach(presets, id: \.label) { preset in
+                            Button(preset.label) {
+                                startDate = preset.start
+                                endDate = Date()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(
+                                isPresetActive(preset) ? Color.accentColor : Color.secondary.opacity(0.12),
+                                in: Capsule()
+                            )
+                            .foregroundStyle(isPresetActive(preset) ? .white : .primary)
+                        }
+                        Spacer()
+                    }
+                    HStack(spacing: 6) {
+                        Button(Self.displayFmt.string(from: startDate)) {
+                            showStartPicker.toggle()
                         }
                         .buttonStyle(.plain)
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            isPresetActive(preset) ? Color.accentColor : Color.secondary.opacity(0.12),
-                            in: Capsule()
-                        )
-                        .foregroundStyle(isPresetActive(preset) ? .white : .primary)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .popover(isPresented: $showStartPicker) {
+                            DatePicker("", selection: $startDate, in: ...endDate, displayedComponents: .date)
+                                .datePickerStyle(.graphical)
+                                .labelsHidden()
+                                .padding(8)
+                        }
+
+                        Text("—")
+                            .foregroundStyle(.tertiary)
+
+                        Button(Self.displayFmt.string(from: endDate)) {
+                            showEndPicker.toggle()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .popover(isPresented: $showEndPicker) {
+                            DatePicker("", selection: $endDate, in: startDate...Date(), displayedComponents: .date)
+                                .datePickerStyle(.graphical)
+                                .labelsHidden()
+                                .padding(8)
+                        }
+
+                        Spacer()
                     }
-                    Spacer()
                 }
-                HStack(spacing: 6) {
-                    Button(Self.displayFmt.string(from: startDate)) {
-                        showStartPicker.toggle()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .popover(isPresented: $showStartPicker) {
-                        DatePicker("", selection: $startDate, in: ...endDate, displayedComponents: .date)
-                            .datePickerStyle(.graphical)
-                            .labelsHidden()
-                            .padding(8)
-                    }
-
-                    Text("—")
-                        .foregroundStyle(.tertiary)
-
-                    Button(Self.displayFmt.string(from: endDate)) {
-                        showEndPicker.toggle()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .popover(isPresented: $showEndPicker) {
-                        DatePicker("", selection: $endDate, in: startDate...Date(), displayedComponents: .date)
-                            .datePickerStyle(.graphical)
-                            .labelsHidden()
-                            .padding(8)
-                    }
-
-                    Spacer()
-                    Text("\(dayCount) 天")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
+                .padding(.horizontal)
             }
-            .padding(.horizontal)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            Divider()
 
             if items.isEmpty {
-                Spacer()
-                Text("所选日期范围内无数据")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                ContentUnavailableView {
+                    Label("无数据", systemImage: "chart.bar.xaxis")
+                } description: {
+                    Text("所选日期范围内无记录")
+                }
+                .frame(maxHeight: .infinity)
             } else {
                 Chart(items, id: \.dept) { item in
                     BarMark(
@@ -147,6 +162,7 @@ struct StatisticsView: View {
                         y: .value("次数", item.count)
                     )
                     .foregroundStyle(by: .value("项目", item.dept))
+                    .cornerRadius(4)
                 }
                 .chartForegroundStyleScale(
                     domain: items.map(\.dept),
@@ -155,30 +171,58 @@ struct StatisticsView: View {
                         return departmentColors[idx % departmentColors.count]
                     }
                 )
+                .chartYAxis {
+                    AxisMarks(position: .leading)
+                }
+                .frame(height: 200)
                 .padding(.horizontal)
+                .padding(.top, 12)
 
                 List(items, id: \.dept) { item in
-                    HStack {
+                    HStack(spacing: 12) {
                         let idx = store.departments.firstIndex(of: item.dept) ?? 0
                         Circle()
                             .fill(departmentColors[idx % departmentColors.count])
-                            .frame(width: 8, height: 8)
+                            .frame(width: 10, height: 10)
                         Text(item.dept)
+                            .font(.body)
                         Spacer()
-                        Text("\(item.count) 次")
+                        Text("\(item.count)")
+                            .font(.body.bold())
                             .monospacedDigit()
                         Text(String(format: "%.1f%%", Double(item.count) / Double(grandTotal) * 100))
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                             .frame(width: 60, alignment: .trailing)
                     }
+                    .padding(.vertical, 4)
                 }
+                .listStyle(.inset)
             }
         }
-        .padding(.top)
         .frame(minWidth: 500, minHeight: 400)
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    @ViewBuilder
+    private func statCard(title: String, value: String, subtitle: String, color: Color) -> some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title2.bold())
+                .foregroundStyle(color)
+                .monospacedDigit()
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
     }
 }
