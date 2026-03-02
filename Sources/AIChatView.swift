@@ -1,21 +1,40 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+struct ChatAttachment: Identifiable, Codable {
+    let id: UUID
+    let fileName: String
+    let fileType: String
+    let content: String // Base64 for images, plain text for text files
+    let mimeType: String
+
+    init(id: UUID = UUID(), fileName: String, fileType: String, content: String, mimeType: String) {
+        self.id = id
+        self.fileName = fileName
+        self.fileType = fileType
+        self.content = content
+        self.mimeType = mimeType
+    }
+}
 
 struct ChatMessage: Identifiable, Codable {
     let id: UUID
     let role: MessageRole
     let content: String
     let timestamp: Date
+    let attachments: [ChatAttachment]
 
     enum MessageRole: String, Codable {
         case user
         case assistant
     }
 
-    init(id: UUID = UUID(), role: MessageRole, content: String, timestamp: Date = Date()) {
+    init(id: UUID = UUID(), role: MessageRole, content: String, timestamp: Date = Date(), attachments: [ChatAttachment] = []) {
         self.id = id
         self.role = role
         self.content = content
         self.timestamp = timestamp
+        self.attachments = attachments
     }
 }
 
@@ -25,6 +44,7 @@ final class AIChatViewModel: ObservableObject {
     @Published var inputText: String = ""
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
+    @Published var attachments: [ChatAttachment] = []
 
     private let store: DataStore
     private let aiService = AIService.shared
@@ -37,28 +57,96 @@ final class AIChatViewModel: ObservableObject {
 
     func sendMessage() {
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
 
-        let userMessage = ChatMessage(role: .user, content: trimmed)
+        let userMessage = ChatMessage(role: .user, content: trimmed, attachments: attachments)
         messages.append(userMessage)
         inputText = ""
+        let currentAttachments = attachments
+        attachments = []
         errorMessage = nil
 
         Task {
-            await generateResponse(for: trimmed)
+            await generateResponse(for: trimmed, attachments: currentAttachments)
         }
     }
 
-    private func generateResponse(for userInput: String) async {
+    func addAttachment(from url: URL) {
+        guard url.startAccessingSecurityScopedResource() else {
+            errorMessage = "无法访问文件"
+            return
+        }
+        defer { url.stopAccessingSecurityScopedResource() }
+
+        do {
+            let fileType = url.pathExtension.lowercased()
+            let fileName = url.lastPathComponent
+
+            // 支持的文件类型
+            let supportedImageTypes = ["png", "jpg", "jpeg", "gif", "webp"]
+            let supportedTextTypes = ["txt", "md", "json", "xml", "csv", "log", "swift", "py", "js", "ts", "html", "css"]
+
+            if supportedImageTypes.contains(fileType) {
+                // 图片文件
+                let data = try Data(contentsOf: url)
+                let base64 = data.base64EncodedString()
+                let mimeType = "image/\(fileType == "jpg" ? "jpeg" : fileType)"
+
+                let attachment = ChatAttachment(
+                    fileName: fileName,
+                    fileType: fileType,
+                    content: base64,
+                    mimeType: mimeType
+                )
+                attachments.append(attachment)
+                log.info("AIChat", "添加图片附件: \(fileName)")
+
+            } else if supportedTextTypes.contains(fileType) {
+                // 文本文件
+                let content = try String(contentsOf: url, encoding: .utf8)
+                guard content.count <= 50000 else {
+                    errorMessage = "文件过大（最大 50KB）"
+                    return
+                }
+
+                let attachment = ChatAttachment(
+                    fileName: fileName,
+                    fileType: fileType,
+                    content: content,
+                    mimeType: "text/plain"
+                )
+                attachments.append(attachment)
+                log.info("AIChat", "添加文本附件: \(fileName)")
+
+            } else {
+                errorMessage = "不支持的文件类型: .\(fileType)"
+            }
+
+        } catch {
+            log.error("AIChat", "读取文件失败: \(error.localizedDescription)")
+            errorMessage = "读取文件失败: \(error.localizedDescription)"
+        }
+    }
+
+    func removeAttachment(_ attachment: ChatAttachment) {
+        attachments.removeAll { $0.id == attachment.id }
+    }
+
+    private func generateResponse(for userInput: String, attachments: [ChatAttachment]) async {
         isLoading = true
         defer { isLoading = false }
 
         do {
             // 获取历史记录（排除刚添加的用户消息，因为它会作为 message 参数传递）
-            let historyMessages = messages.dropLast().suffix(10).map { ($0.role.rawValue, $0.content) }
+            let maxHistory = max(1, store.aiConfig.chatMaxHistory)
+            let historyMessages = messages.dropLast().suffix(maxHistory).map { ($0.role.rawValue, $0.content) }
+
+            // 转换附件格式
+            let attachmentTuples = attachments.map { (fileName: $0.fileName, content: $0.content, mimeType: $0.mimeType) }
 
             let response = try await aiService.chat(
                 message: userInput,
+                attachments: attachmentTuples,
                 history: historyMessages,
                 config: store.aiConfig
             )
@@ -100,6 +188,7 @@ struct AIChatView: View {
     @StateObject private var viewModel: AIChatViewModel
     @FocusState private var isInputFocused: Bool
     @State private var showClearConfirmation = false
+    @State private var showFilePicker = false
 
     init(store: DataStore) {
         _viewModel = StateObject(wrappedValue: AIChatViewModel(store: store))
@@ -188,32 +277,80 @@ struct AIChatView: View {
 
             Divider()
 
-            // Input area
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField("输入消息...", text: $viewModel.inputText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...5)
-                    .focused($isInputFocused)
-                    .disabled(viewModel.isLoading)
-                    .onSubmit {
-                        if !viewModel.inputText.isEmpty && !viewModel.isLoading {
-                            viewModel.sendMessage()
+            // Attachments preview
+            if !viewModel.attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(viewModel.attachments) { attachment in
+                            AttachmentPreview(attachment: attachment) {
+                                viewModel.removeAttachment(attachment)
+                            }
                         }
                     }
-
-                Button(action: { viewModel.sendMessage() }) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundColor(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .accentColor)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
                 }
-                .buttonStyle(.borderless)
-                .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isLoading)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                Divider()
             }
-            .padding()
+
+            // Input area
+            VStack(spacing: 0) {
+                HStack(alignment: .bottom, spacing: 8) {
+                    Button(action: { showFilePicker = true }) {
+                        Image(systemName: "paperclip")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(viewModel.isLoading)
+                    .help("添加文件")
+
+                    TextField("输入消息...", text: $viewModel.inputText, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...5)
+                        .focused($isInputFocused)
+                        .disabled(viewModel.isLoading)
+                        .onSubmit {
+                            if (!viewModel.inputText.isEmpty || !viewModel.attachments.isEmpty) && !viewModel.isLoading {
+                                viewModel.sendMessage()
+                            }
+                        }
+
+                    Button(action: { viewModel.sendMessage() }) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title2)
+                            .foregroundColor((viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && viewModel.attachments.isEmpty) ? .gray : .accentColor)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled((viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && viewModel.attachments.isEmpty) || viewModel.isLoading)
+                }
+                .padding()
+            }
             .background(Color(nsColor: .controlBackgroundColor))
         }
         .onAppear {
             isInputFocused = true
+        }
+        .fileImporter(
+            isPresented: $showFilePicker,
+            allowedContentTypes: [
+                .image, .text, .plainText, .json, .xml,
+                UTType(filenameExtension: "md")!,
+                UTType(filenameExtension: "swift")!,
+                UTType(filenameExtension: "py")!,
+                UTType(filenameExtension: "js")!,
+                UTType(filenameExtension: "ts")!,
+            ],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    viewModel.addAttachment(from: url)
+                }
+            case .failure(let error):
+                viewModel.errorMessage = "选择文件失败: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -245,13 +382,23 @@ struct MessageBubble: View {
             }
 
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
-                Text(message.content)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(backgroundColor)
-                    .foregroundColor(textColor)
-                    .cornerRadius(12)
-                    .textSelection(.enabled)
+                // Attachments
+                if !message.attachments.isEmpty {
+                    ForEach(message.attachments) { attachment in
+                        AttachmentBubble(attachment: attachment)
+                    }
+                }
+
+                // Text content
+                if !message.content.isEmpty {
+                    Text(message.content)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(backgroundColor)
+                        .foregroundColor(textColor)
+                        .cornerRadius(12)
+                        .textSelection(.enabled)
+                }
 
                 Text(message.timestamp, style: .time)
                     .font(.caption2)
@@ -271,5 +418,67 @@ struct MessageBubble: View {
 
     private var textColor: Color {
         message.role == .user ? .white : .primary
+    }
+}
+
+struct AttachmentBubble: View {
+    let attachment: ChatAttachment
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: iconName)
+                .foregroundColor(.secondary)
+            Text(attachment.fileName)
+                .font(.caption)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private var iconName: String {
+        if attachment.mimeType.hasPrefix("image/") {
+            return "photo"
+        } else {
+            return "doc.text"
+        }
+    }
+}
+
+struct AttachmentPreview: View {
+    let attachment: ChatAttachment
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: iconName)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Text(attachment.fileName)
+                .font(.caption)
+                .lineLimit(1)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(6)
+    }
+
+    private var iconName: String {
+        if attachment.mimeType.hasPrefix("image/") {
+            return "photo"
+        } else {
+            return "doc.text"
+        }
     }
 }

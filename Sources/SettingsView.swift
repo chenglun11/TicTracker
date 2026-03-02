@@ -968,6 +968,64 @@ private struct AITab: View {
                     }
                 }
 
+                Section("AI 对话设置") {
+                    HStack {
+                        Text("最大上下文轮数")
+                        Spacer()
+                        TextField("", value: Bindable(store).aiConfig.chatMaxHistory, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                            .multilineTextAlignment(.trailing)
+                            .onChange(of: store.aiConfig.chatMaxHistory) { _, newValue in
+                                // 限制范围 1-50
+                                if newValue < 1 {
+                                    store.aiConfig.chatMaxHistory = 1
+                                } else if newValue > 50 {
+                                    store.aiConfig.chatMaxHistory = 50
+                                }
+                            }
+                    }
+                    Text("保留最近 \(store.aiConfig.chatMaxHistory) 轮对话作为上下文（1-50）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("对话模型（留空使用周报模型）", text: Bindable(store).aiConfig.chatModel)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .font(.callout.monospaced())
+                    Text("默认: \(store.aiConfig.effectiveChatModel)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("对话 System Prompt")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: Bindable(store).aiConfig.chatSystemPrompt)
+                            .font(.callout)
+                            .frame(height: 80)
+                            .overlay(alignment: .topLeading) {
+                                if store.aiConfig.chatSystemPrompt.isEmpty {
+                                    Text("留空使用默认")
+                                        .font(.callout)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.leading, 5)
+                                        .padding(.top, 8)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                    }
+                    if store.aiConfig.chatSystemPrompt.isEmpty {
+                        Text("默认: 友好的 AI 助手")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("恢复默认") {
+                            store.aiConfig.chatSystemPrompt = ""
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
                 Section {
                     Button("清空所有 AI 配置", role: .destructive) {
                         showClearAlert = true

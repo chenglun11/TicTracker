@@ -11,6 +11,11 @@ struct AIConfig: Codable {
     var model: String = ""
     var customPrompt: String = ""
 
+    // 对话设置
+    var chatMaxHistory: Int = 10
+    var chatSystemPrompt: String = ""
+    var chatModel: String = ""
+
     static let defaultPrompt = """
     你是一个技术支持团队的周报助手。根据提供的原始数据，生成一份简洁专业的周报摘要。
     要求：
@@ -22,9 +27,24 @@ struct AIConfig: Codable {
     6. 保持简洁，不要过度展开
     """
 
+    static let defaultChatSystemPrompt = """
+    你是一个友好的 AI 助手，可以帮助用户解答问题、提供建议和进行对话。
+    """
+
     var effectivePrompt: String {
         let trimmed = customPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? Self.defaultPrompt : trimmed
+    }
+
+    var effectiveChatSystemPrompt: String {
+        let trimmed = chatSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultChatSystemPrompt : trimmed
+    }
+
+    var effectiveChatModel: String {
+        let trimmed = chatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        return effectiveModel // 默认使用周报的模型
     }
 
     var effectiveBaseURL: String {
@@ -143,14 +163,35 @@ final class AIService {
         }
     }
 
-    func chat(message: String, history: [(String, String)], config: AIConfig) async throws -> String {
-        log.info(mod, "开始对话，服务商: \(config.provider.rawValue)")
+    func chat(message: String, attachments: [(fileName: String, content: String, mimeType: String)], history: [(String, String)], config: AIConfig) async throws -> String {
+        log.info(mod, "开始对话，服务商: \(config.provider.rawValue), 附件数: \(attachments.count)")
         guard let apiKey = loadAPIKey(), !apiKey.isEmpty else {
             log.error(mod, "未配置 API Key")
             throw AIError.noAPIKey
         }
 
-        let systemPrompt = "你是一个友好的 AI 助手，可以帮助用户解答问题、提供建议和进行对话。"
+        let systemPrompt = config.effectiveChatSystemPrompt
+
+        // 构建用户消息内容
+        var userContent = message
+
+        // 添加附件内容
+        if !attachments.isEmpty {
+            userContent += "\n\n附件内容："
+            for attachment in attachments {
+                if attachment.mimeType.hasPrefix("image/") {
+                    userContent += "\n[图片: \(attachment.fileName)]"
+                    // 注意：Claude 支持图片，但需要特殊格式，这里简化处理
+                    userContent += "\n(图片已上传，base64 编码)"
+                } else {
+                    userContent += "\n\n文件名: \(attachment.fileName)\n内容:\n\(attachment.content)"
+                }
+            }
+        }
+
+        // 使用对话专用的模型
+        var chatConfig = config
+        chatConfig.model = config.effectiveChatModel
 
         do {
             let result: String
@@ -161,8 +202,8 @@ final class AIService {
                 for (role, content) in history {
                     messages.append(["role": role, "content": content])
                 }
-                messages.append(["role": "user", "content": message])
-                result = try await callClaudeWithMessages(apiKey: apiKey, config: config, system: systemPrompt, messages: messages)
+                messages.append(["role": "user", "content": userContent])
+                result = try await callClaudeWithMessages(apiKey: apiKey, config: chatConfig, system: systemPrompt, messages: messages)
 
             case .openai:
                 // OpenAI: system 是消息数组的第一条
@@ -170,8 +211,8 @@ final class AIService {
                 for (role, content) in history {
                     messages.append(["role": role, "content": content])
                 }
-                messages.append(["role": "user", "content": message])
-                result = try await callOpenAIWithMessages(apiKey: apiKey, config: config, messages: messages)
+                messages.append(["role": "user", "content": userContent])
+                result = try await callOpenAIWithMessages(apiKey: apiKey, config: chatConfig, messages: messages)
             }
             log.info(mod, "对话成功，长度: \(result.count) 字符")
             return result
