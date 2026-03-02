@@ -54,9 +54,12 @@ final class AIChatViewModel: ObservableObject {
         defer { isLoading = false }
 
         do {
+            // 获取历史记录（排除刚添加的用户消息，因为它会作为 message 参数传递）
+            let historyMessages = messages.dropLast().suffix(10).map { ($0.role.rawValue, $0.content) }
+
             let response = try await aiService.chat(
                 message: userInput,
-                history: messages.dropLast().suffix(10).map { ($0.role.rawValue, $0.content) },
+                history: historyMessages,
                 config: store.aiConfig
             )
 
@@ -77,7 +80,9 @@ final class AIChatViewModel: ObservableObject {
     }
 
     private func saveMessages() {
-        if let data = try? JSONEncoder().encode(messages) {
+        // 只保存最近 100 条消息，避免 UserDefaults 过大
+        let messagesToSave = messages.suffix(100)
+        if let data = try? JSONEncoder().encode(Array(messagesToSave)) {
             UserDefaults.standard.set(data, forKey: "ai_chat_messages")
         }
     }
@@ -94,6 +99,7 @@ final class AIChatViewModel: ObservableObject {
 struct AIChatView: View {
     @StateObject private var viewModel: AIChatViewModel
     @FocusState private var isInputFocused: Bool
+    @State private var showClearConfirmation = false
 
     init(store: DataStore) {
         _viewModel = StateObject(wrappedValue: AIChatViewModel(store: store))
@@ -108,11 +114,17 @@ struct AIChatView: View {
 
                 Spacer()
 
-                Button(action: { viewModel.clearHistory() }) {
+                Button(action: { showClearConfirmation = true }) {
                     Label("清空", systemImage: "trash")
                 }
                 .buttonStyle(.borderless)
                 .disabled(viewModel.messages.isEmpty)
+                .confirmationDialog("确定要清空所有对话记录吗？", isPresented: $showClearConfirmation) {
+                    Button("清空", role: .destructive) {
+                        viewModel.clearHistory()
+                    }
+                    Button("取消", role: .cancel) {}
+                }
             }
             .padding()
             .background(Color(nsColor: .controlBackgroundColor))
@@ -182,8 +194,9 @@ struct AIChatView: View {
                     .textFieldStyle(.plain)
                     .lineLimit(1...5)
                     .focused($isInputFocused)
+                    .disabled(viewModel.isLoading)
                     .onSubmit {
-                        if !viewModel.inputText.isEmpty {
+                        if !viewModel.inputText.isEmpty && !viewModel.isLoading {
                             viewModel.sendMessage()
                         }
                     }
