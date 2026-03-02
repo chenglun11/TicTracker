@@ -181,8 +181,11 @@ final class AIService {
             for attachment in attachments {
                 if attachment.mimeType.hasPrefix("image/") {
                     userContent += "\n[图片: \(attachment.fileName)]"
-                    // 注意：Claude 支持图片，但需要特殊格式，这里简化处理
-                    userContent += "\n(图片已上传，base64 编码)"
+                    // TODO: 实现真正的图片支持
+                    // Claude: 需要使用 content array 格式，包含 type: "image" 和 source
+                    // OpenAI: 需要使用 image_url 或 base64 格式
+                    // 当前简化处理：仅标注图片名称
+                    userContent += "\n(图片已上传但暂不支持视觉分析)"
                 } else {
                     userContent += "\n\n文件名: \(attachment.fileName)\n内容:\n\(attachment.content)"
                 }

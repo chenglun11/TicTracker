@@ -15,6 +15,9 @@ struct ChatAttachment: Identifiable, Codable {
         self.content = content
         self.mimeType = mimeType
     }
+
+    var isImage: Bool { mimeType.hasPrefix("image/") }
+    var iconName: String { isImage ? "photo" : "doc.text" }
 }
 
 struct ChatMessage: Identifiable, Codable {
@@ -72,6 +75,12 @@ final class AIChatViewModel: ObservableObject {
     }
 
     func addAttachment(from url: URL) {
+        // 限制最多 5 个附件
+        guard attachments.count < 5 else {
+            errorMessage = "最多只能添加 5 个附件"
+            return
+        }
+
         guard url.startAccessingSecurityScopedResource() else {
             errorMessage = "无法访问文件"
             return
@@ -89,6 +98,13 @@ final class AIChatViewModel: ObservableObject {
             if supportedImageTypes.contains(fileType) {
                 // 图片文件
                 let data = try Data(contentsOf: url)
+
+                // 限制图片大小为 5MB
+                guard data.count <= 5_000_000 else {
+                    errorMessage = "图片过大（最大 5MB）"
+                    return
+                }
+
                 let base64 = data.base64EncodedString()
                 let mimeType = "image/\(fileType == "jpg" ? "jpeg" : fileType)"
 
@@ -99,12 +115,13 @@ final class AIChatViewModel: ObservableObject {
                     mimeType: mimeType
                 )
                 attachments.append(attachment)
-                log.info("AIChat", "添加图片附件: \(fileName)")
+                log.info("AIChat", "添加图片附件: \(fileName), 大小: \(data.count) bytes")
 
             } else if supportedTextTypes.contains(fileType) {
                 // 文本文件
                 let content = try String(contentsOf: url, encoding: .utf8)
-                guard content.count <= 50000 else {
+                let byteCount = content.utf8.count
+                guard byteCount <= 50_000 else {
                     errorMessage = "文件过大（最大 50KB）"
                     return
                 }
@@ -116,7 +133,7 @@ final class AIChatViewModel: ObservableObject {
                     mimeType: "text/plain"
                 )
                 attachments.append(attachment)
-                log.info("AIChat", "添加文本附件: \(fileName)")
+                log.info("AIChat", "添加文本附件: \(fileName), 大小: \(byteCount) bytes")
 
             } else {
                 errorMessage = "不支持的文件类型: .\(fileType)"
@@ -132,6 +149,12 @@ final class AIChatViewModel: ObservableObject {
         attachments.removeAll { $0.id == attachment.id }
     }
 
+    var canSend: Bool {
+        let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasAttachments = !attachments.isEmpty
+        return (hasText || hasAttachments) && !isLoading
+    }
+
     private func generateResponse(for userInput: String, attachments: [ChatAttachment]) async {
         isLoading = true
         defer { isLoading = false }
@@ -139,7 +162,14 @@ final class AIChatViewModel: ObservableObject {
         do {
             // 获取历史记录（排除刚添加的用户消息，因为它会作为 message 参数传递）
             let maxHistory = max(1, store.aiConfig.chatMaxHistory)
-            let historyMessages = messages.dropLast().suffix(maxHistory).map { ($0.role.rawValue, $0.content) }
+            let historyMessages = messages.dropLast().suffix(maxHistory).map { msg -> (String, String) in
+                var content = msg.content
+                // 如果历史消息有附件，添加附件信息到内容中
+                if !msg.attachments.isEmpty {
+                    content += "\n[附件: \(msg.attachments.map { $0.fileName }.joined(separator: ", "))]"
+                }
+                return (msg.role.rawValue, content)
+            }
 
             // 转换附件格式
             let attachmentTuples = attachments.map { (fileName: $0.fileName, content: $0.content, mimeType: $0.mimeType) }
@@ -169,8 +199,26 @@ final class AIChatViewModel: ObservableObject {
 
     private func saveMessages() {
         // 只保存最近 100 条消息，避免 UserDefaults 过大
-        let messagesToSave = messages.suffix(100)
-        if let data = try? JSONEncoder().encode(Array(messagesToSave)) {
+        // 保存时清除附件的 content，只保留文件名元信息
+        let messagesToSave = messages.suffix(100).map { msg -> ChatMessage in
+            let lightAttachments = msg.attachments.map {
+                ChatAttachment(
+                    id: $0.id,
+                    fileName: $0.fileName,
+                    fileType: $0.fileType,
+                    content: "", // 不持久化附件内容
+                    mimeType: $0.mimeType
+                )
+            }
+            return ChatMessage(
+                id: msg.id,
+                role: msg.role,
+                content: msg.content,
+                timestamp: msg.timestamp,
+                attachments: lightAttachments
+            )
+        }
+        if let data = try? JSONEncoder().encode(messagesToSave) {
             UserDefaults.standard.set(data, forKey: "ai_chat_messages")
         }
     }
@@ -311,7 +359,7 @@ struct AIChatView: View {
                         .focused($isInputFocused)
                         .disabled(viewModel.isLoading)
                         .onSubmit {
-                            if (!viewModel.inputText.isEmpty || !viewModel.attachments.isEmpty) && !viewModel.isLoading {
+                            if viewModel.canSend {
                                 viewModel.sendMessage()
                             }
                         }
@@ -319,10 +367,10 @@ struct AIChatView: View {
                     Button(action: { viewModel.sendMessage() }) {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.title2)
-                            .foregroundColor((viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && viewModel.attachments.isEmpty) ? .gray : .accentColor)
+                            .foregroundColor(viewModel.canSend ? .accentColor : .gray)
                     }
                     .buttonStyle(.borderless)
-                    .disabled((viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && viewModel.attachments.isEmpty) || viewModel.isLoading)
+                    .disabled(!viewModel.canSend)
                 }
                 .padding()
             }
@@ -335,12 +383,13 @@ struct AIChatView: View {
             isPresented: $showFilePicker,
             allowedContentTypes: [
                 .image, .text, .plainText, .json, .xml,
-                UTType(filenameExtension: "md")!,
-                UTType(filenameExtension: "swift")!,
-                UTType(filenameExtension: "py")!,
-                UTType(filenameExtension: "js")!,
-                UTType(filenameExtension: "ts")!,
-            ],
+            ] + [
+                UTType(filenameExtension: "md"),
+                UTType(filenameExtension: "swift"),
+                UTType(filenameExtension: "py"),
+                UTType(filenameExtension: "js"),
+                UTType(filenameExtension: "ts"),
+            ].compactMap { $0 },
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -426,7 +475,7 @@ struct AttachmentBubble: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: iconName)
+            Image(systemName: attachment.iconName)
                 .foregroundColor(.secondary)
             Text(attachment.fileName)
                 .font(.caption)
@@ -437,14 +486,6 @@ struct AttachmentBubble: View {
         .background(Color(nsColor: .controlBackgroundColor))
         .cornerRadius(8)
     }
-
-    private var iconName: String {
-        if attachment.mimeType.hasPrefix("image/") {
-            return "photo"
-        } else {
-            return "doc.text"
-        }
-    }
 }
 
 struct AttachmentPreview: View {
@@ -453,7 +494,7 @@ struct AttachmentPreview: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: iconName)
+            Image(systemName: attachment.iconName)
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -472,13 +513,5 @@ struct AttachmentPreview: View {
         .padding(.vertical, 4)
         .background(Color(nsColor: .controlBackgroundColor))
         .cornerRadius(6)
-    }
-
-    private var iconName: String {
-        if attachment.mimeType.hasPrefix("image/") {
-            return "photo"
-        } else {
-            return "doc.text"
-        }
     }
 }
