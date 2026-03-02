@@ -135,5 +135,10 @@ struct TicTrackerApp: App {
             StatisticsView(store: store)
         }
         .defaultSize(width: 650, height: 500)
+
+        Window("AI 对话", id: "ai-chat") {
+            AIChatView(store: store)
+        }
+        .defaultSize(width: 600, height: 700)
     }
 }
