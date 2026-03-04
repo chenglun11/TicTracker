@@ -197,6 +197,28 @@ final class AIChatViewModel: ObservableObject {
         errorMessage = nil
     }
 
+    func generateWeeklyReport() {
+        // 生成原始周报数据
+        let rawReport = WeeklyReport.generate(from: store)
+
+        // 构建提示词
+        let prompt = """
+        请帮我优化以下周报内容，使其更加专业和简洁：
+
+        \(rawReport)
+        """
+
+        // 添加用户消息
+        let userMessage = ChatMessage(role: .user, content: prompt, attachments: [])
+        messages.append(userMessage)
+        errorMessage = nil
+
+        // 异步生成 AI 响应
+        Task {
+            await generateResponse(for: prompt, attachments: [])
+        }
+    }
+
     private func saveMessages() {
         // 只保存最近 100 条消息，避免 UserDefaults 过大
         // 保存时清除附件的 content，只保留文件名元信息
@@ -250,6 +272,14 @@ struct AIChatView: View {
                     .font(.headline)
 
                 Spacer()
+
+                // 生成周报按钮
+                Button(action: { viewModel.generateWeeklyReport() }) {
+                    Label("生成周报", systemImage: "doc.text")
+                }
+                .buttonStyle(.borderless)
+                .disabled(viewModel.isLoading)
+                .help("生成本周技术支持周报并由 AI 优化")
 
                 Button(action: { showClearConfirmation = true }) {
                     Label("清空", systemImage: "trash")
@@ -379,6 +409,11 @@ struct AIChatView: View {
         .onAppear {
             isInputFocused = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .generateWeeklyReport)) { _ in
+            if !viewModel.isLoading {
+                viewModel.generateWeeklyReport()
+            }
+        }
         .fileImporter(
             isPresented: $showFilePicker,
             allowedContentTypes: [
@@ -416,6 +451,14 @@ struct AIChatView: View {
             Text("输入消息与 AI 助手交流")
                 .font(.caption)
                 .foregroundColor(.secondary)
+
+            // 快捷操作按钮
+            Button(action: { viewModel.generateWeeklyReport() }) {
+                Label("生成周报", systemImage: "doc.text.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.isLoading)
+            .help("自动生成本周技术支持周报并由 AI 优化")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

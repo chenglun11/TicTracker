@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
 extension Notification.Name {
     static let openWindowRequest = Notification.Name("openWindowRequest")
+    static let generateWeeklyReport = Notification.Name("generateWeeklyReport")
 }
 
 @main
