@@ -224,6 +224,18 @@ struct MenuBarView: View {
 
                 Button {
                     NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "ai-chat")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                }
+                .buttonStyle(.borderless)
+                .help("AI 对话")
+
+                Spacer()
+
+                Button {
+                    NSApp.setActivationPolicy(.regular)
                     openWindow(id: "dev-log")
                     NSApp.activate(ignoringOtherApps: true)
                 } label: {

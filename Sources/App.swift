@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
 extension Notification.Name {
     static let openWindowRequest = Notification.Name("openWindowRequest")
+    static let generateWeeklyReport = Notification.Name("generateWeeklyReport")
 }
 
 @main
@@ -135,5 +136,10 @@ struct TicTrackerApp: App {
             StatisticsView(store: store)
         }
         .defaultSize(width: 650, height: 500)
+
+        Window("AI 对话", id: "ai-chat") {
+            AIChatView(store: store)
+        }
+        .defaultSize(width: 600, height: 700)
     }
 }

@@ -48,11 +48,9 @@ private struct MarkdownContentView: View {
 
 struct RecentNotesView: View {
     @Bindable var store: DataStore
+    @Environment(\.openWindow) private var openWindow
     @State private var searchText = ""
     @State private var copied = false
-    @State private var aiGenerating = false
-    @State private var aiResult: String?
-    @State private var aiError: String?
 
     private struct DayEntry: Identifiable {
         let id: String // date key
@@ -164,24 +162,22 @@ struct RecentNotesView: View {
                 Spacer()
                 if store.aiEnabled {
                     Button {
-                        generateAIReport()
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "ai-chat")
+                        NSApp.activate(ignoringOtherApps: true)
+                        // 延迟发送通知，确保窗口已打开
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            NotificationCenter.default.post(name: .generateWeeklyReport, object: nil)
+                        }
                     } label: {
                         HStack(spacing: 4) {
-                            if aiGenerating {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("生成中…")
-                                    .font(.caption)
-                            } else {
-                                Image(systemName: "sparkles")
-                                Text("AI 周报")
-                                    .font(.caption)
-                            }
+                            Image(systemName: "sparkles")
+                            Text("AI 周报")
+                                .font(.caption)
                         }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(aiGenerating)
                 }
                 Button {
                     WeeklyReport.copyToClipboard(from: store)
@@ -261,12 +257,6 @@ struct RecentNotesView: View {
             }
         }
         .searchable(text: $searchText, prompt: "搜索记录")
-        .sheet(isPresented: Binding(
-            get: { aiResult != nil || aiError != nil },
-            set: { if !$0 { aiResult = nil; aiError = nil } }
-        )) {
-            aiResultSheet
-        }
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
@@ -359,89 +349,6 @@ struct RecentNotesView: View {
         .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
     }
 
-    // MARK: - AI Report
-
-    @ViewBuilder
-    private var aiResultSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("AI 周报")
-                    .font(.headline)
-                Spacer()
-                if aiResult != nil {
-                    Button("复制") {
-                        copyAIResult(aiResult!)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                Button("关闭") {
-                    aiResult = nil
-                    aiError = nil
-                }
-                .controlSize(.small)
-            }
-
-            Divider()
-
-            if let error = aiError {
-                Text(error)
-                    .foregroundStyle(.red)
-                    .font(.callout)
-            } else if let result = aiResult {
-                ScrollView {
-                    MarkdownContentView(text: result)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
-        .padding()
-        .frame(minWidth: 500, maxWidth: 500, minHeight: 300, maxHeight: 600)
-    }
-
-    private func generateAIReport() {
-        aiGenerating = true
-        aiResult = nil
-        aiError = nil
-        let rawReport = WeeklyReport.generate(from: store)
-        let config = store.aiConfig
-        Task {
-            do {
-                let result = try await AIService.shared.generateWeeklyReport(
-                    rawReport: rawReport, config: config
-                )
-                aiResult = result
-            } catch {
-                aiError = error.localizedDescription
-            }
-            aiGenerating = false
-        }
-    }
-
-    private func copyAIResult(_ markdown: String) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-
-        // 1. 纯文本（Markdown 原文）
-        pb.setString(markdown, forType: .string)
-
-        // 2. 转换为 AttributedString，用于生成富文本格式
-        guard let attributed = try? AttributedString(markdown: markdown) else { return }
-        let nsAttr = NSAttributedString(attributed)
-        let range = NSRange(location: 0, length: nsAttr.length)
-
-        // 3. RTF 富文本
-        if let rtfData = try? nsAttr.data(from: range, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
-            pb.setData(rtfData, forType: .rtf)
-        }
-
-        // 4. HTML（兼容更多应用）
-        if let htmlData = try? nsAttr.data(from: range, documentAttributes: [.documentType: NSAttributedString.DocumentType.html]) {
-            pb.setData(htmlData, forType: .html)
-        }
-    }
 }
 
 // Simple flow layout for tags

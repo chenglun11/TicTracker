@@ -11,6 +11,11 @@ struct AIConfig: Codable {
     var model: String = ""
     var customPrompt: String = ""
 
+    // 对话设置
+    var chatMaxHistory: Int = 10
+    var chatSystemPrompt: String = ""
+    var chatModel: String = ""
+
     static let defaultPrompt = """
     你是一个技术支持团队的周报助手。根据提供的原始数据，生成一份简洁专业的周报摘要。
     要求：
@@ -22,9 +27,24 @@ struct AIConfig: Codable {
     6. 保持简洁，不要过度展开
     """
 
+    static let defaultChatSystemPrompt = """
+    你是一个友好的 AI 助手，可以帮助用户解答问题、提供建议和进行对话。
+    """
+
     var effectivePrompt: String {
         let trimmed = customPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? Self.defaultPrompt : trimmed
+    }
+
+    var effectiveChatSystemPrompt: String {
+        let trimmed = chatSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultChatSystemPrompt : trimmed
+    }
+
+    var effectiveChatModel: String {
+        let trimmed = chatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        return effectiveModel // 默认使用周报的模型
     }
 
     var effectiveBaseURL: String {
@@ -51,6 +71,8 @@ final class AIService {
     static let shared = AIService()
     private init() {}
 
+    private let log = DevLog.shared
+    private let mod = "AI"
     private let keychainService = "com.tictracker.ai"
     private let keychainAccount = "api-key"
     private let keychainBaseURLAccount = "base-url"
@@ -118,23 +140,101 @@ final class AIService {
     }
 
     func generateWeeklyReport(rawReport: String, config: AIConfig) async throws -> String {
+        log.info(mod, "开始生成周报，服务商: \(config.provider.rawValue)")
         guard let apiKey = loadAPIKey(), !apiKey.isEmpty else {
+            log.error(mod, "未配置 API Key")
             throw AIError.noAPIKey
         }
 
         let systemPrompt = config.effectivePrompt
         let userPrompt = "以下是本周的原始技术支持数据，请生成周报摘要：\n\n\(rawReport)"
 
-        switch config.provider {
-        case .claude: return try await callClaude(apiKey: apiKey, config: config, system: systemPrompt, user: userPrompt)
-        case .openai: return try await callOpenAI(apiKey: apiKey, config: config, system: systemPrompt, user: userPrompt)
+        do {
+            let result: String
+            switch config.provider {
+            case .claude: result = try await callClaude(apiKey: apiKey, config: config, system: systemPrompt, user: userPrompt)
+            case .openai: result = try await callOpenAI(apiKey: apiKey, config: config, system: systemPrompt, user: userPrompt)
+            }
+            log.info(mod, "周报生成成功，长度: \(result.count) 字符")
+            return result
+        } catch {
+            log.error(mod, "周报生成失败: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    func chat(message: String, attachments: [(fileName: String, content: String, mimeType: String)], history: [(String, String)], config: AIConfig) async throws -> String {
+        log.info(mod, "开始对话，服务商: \(config.provider.rawValue), 附件数: \(attachments.count)")
+        guard let apiKey = loadAPIKey(), !apiKey.isEmpty else {
+            log.error(mod, "未配置 API Key")
+            throw AIError.noAPIKey
+        }
+
+        let systemPrompt = config.effectiveChatSystemPrompt
+
+        // 构建用户消息内容
+        var userContent = message
+
+        // 添加附件内容
+        if !attachments.isEmpty {
+            userContent += "\n\n附件内容："
+            for attachment in attachments {
+                if attachment.mimeType.hasPrefix("image/") {
+                    userContent += "\n[图片: \(attachment.fileName)]"
+                    // TODO: 实现真正的图片支持
+                    // Claude: 需要使用 content array 格式，包含 type: "image" 和 source
+                    // OpenAI: 需要使用 image_url 或 base64 格式
+                    // 当前简化处理：仅标注图片名称
+                    userContent += "\n(图片已上传但暂不支持视觉分析)"
+                } else {
+                    userContent += "\n\n文件名: \(attachment.fileName)\n内容:\n\(attachment.content)"
+                }
+            }
+        }
+
+        // 使用对话专用的模型
+        var chatConfig = config
+        chatConfig.model = config.effectiveChatModel
+
+        do {
+            let result: String
+            switch config.provider {
+            case .claude:
+                // Claude: system 是单独的参数
+                var messages: [[String: String]] = []
+                for (role, content) in history {
+                    messages.append(["role": role, "content": content])
+                }
+                messages.append(["role": "user", "content": userContent])
+                result = try await callClaudeWithMessages(apiKey: apiKey, config: chatConfig, system: systemPrompt, messages: messages)
+
+            case .openai:
+                // OpenAI: system 是消息数组的第一条
+                var messages: [[String: String]] = [["role": "system", "content": systemPrompt]]
+                for (role, content) in history {
+                    messages.append(["role": role, "content": content])
+                }
+                messages.append(["role": "user", "content": userContent])
+                result = try await callOpenAIWithMessages(apiKey: apiKey, config: chatConfig, messages: messages)
+            }
+            log.info(mod, "对话成功，长度: \(result.count) 字符")
+            return result
+        } catch {
+            log.error(mod, "对话失败: \(error.localizedDescription)")
+            throw error
         }
     }
 
     // MARK: - Claude API
 
     private func callClaude(apiKey: String, config: AIConfig, system: String, user: String) async throws -> String {
+        let messages = [["role": "user", "content": user]]
+        return try await callClaudeWithMessages(apiKey: apiKey, config: config, system: system, messages: messages)
+    }
+
+    private func callClaudeWithMessages(apiKey: String, config: AIConfig, system: String, messages: [[String: String]]) async throws -> String {
         let url = URL(string: "\(config.effectiveBaseURL)/v1/messages")!
+        log.info(mod, "调用 Claude API: \(url.absoluteString), 模型: \(config.effectiveModel)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -146,20 +246,26 @@ final class AIService {
             "model": config.effectiveModel,
             "max_tokens": 2048,
             "system": system,
-            "messages": [["role": "user", "content": user]],
+            "messages": messages,
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }
+        guard let http = response as? HTTPURLResponse else {
+            log.error(mod, "无效的 HTTP 响应")
+            throw AIError.invalidResponse
+        }
+        log.info(mod, "HTTP \(http.statusCode), \(data.count) bytes")
         guard http.statusCode == 200 else {
             let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            log.error(mod, "Claude API 错误: \(msg)")
             throw AIError.requestFailed("Claude API 错误: \(msg)")
         }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]],
               let text = content.first?["text"] as? String else {
+            log.error(mod, "无法解析 Claude 响应")
             throw AIError.invalidResponse
         }
         return text
@@ -168,7 +274,16 @@ final class AIService {
     // MARK: - OpenAI API
 
     private func callOpenAI(apiKey: String, config: AIConfig, system: String, user: String) async throws -> String {
+        let messages = [
+            ["role": "system", "content": system],
+            ["role": "user", "content": user],
+        ]
+        return try await callOpenAIWithMessages(apiKey: apiKey, config: config, messages: messages)
+    }
+
+    private func callOpenAIWithMessages(apiKey: String, config: AIConfig, messages: [[String: String]]) async throws -> String {
         let url = URL(string: "\(config.effectiveBaseURL)/v1/chat/completions")!
+        log.info(mod, "调用 OpenAI API: \(url.absoluteString), 模型: \(config.effectiveModel)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -178,17 +293,19 @@ final class AIService {
         let body: [String: Any] = [
             "model": config.effectiveModel,
             "max_tokens": 2048,
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user", "content": user],
-            ],
+            "messages": messages,
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }
+        guard let http = response as? HTTPURLResponse else {
+            log.error(mod, "无效的 HTTP 响应")
+            throw AIError.invalidResponse
+        }
+        log.info(mod, "HTTP \(http.statusCode), \(data.count) bytes")
         guard http.statusCode == 200 else {
             let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            log.error(mod, "OpenAI API 错误: \(msg)")
             throw AIError.requestFailed("OpenAI API 错误: \(msg)")
         }
 
@@ -196,6 +313,7 @@ final class AIService {
               let choices = json["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
               let text = message["content"] as? String else {
+            log.error(mod, "无法解析 OpenAI 响应")
             throw AIError.invalidResponse
         }
         return text
