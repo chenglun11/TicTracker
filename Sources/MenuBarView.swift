@@ -169,6 +169,47 @@ struct MenuBarView: View {
                 Divider()
             }
 
+            // Todo tasks section
+            if store.todoEnabled {
+                let todayTasks = store.tasksForKey(selectedKey).filter { !$0.isCompleted }
+                if !todayTasks.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Image(systemName: "checklist")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("今日待办")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(todayTasks.count)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ForEach(todayTasks.prefix(3)) { task in
+                            CompactTaskRow(task: task, dateKey: selectedKey, store: store)
+                        }
+
+                        if todayTasks.count > 3 {
+                            Button {
+                                NSApp.setActivationPolicy(.regular)
+                                openWindow(id: "todo")
+                                NSApp.activate(ignoringOtherApps: true)
+                            } label: {
+                                Text("查看全部 \(todayTasks.count) 个任务")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+
+                    Divider()
+                }
+            }
+
             HStack {
                 Button {
                     NSApp.setActivationPolicy(.regular)
@@ -442,5 +483,81 @@ private struct MiniChartView: View {
         }
         .padding(8)
         .frame(width: 150)
+    }
+}
+
+// MARK: - Compact Task Row
+
+struct CompactTaskRow: View {
+    let task: TodoTask
+    let dateKey: String
+    @Bindable var store: DataStore
+
+    private var isOverdue: Bool {
+        guard let dueDate = task.dueDate else { return false }
+        return dueDate < Date()
+    }
+
+    private var priorityColor: Color {
+        switch task.priority {
+        case .low: return .green
+        case .medium: return .orange
+        case .high: return .red
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                toggleCompletion()
+            } label: {
+                Image(systemName: "circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            Circle()
+                .fill(priorityColor)
+                .frame(width: 4, height: 4)
+
+            Text(task.title)
+                .font(.caption)
+                .lineLimit(1)
+
+            Spacer()
+
+            if let dueDate = task.dueDate {
+                Text(formatDueDate(dueDate))
+                    .font(.caption2)
+                    .foregroundStyle(isOverdue ? .red : .secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func toggleCompletion() {
+        var updatedTask = task
+        updatedTask.isCompleted = true
+        updatedTask.completedAt = Date()
+
+        if let notificationID = updatedTask.notificationID {
+            NotificationManager.shared.cancelTaskNotification(notificationID: notificationID)
+        }
+
+        store.updateTask(updatedTask, forKey: dateKey)
+    }
+
+    private func formatDueDate(_ date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm"
+            return formatter.string(from: date)
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "M/d"
+            return formatter.string(from: date)
+        }
     }
 }

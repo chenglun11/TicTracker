@@ -78,11 +78,7 @@ struct TodoView: View {
             HStack(spacing: 12) {
                 DatePicker("", selection: $selectedDate, displayedComponents: .date)
                     .labelsHidden()
-                    .frame(width: 140)
-
-                Text(Self.displayDateFormatter.string(from: selectedDate))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .frame(width: 120)
 
                 Spacer()
 
@@ -92,10 +88,10 @@ struct TodoView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 220)
+                .frame(width: 200)
 
                 if activeCount > 0 {
-                    Text("\(activeCount) 进行中")
+                    Text("\(activeCount) 个进行中")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -105,26 +101,30 @@ struct TodoView: View {
             Divider()
 
             // Search bar
-            HStack {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
+                    .font(.caption)
                 TextField("搜索任务", text: $searchText)
                     .textFieldStyle(.plain)
+                    .font(.body)
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
+                            .font(.caption)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(8)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .padding(.horizontal)
-            .padding(.vertical, 8)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
 
             // Task list
             if filteredTasks.isEmpty {
@@ -132,30 +132,42 @@ struct TodoView: View {
                     Label(searchText.isEmpty ? "暂无任务" : "无匹配任务", systemImage: "checklist")
                 } description: {
                     if searchText.isEmpty {
-                        Text("点击下方按钮添加新任务")
+                        Text("点击下方 + 按钮添加新任务")
                     }
                 }
             } else {
-                List {
-                    ForEach(filteredTasks) { task in
-                        TaskRow(task: task, dateKey: selectedKey, store: store) {
-                            editingTask = task
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredTasks) { task in
+                            TaskRow(task: task, dateKey: selectedKey, store: store) {
+                                editingTask = task
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+
+                            if task.id != filteredTasks.last?.id {
+                                Divider()
+                                    .padding(.leading, 50)
+                            }
                         }
                     }
                 }
-                .listStyle(.plain)
             }
 
             Divider()
 
             // Bottom toolbar
-            HStack {
+            HStack(spacing: 12) {
                 Button {
                     showingAddSheet = true
                 } label: {
-                    Label("添加任务", systemImage: "plus")
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus.circle.fill")
+                        Text("添加任务")
+                    }
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.blue)
 
                 Spacer()
 
@@ -163,7 +175,8 @@ struct TodoView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .padding()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
         .sheet(isPresented: $showingAddSheet) {
             TaskEditSheet(store: store, dateKey: selectedKey, task: nil) {
@@ -211,12 +224,12 @@ struct TaskRow: View {
             } label: {
                 Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(task.isCompleted ? .green : .secondary)
-                    .font(.title3)
+                    .font(.system(size: 20))
             }
             .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Circle()
                         .fill(priorityColor)
                         .frame(width: 6, height: 6)
@@ -226,14 +239,20 @@ struct TaskRow: View {
                         .strikethrough(task.isCompleted)
                         .foregroundStyle(task.isCompleted ? .secondary : .primary)
 
+                    Spacer()
+
                     if let dueDate = task.dueDate {
-                        Text(Self.dueDateFormatter.string(from: dueDate))
-                            .font(.caption)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(isOverdue ? Color.red.opacity(0.2) : Color.secondary.opacity(0.1))
-                            .foregroundStyle(isOverdue ? .red : .secondary)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                        HStack(spacing: 4) {
+                            Image(systemName: isOverdue ? "exclamationmark.triangle.fill" : "clock")
+                                .font(.caption2)
+                            Text(Self.dueDateFormatter.string(from: dueDate))
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(isOverdue ? Color.red.opacity(0.15) : Color.secondary.opacity(0.1))
+                        .foregroundStyle(isOverdue ? .red : .secondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
                 }
 
@@ -244,8 +263,6 @@ struct TaskRow: View {
                         .lineLimit(2)
                 }
             }
-
-            Spacer()
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -326,39 +343,90 @@ struct TaskEditSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text(isEditing ? "编辑任务" : "新建任务")
-                .font(.headline)
-
-            TextField("任务标题", text: $title)
-                .textFieldStyle(.roundedBorder)
-
-            TextField("任务描述（可选）", text: $description, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(3...6)
-
+        VStack(spacing: 0) {
+            // Header
             HStack {
-                Text("优先级")
-                Picker("", selection: $priority) {
-                    ForEach(TaskPriority.allCases, id: \.self) { p in
-                        Text(p.rawValue).tag(p)
+                Text(isEditing ? "编辑任务" : "新建任务")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    onDismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("标题")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextField("输入任务标题", text: $title)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("描述")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextField("添加任务描述（可选）", text: $description, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(3...6)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("优先级")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker("", selection: $priority) {
+                            ForEach(TaskPriority.allCases, id: \.self) { p in
+                                HStack {
+                                    Circle()
+                                        .fill(priorityColor(for: p))
+                                        .frame(width: 8, height: 8)
+                                    Text(p.rawValue)
+                                }
+                                .tag(p)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    Divider()
+
+                    Toggle(isOn: $hasDueDate) {
+                        HStack {
+                            Image(systemName: "clock")
+                                .foregroundStyle(.secondary)
+                            Text("设置截止时间")
+                        }
+                    }
+                    .toggleStyle(.switch)
+
+                    if hasDueDate {
+                        DatePicker("截止时间", selection: $dueDate)
+                            .datePickerStyle(.graphical)
                     }
                 }
-                .pickerStyle(.segmented)
+                .padding()
             }
 
-            Toggle("设置截止时间", isOn: $hasDueDate)
+            Divider()
 
-            if hasDueDate {
-                DatePicker("截止时间", selection: $dueDate)
-                    .datePickerStyle(.graphical)
-            }
-
-            HStack {
+            // Footer
+            HStack(spacing: 12) {
                 Button("取消") {
                     onDismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                .buttonStyle(.bordered)
 
                 Spacer()
 
@@ -366,11 +434,12 @@ struct TaskEditSheet: View {
                     saveTask()
                 }
                 .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
                 .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding()
         }
-        .padding()
-        .frame(width: 400)
+        .frame(width: 450, height: 550)
         .onAppear {
             if let task {
                 title = task.title
@@ -430,5 +499,13 @@ struct TaskEditSheet: View {
         }
 
         onDismiss()
+    }
+
+    private func priorityColor(for priority: TaskPriority) -> Color {
+        switch priority {
+        case .low: return .green
+        case .medium: return .orange
+        case .high: return .red
+        }
     }
 }
