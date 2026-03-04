@@ -24,6 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let actionID = response.actionIdentifier
         let link = response.notification.request.content.userInfo["link"] as? String
+        let taskIDString = response.notification.request.content.userInfo["taskID"] as? String
+        let dateKey = response.notification.request.content.userInfo["dateKey"] as? String
         let capturedStore = store
 
         MainActor.assumeIsolated {
@@ -49,6 +51,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             case NotificationManager.actionViewStats:
                 NSApp.activate(ignoringOtherApps: true)
                 NotificationCenter.default.post(name: .openWindowRequest, object: "statistics")
+
+            case NotificationManager.actionCompleteTask:
+                if let taskIDString,
+                   let taskID = UUID(uuidString: taskIDString),
+                   let dateKey,
+                   let capturedStore {
+                    var tasks = capturedStore.tasksForKey(dateKey)
+                    if let index = tasks.firstIndex(where: { $0.id == taskID }) {
+                        tasks[index].isCompleted = true
+                        tasks[index].completedAt = Date()
+                        capturedStore.updateTask(tasks[index], forKey: dateKey)
+                        DevLog.shared.info("Notify", "任务已标记完成")
+                    }
+                }
+
+            case NotificationManager.actionSnoozeTask:
+                if let taskIDString,
+                   let taskID = UUID(uuidString: taskIDString),
+                   let dateKey,
+                   let capturedStore {
+                    let tasks = capturedStore.tasksForKey(dateKey)
+                    if let task = tasks.first(where: { $0.id == taskID }) {
+                        NotificationManager.shared.snoozeTaskNotification(task: task, dateKey: dateKey)
+                    }
+                }
+
+            case NotificationManager.actionOpenTodo:
+                NSApp.activate(ignoringOtherApps: true)
+                NotificationCenter.default.post(name: .openWindowRequest, object: "todo")
 
             case UNNotificationDefaultActionIdentifier:
                 NSApp.activate(ignoringOtherApps: true)
@@ -141,5 +172,10 @@ struct TicTrackerApp: App {
             AIChatView(store: store)
         }
         .defaultSize(width: 600, height: 700)
+
+        Window("待办任务", id: "todo") {
+            TodoView(store: store)
+        }
+        .defaultSize(width: 650, height: 550)
     }
 }

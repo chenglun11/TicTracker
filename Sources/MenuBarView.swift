@@ -232,6 +232,16 @@ struct MenuBarView: View {
                 .buttonStyle(.borderless)
                 .help("AI 对话")
 
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "todo")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "checklist")
+                }
+                .buttonStyle(.borderless)
+                .help("待办任务")
+
                 Spacer()
 
                 Button {

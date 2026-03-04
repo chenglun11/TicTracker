@@ -15,12 +15,16 @@ final class NotificationManager {
     static let actionOpenRSSLink = "open-rss-link"
     static let actionCopyWeekly = "copy-weekly"
     static let actionViewStats = "view-stats"
+    static let actionCompleteTask = "complete-task"
+    static let actionSnoozeTask = "snooze-task"
+    static let actionOpenTodo = "open-todo"
 
     // MARK: - Category Identifiers
 
     static let categoryDailyReminder = "daily-reminder"
     static let categoryRSSItem = "rss-item"
     static let categoryDailySummary = "daily-summary"
+    static let categoryTodoTask = "todo-task"
 
     func requestPermission() {
         let center = UNUserNotificationCenter.current()
@@ -48,7 +52,13 @@ final class NotificationManager {
         let summaryView = UNNotificationAction(identifier: Self.actionViewStats, title: "查看详情", options: .foreground)
         let summaryCategory = UNNotificationCategory(identifier: Self.categoryDailySummary, actions: [summaryCopy, summaryView], intentIdentifiers: [])
 
-        center.setNotificationCategories([dailyCategory, rssCategory, summaryCategory])
+        // todo-task: "标记完成" / "稍后提醒" / "打开任务"
+        let taskComplete = UNNotificationAction(identifier: Self.actionCompleteTask, title: "标记完成")
+        let taskSnooze = UNNotificationAction(identifier: Self.actionSnoozeTask, title: "稍后提醒")
+        let taskOpen = UNNotificationAction(identifier: Self.actionOpenTodo, title: "打开任务", options: .foreground)
+        let todoCategory = UNNotificationCategory(identifier: Self.categoryTodoTask, actions: [taskComplete, taskSnooze, taskOpen], intentIdentifiers: [])
+
+        center.setNotificationCategories([dailyCategory, rssCategory, summaryCategory, todoCategory])
     }
 
     func scheduleReminder(hour: Int, minute: Int) {
@@ -189,5 +199,50 @@ final class NotificationManager {
             try? await center.add(request)
         }
         DevLog.shared.info("Notify", "RSS 通知: [\(feedName)] \(title)")
+    }
+
+    // MARK: - Todo Task Notifications
+
+    func scheduleTaskNotification(task: TodoTask, dateKey: String) {
+        guard let dueDate = task.dueDate else { return }
+
+        let center = UNUserNotificationCenter.current()
+        let notificationID = task.notificationID ?? "task-\(task.id.uuidString)"
+
+        let content = UNMutableNotificationContent()
+        content.title = "任务提醒"
+        content.body = task.title
+        content.sound = .default
+        content.categoryIdentifier = Self.categoryTodoTask
+        content.userInfo = [
+            "taskID": task.id.uuidString,
+            "dateKey": dateKey
+        ]
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate), repeats: false)
+        let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: trigger)
+
+        Task {
+            try? await center.add(request)
+        }
+        DevLog.shared.info("Notify", "任务通知已安排: \(task.title)")
+    }
+
+    func cancelTaskNotification(notificationID: String) {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [notificationID])
+        DevLog.shared.info("Notify", "任务通知已取消: \(notificationID)")
+    }
+
+    func snoozeTaskNotification(task: TodoTask, dateKey: String) {
+        let snoozeDate = Date().addingTimeInterval(15 * 60)
+        var snoozedTask = task
+        snoozedTask.dueDate = snoozeDate
+
+        if let notificationID = task.notificationID {
+            cancelTaskNotification(notificationID: notificationID)
+        }
+
+        scheduleTaskNotification(task: snoozedTask, dateKey: dateKey)
+        DevLog.shared.info("Notify", "任务通知已延后 15 分钟")
     }
 }
