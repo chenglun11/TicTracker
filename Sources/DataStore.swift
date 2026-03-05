@@ -54,7 +54,7 @@ final class DataStore {
 
     // MARK: - Todo Tasks
 
-    var todoTasks: [String: [TodoTask]] {  // dateKey → [TodoTask]
+    var todoTasks: [TodoTask] {
         didSet { saveTodoTasks() }
     }
 
@@ -207,10 +207,10 @@ final class DataStore {
 
         // Todo tasks
         if let data = UserDefaults.standard.data(forKey: "todoTasks"),
-           let decoded = try? JSONDecoder().decode([String: [TodoTask]].self, from: data) {
+           let decoded = try? JSONDecoder().decode([TodoTask].self, from: data) {
             todoTasks = decoded
         } else {
-            todoTasks = [:]
+            todoTasks = []
         }
 
         // Tap timestamps
@@ -645,27 +645,23 @@ final class DataStore {
     // MARK: - Todo Task Helpers
 
     func tasksForKey(_ key: String) -> [TodoTask] {
-        todoTasks[key] ?? []
+        todoTasks.filter { $0.dateKey == key }
     }
 
     func addTask(_ task: TodoTask, forKey key: String) {
-        var tasks = todoTasks[key] ?? []
-        tasks.append(task)
-        todoTasks[key] = tasks
+        var newTask = task
+        newTask.dateKey = key
+        todoTasks.append(newTask)
     }
 
     func updateTask(_ task: TodoTask, forKey key: String) {
-        guard var tasks = todoTasks[key] else { return }
-        if let index = tasks.firstIndex(where: { $0.id == task.id }) {
-            tasks[index] = task
-            todoTasks[key] = tasks
+        if let index = todoTasks.firstIndex(where: { $0.id == task.id }) {
+            todoTasks[index] = task
         }
     }
 
     func deleteTask(id: UUID, forKey key: String) {
-        guard var tasks = todoTasks[key] else { return }
-        tasks.removeAll { $0.id == id }
-        todoTasks[key] = tasks
+        todoTasks.removeAll { $0.id == id }
     }
 
     var todayTasks: [TodoTask] {

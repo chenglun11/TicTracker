@@ -136,7 +136,7 @@ struct TodoView: View {
                         }
                     }
                 }
-                .listStyle(.inset)
+                .listStyle(.plain)
             }
 
             Divider()
@@ -475,7 +475,8 @@ struct TaskEditSheet: View {
                 description: description,
                 dueDate: hasDueDate ? dueDate : nil,
                 priority: priority,
-                notificationID: notificationID
+                notificationID: notificationID,
+                dateKey: dateKey
             )
 
             store.addTask(newTask, forKey: dateKey)
