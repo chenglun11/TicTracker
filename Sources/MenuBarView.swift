@@ -171,43 +171,52 @@ struct MenuBarView: View {
 
             // Todo tasks section
             if store.todoEnabled {
-                let todayTasks = store.tasksForKey(selectedKey).filter { !$0.isCompleted }
-                if !todayTasks.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Image(systemName: "checklist")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text("今日待办")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("\(todayTasks.count)")
+                let tasks = store.tasksForKey(selectedKey).filter { !$0.isCompleted }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Image(systemName: "checklist")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(isToday ? "今日待办" : "当日待办")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if !tasks.isEmpty {
+                            Text("\(tasks.count)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        Button {
+                            NSApp.setActivationPolicy(.regular)
+                            openWindow(id: "todo")
+                            NSApp.activate(ignoringOtherApps: true)
+                        } label: {
+                            Text("打开")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.blue)
+                    }
 
-                        ForEach(todayTasks.prefix(3)) { task in
+                    if tasks.isEmpty {
+                        Text("暂无待办任务")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(tasks.prefix(3)) { task in
                             CompactTaskRow(task: task, dateKey: selectedKey, store: store)
                         }
 
-                        if todayTasks.count > 3 {
-                            Button {
-                                NSApp.setActivationPolicy(.regular)
-                                openWindow(id: "todo")
-                                NSApp.activate(ignoringOtherApps: true)
-                            } label: {
-                                Text("查看全部 \(todayTasks.count) 个任务")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
+                        if tasks.count > 3 {
+                            Text("还有 \(tasks.count - 3) 个任务…")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
                     }
-                    .padding(.vertical, 4)
-
-                    Divider()
                 }
+                .padding(.vertical, 4)
+
+                Divider()
             }
 
             HStack {
@@ -272,6 +281,8 @@ struct MenuBarView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("AI 对话")
+
+                Spacer()
 
                 Button {
                     NSApp.setActivationPolicy(.regular)
@@ -506,6 +517,18 @@ struct CompactTaskRow: View {
         }
     }
 
+    private static let timeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return fmt
+    }()
+
+    private static let dateFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d"
+        return fmt
+    }()
+
     var body: some View {
         HStack(spacing: 8) {
             Button {
@@ -551,13 +574,9 @@ struct CompactTaskRow: View {
     private func formatDueDate(_ date: Date) -> String {
         let calendar = Calendar.current
         if calendar.isDateInToday(date) {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm"
-            return formatter.string(from: date)
+            return Self.timeFormatter.string(from: date)
         } else {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "M/d"
-            return formatter.string(from: date)
+            return Self.dateFormatter.string(from: date)
         }
     }
 }

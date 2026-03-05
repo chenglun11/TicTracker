@@ -65,13 +65,6 @@ struct TodoView: View {
         store.tasksForKey(selectedKey).filter { !$0.isCompleted }.count
     }
 
-    private static let displayDateFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy年M月d日 (EEE)"
-        fmt.locale = Locale(identifier: "zh_CN")
-        return fmt
-    }()
-
     var body: some View {
         VStack(spacing: 0) {
             // Toolbar
@@ -136,22 +129,14 @@ struct TodoView: View {
                     }
                 }
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(filteredTasks) { task in
-                            TaskRow(task: task, dateKey: selectedKey, store: store) {
-                                editingTask = task
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-
-                            if task.id != filteredTasks.last?.id {
-                                Divider()
-                                    .padding(.leading, 50)
-                            }
+                List {
+                    ForEach(filteredTasks) { task in
+                        TaskRow(task: task, dateKey: selectedKey, store: store) {
+                            editingTask = task
                         }
                     }
                 }
+                .listStyle(.inset)
             }
 
             Divider()
@@ -187,6 +172,9 @@ struct TodoView: View {
             TaskEditSheet(store: store, dateKey: selectedKey, task: task) {
                 editingTask = nil
             }
+        }
+        .onDisappear {
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 }
