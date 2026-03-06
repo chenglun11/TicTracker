@@ -280,6 +280,14 @@ private struct GeneralTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Toggle(isOn: Bindable(store).todoEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("待办任务")
+                        Text("关闭后隐藏菜单栏中的待办任务入口")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Toggle(isOn: Bindable(store).trendChartEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("本周趋势图")
@@ -887,6 +895,49 @@ private struct AITab: View {
 
     var body: some View {
         Form {
+            Section("服务商") {
+                Picker("AI 服务", selection: Bindable(store).aiConfig.provider) {
+                    ForEach(AIProvider.allCases, id: \.self) { provider in
+                        Text(provider.rawValue).tag(provider)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section("连接 🔒") {
+                autoSaveSecureField("API Key", text: $apiKeyInput, saved: $apiKeySaved, focused: $isAPIKeyFocused) {
+                    AIService.shared.saveAPIKey(apiKeyInput)
+                }
+
+                TextField("Base URL（留空使用默认）", text: $baseURLInput)
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .font(.callout.monospaced())
+                    .focused($isBaseURLFocused)
+                    .onChange(of: isBaseURLFocused) { _, focused in
+                        if !focused {
+                            store.aiConfig.baseURL = baseURLInput
+                            AIService.shared.saveBaseURL(baseURLInput)
+                        }
+                    }
+                Text("默认: \(store.aiConfig.effectiveBaseURL)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextField("模型（留空使用默认）", text: $modelInput)
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .font(.callout.monospaced())
+                    .focused($isModelFocused)
+                    .onChange(of: isModelFocused) { _, focused in
+                        if !focused {
+                            store.aiConfig.model = modelInput
+                            AIService.shared.saveModel(modelInput)
+                        }
+                    }
+                Text("默认: \(store.aiConfig.effectiveModel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("AI 周报") {
                 Toggle(isOn: Bindable(store).aiEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -899,50 +950,7 @@ private struct AITab: View {
             }
 
             if store.aiEnabled {
-                Section("服务商") {
-                    Picker("AI 服务", selection: Bindable(store).aiConfig.provider) {
-                        ForEach(AIProvider.allCases, id: \.self) { provider in
-                            Text(provider.rawValue).tag(provider)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                Section("连接 🔒") {
-                    autoSaveSecureField("API Key", text: $apiKeyInput, saved: $apiKeySaved, focused: $isAPIKeyFocused) {
-                        AIService.shared.saveAPIKey(apiKeyInput)
-                    }
-
-                    TextField("Base URL（留空使用默认）", text: $baseURLInput)
-                        .textFieldStyle(UnderlineTextFieldStyle())
-                        .font(.callout.monospaced())
-                        .focused($isBaseURLFocused)
-                        .onChange(of: isBaseURLFocused) { _, focused in
-                            if !focused {
-                                store.aiConfig.baseURL = baseURLInput
-                                AIService.shared.saveBaseURL(baseURLInput)
-                            }
-                        }
-                    Text("默认: \(store.aiConfig.effectiveBaseURL)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    TextField("模型（留空使用默认）", text: $modelInput)
-                        .textFieldStyle(UnderlineTextFieldStyle())
-                        .font(.callout.monospaced())
-                        .focused($isModelFocused)
-                        .onChange(of: isModelFocused) { _, focused in
-                            if !focused {
-                                store.aiConfig.model = modelInput
-                                AIService.shared.saveModel(modelInput)
-                            }
-                        }
-                    Text("默认: \(store.aiConfig.effectiveModel)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Prompt") {
+                Section("周报 Prompt") {
                     TextEditor(text: Bindable(store).aiConfig.customPrompt)
                         .font(.callout)
                         .frame(height: 120)
@@ -967,71 +975,70 @@ private struct AITab: View {
                         .controlSize(.small)
                     }
                 }
+            }
 
-                Section("AI 对话设置") {
-                    HStack {
-                        Text("最大上下文轮数")
-                        Spacer()
-                        TextField("", value: Bindable(store).aiConfig.chatMaxHistory, format: .number)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 60)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: store.aiConfig.chatMaxHistory) { _, newValue in
-                                // 限制范围 1-50
-                                if newValue < 1 {
-                                    store.aiConfig.chatMaxHistory = 1
-                                } else if newValue > 50 {
-                                    store.aiConfig.chatMaxHistory = 50
-                                }
+            Section("AI 对话设置") {
+                HStack {
+                    Text("最大上下文轮数")
+                    Spacer()
+                    TextField("", value: Bindable(store).aiConfig.chatMaxHistory, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 60)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: store.aiConfig.chatMaxHistory) { _, newValue in
+                            if newValue < 1 {
+                                store.aiConfig.chatMaxHistory = 1
+                            } else if newValue > 50 {
+                                store.aiConfig.chatMaxHistory = 50
                             }
-                    }
-                    Text("保留最近 \(store.aiConfig.chatMaxHistory) 轮对话作为上下文（1-50）")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    TextField("对话模型（留空使用周报模型）", text: Bindable(store).aiConfig.chatModel)
-                        .textFieldStyle(UnderlineTextFieldStyle())
-                        .font(.callout.monospaced())
-                    Text("默认: \(store.aiConfig.effectiveChatModel)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("对话 System Prompt")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: Bindable(store).aiConfig.chatSystemPrompt)
-                            .font(.callout)
-                            .frame(height: 80)
-                            .overlay(alignment: .topLeading) {
-                                if store.aiConfig.chatSystemPrompt.isEmpty {
-                                    Text("留空使用默认")
-                                        .font(.callout)
-                                        .foregroundStyle(.tertiary)
-                                        .padding(.leading, 5)
-                                        .padding(.top, 8)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                    }
-                    if store.aiConfig.chatSystemPrompt.isEmpty {
-                        Text("默认: 友好的 AI 助手")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Button("恢复默认") {
-                            store.aiConfig.chatSystemPrompt = ""
                         }
-                        .controlSize(.small)
-                    }
                 }
+                Text("保留最近 \(store.aiConfig.chatMaxHistory) 轮对话作为上下文（1-50）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-                Section {
-                    Button("清空所有 AI 配置", role: .destructive) {
-                        showClearAlert = true
+                TextField("对话模型（留空使用周报模型）", text: Bindable(store).aiConfig.chatModel)
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .font(.callout.monospaced())
+                Text("默认: \(store.aiConfig.effectiveChatModel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("对话 System Prompt")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: Bindable(store).aiConfig.chatSystemPrompt)
+                        .font(.callout)
+                        .frame(height: 80)
+                        .overlay(alignment: .topLeading) {
+                            if store.aiConfig.chatSystemPrompt.isEmpty {
+                                Text("留空使用默认")
+                                    .font(.callout)
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.leading, 5)
+                                    .padding(.top, 8)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                }
+                if store.aiConfig.chatSystemPrompt.isEmpty {
+                    Text("默认: 友好的 AI 助手")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("恢复默认") {
+                        store.aiConfig.chatSystemPrompt = ""
                     }
                     .controlSize(.small)
                 }
+            }
+
+            Section {
+                Button("清空所有 AI 配置", role: .destructive) {
+                    showClearAlert = true
+                }
+                .controlSize(.small)
             }
         }
         .formStyle(.grouped)

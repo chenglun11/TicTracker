@@ -284,17 +284,19 @@ struct MenuBarView: View {
 
                 Spacer()
 
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "todo")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "checklist")
-                }
-                .buttonStyle(.borderless)
-                .help("待办任务")
+                if store.todoEnabled {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "todo")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "checklist")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("待办任务")
 
-                Spacer()
+                    Spacer()
+                }
 
                 Button {
                     NSApp.setActivationPolicy(.regular)
