@@ -201,21 +201,25 @@ final class AIChatViewModel: ObservableObject {
         // 生成原始周报数据
         let rawReport = WeeklyReport.generate(from: store)
 
-        // 构建提示词
-        let prompt = """
-        请帮我优化以下周报内容，使其更加专业和简洁：
-
-        \(rawReport)
-        """
-
         // 添加用户消息
-        let userMessage = ChatMessage(role: .user, content: prompt, attachments: [])
+        let userMessage = ChatMessage(role: .user, content: "请根据以下数据生成周报：\n\n\(rawReport)", attachments: [])
         messages.append(userMessage)
         errorMessage = nil
 
-        // 异步生成 AI 响应
+        // 使用 AIService.generateWeeklyReport，应用用户配置的周报 Prompt
         Task {
-            await generateResponse(for: prompt, attachments: [])
+            isLoading = true
+            defer { isLoading = false }
+
+            do {
+                let response = try await aiService.generateWeeklyReport(rawReport: rawReport, config: store.aiConfig)
+                let assistantMessage = ChatMessage(role: .assistant, content: response)
+                messages.append(assistantMessage)
+                saveMessages()
+            } catch {
+                log.error("AIChat", "周报生成失败: \(error.localizedDescription)")
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

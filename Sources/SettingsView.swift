@@ -956,88 +956,88 @@ private struct AITab: View {
                 }
             }
 
-            if store.aiEnabled {
-                Section("周报 Prompt") {
-                    TextEditor(text: Bindable(store).aiConfig.customPrompt)
-                        .font(.callout)
-                        .frame(height: 120)
-                        .overlay(alignment: .topLeading) {
-                            if store.aiConfig.customPrompt.isEmpty {
-                                Text("留空使用默认 Prompt")
-                                    .font(.callout)
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.leading, 5)
-                                    .padding(.top, 8)
-                                    .allowsHitTesting(false)
-                            }
+            Section("周报 Prompt") {
+                TextEditor(text: Bindable(store).aiConfig.customPrompt)
+                    .font(.callout)
+                    .frame(height: 120)
+                    .overlay(alignment: .topLeading) {
+                        if store.aiConfig.customPrompt.isEmpty {
+                            Text("留空使用默认 Prompt")
+                                .font(.callout)
+                                .foregroundStyle(.tertiary)
+                                .padding(.leading, 5)
+                                .padding(.top, 8)
+                                .allowsHitTesting(false)
                         }
-                    if store.aiConfig.customPrompt.isEmpty {
-                        Text("默认: 生成简洁周报摘要，按项目总结，提炼日报要点，不写展望")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Button("恢复默认") {
-                            store.aiConfig.customPrompt = ""
-                        }
-                        .controlSize(.small)
                     }
-                }
-
-                Section("AI 对话设置") {
-                HStack {
-                    Text("最大上下文轮数")
-                    Spacer()
-                    TextField("", value: Bindable(store).aiConfig.chatMaxHistory, format: .number)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 60)
-                        .multilineTextAlignment(.trailing)
-                        .onChange(of: store.aiConfig.chatMaxHistory) { _, newValue in
-                            if newValue < 1 {
-                                store.aiConfig.chatMaxHistory = 1
-                            } else if newValue > 50 {
-                                store.aiConfig.chatMaxHistory = 50
-                            }
-                        }
-                }
-                Text("保留最近 \(store.aiConfig.chatMaxHistory) 轮对话作为上下文（1-50）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                TextField("对话模型（留空使用周报模型）", text: Bindable(store).aiConfig.chatModel)
-                    .textFieldStyle(UnderlineTextFieldStyle())
-                    .font(.callout.monospaced())
-                Text("默认: \(store.aiConfig.effectiveChatModel)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("对话 System Prompt")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextEditor(text: Bindable(store).aiConfig.chatSystemPrompt)
-                        .font(.callout)
-                        .frame(height: 80)
-                        .overlay(alignment: .topLeading) {
-                            if store.aiConfig.chatSystemPrompt.isEmpty {
-                                Text("留空使用默认")
-                                    .font(.callout)
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.leading, 5)
-                                    .padding(.top, 8)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-                }
-                if store.aiConfig.chatSystemPrompt.isEmpty {
-                    Text("默认: 友好的 AI 助手")
+                if store.aiConfig.customPrompt.isEmpty {
+                    Text("默认: 生成简洁周报摘要，按项目总结，提炼日报要点，不写展望")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     Button("恢复默认") {
-                        store.aiConfig.chatSystemPrompt = ""
+                        store.aiConfig.customPrompt = ""
                     }
                     .controlSize(.small)
                 }
+            }
+
+            if store.aiEnabled {
+                Section("AI 对话设置") {
+                    HStack {
+                        Text("最大上下文轮数")
+                        Spacer()
+                        TextField("", value: Bindable(store).aiConfig.chatMaxHistory, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                            .multilineTextAlignment(.trailing)
+                            .onChange(of: store.aiConfig.chatMaxHistory) { _, newValue in
+                                if newValue < 1 {
+                                    store.aiConfig.chatMaxHistory = 1
+                                } else if newValue > 50 {
+                                    store.aiConfig.chatMaxHistory = 50
+                                }
+                            }
+                    }
+                    Text("保留最近 \(store.aiConfig.chatMaxHistory) 轮对话作为上下文（1-50）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("对话模型（留空使用周报模型）", text: Bindable(store).aiConfig.chatModel)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .font(.callout.monospaced())
+                    Text("默认: \(store.aiConfig.effectiveChatModel)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("对话 System Prompt")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: Bindable(store).aiConfig.chatSystemPrompt)
+                            .font(.callout)
+                            .frame(height: 80)
+                            .overlay(alignment: .topLeading) {
+                                if store.aiConfig.chatSystemPrompt.isEmpty {
+                                    Text("留空使用默认")
+                                        .font(.callout)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.leading, 5)
+                                        .padding(.top, 8)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                    }
+                    if store.aiConfig.chatSystemPrompt.isEmpty {
+                        Text("默认: 友好的 AI 助手")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("恢复默认") {
+                            store.aiConfig.chatSystemPrompt = ""
+                        }
+                        .controlSize(.small)
+                    }
                 }
 
                 Section {
