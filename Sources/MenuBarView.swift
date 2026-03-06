@@ -246,17 +246,19 @@ struct MenuBarView: View {
                     Spacer()
                 }
 
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "jira")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "server.rack")
-                }
-                .buttonStyle(.borderless)
-                .help("Jira 工单")
+                if store.jiraConfig.showInMenuBar {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "jira")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "server.rack")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Jira 工单")
 
-                Spacer()
+                    Spacer()
+                }
 
                 if store.dailyNoteEnabled {
                     Button {
@@ -272,17 +274,19 @@ struct MenuBarView: View {
                     Spacer()
                 }
 
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "ai-chat")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                }
-                .buttonStyle(.borderless)
-                .help("AI 对话")
+                if store.aiEnabled {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "ai-chat")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("AI 对话")
 
-                Spacer()
+                    Spacer()
+                }
 
                 if store.todoEnabled {
                     Button {

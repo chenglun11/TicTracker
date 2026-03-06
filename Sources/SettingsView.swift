@@ -678,7 +678,14 @@ private struct JiraTab: View {
                         JiraService.shared.stopPolling()
                     }
                 }
-                Toggle("在菜单栏显示工单列表", isOn: Bindable(store).jiraConfig.showInMenuBar)
+                Toggle(isOn: Bindable(store).jiraConfig.showInMenuBar) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("在菜单栏显示")
+                        Text("关闭后隐藏菜单栏中的工单列表和底部入口")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Section("连接 🔒") {
@@ -938,11 +945,11 @@ private struct AITab: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("AI 周报") {
+            Section("AI 功能") {
                 Toggle(isOn: Bindable(store).aiEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("启用 AI 周报生成")
-                        Text("开启后可在「最近日记」中使用 AI 生成周报摘要")
+                        Text("启用 AI 功能")
+                        Text("关闭后隐藏 AI 对话入口和周报生成功能")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -975,9 +982,8 @@ private struct AITab: View {
                         .controlSize(.small)
                     }
                 }
-            }
 
-            Section("AI 对话设置") {
+                Section("AI 对话设置") {
                 HStack {
                     Text("最大上下文轮数")
                     Spacer()
@@ -1032,13 +1038,14 @@ private struct AITab: View {
                     }
                     .controlSize(.small)
                 }
-            }
-
-            Section {
-                Button("清空所有 AI 配置", role: .destructive) {
-                    showClearAlert = true
                 }
-                .controlSize(.small)
+
+                Section {
+                    Button("清空所有 AI 配置", role: .destructive) {
+                        showClearAlert = true
+                    }
+                    .controlSize(.small)
+                }
             }
         }
         .formStyle(.grouped)
