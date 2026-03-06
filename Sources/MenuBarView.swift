@@ -169,6 +169,56 @@ struct MenuBarView: View {
                 Divider()
             }
 
+            // Todo tasks section
+            if store.todoEnabled {
+                let tasks = store.tasksForKey(selectedKey).filter { !$0.isCompleted }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Image(systemName: "checklist")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(isToday ? "今日待办" : "当日待办")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if !tasks.isEmpty {
+                            Text("\(tasks.count)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Button {
+                            NSApp.setActivationPolicy(.regular)
+                            openWindow(id: "todo")
+                            NSApp.activate(ignoringOtherApps: true)
+                        } label: {
+                            Text("打开")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.blue)
+                    }
+
+                    if tasks.isEmpty {
+                        Text("暂无待办任务")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(tasks.prefix(3)) { task in
+                            CompactTaskRow(task: task, dateKey: selectedKey, store: store)
+                        }
+
+                        if tasks.count > 3 {
+                            Text("还有 \(tasks.count - 3) 个任务…")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+
+                Divider()
+            }
+
             HStack {
                 Button {
                     NSApp.setActivationPolicy(.regular)
@@ -233,6 +283,20 @@ struct MenuBarView: View {
                 .help("AI 对话")
 
                 Spacer()
+
+                if store.todoEnabled {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "todo")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "checklist")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("待办任务")
+
+                    Spacer()
+                }
 
                 Button {
                     NSApp.setActivationPolicy(.regular)
@@ -432,5 +496,89 @@ private struct MiniChartView: View {
         }
         .padding(8)
         .frame(width: 150)
+    }
+}
+
+// MARK: - Compact Task Row
+
+struct CompactTaskRow: View {
+    let task: TodoTask
+    let dateKey: String
+    @Bindable var store: DataStore
+
+    private var isOverdue: Bool {
+        guard let dueDate = task.dueDate else { return false }
+        return dueDate < Date()
+    }
+
+    private var priorityColor: Color {
+        switch task.priority {
+        case .low: return .green
+        case .medium: return .orange
+        case .high: return .red
+        }
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return fmt
+    }()
+
+    private static let dateFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d"
+        return fmt
+    }()
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                toggleCompletion()
+            } label: {
+                Image(systemName: "circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            Circle()
+                .fill(priorityColor)
+                .frame(width: 4, height: 4)
+
+            Text(task.title)
+                .font(.caption)
+                .lineLimit(1)
+
+            Spacer()
+
+            if let dueDate = task.dueDate {
+                Text(formatDueDate(dueDate))
+                    .font(.caption2)
+                    .foregroundStyle(isOverdue ? .red : .secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func toggleCompletion() {
+        var updatedTask = task
+        updatedTask.isCompleted = true
+        updatedTask.completedAt = Date()
+
+        if let notificationID = updatedTask.notificationID {
+            NotificationManager.shared.cancelTaskNotification(notificationID: notificationID)
+        }
+
+        store.updateTask(updatedTask, forKey: dateKey)
+    }
+
+    private func formatDueDate(_ date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return Self.timeFormatter.string(from: date)
+        } else {
+            return Self.dateFormatter.string(from: date)
+        }
     }
 }

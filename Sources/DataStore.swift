@@ -52,6 +52,12 @@ final class DataStore {
         didSet { UserDefaults.standard.set(rssPollingInterval, forKey: "rssPollingInterval") }
     }
 
+    // MARK: - Todo Tasks
+
+    var todoTasks: [TodoTask] {
+        didSet { saveTodoTasks() }
+    }
+
     // MARK: - Tap Timestamps
 
     var tapTimestamps: [String: [String: [String]]] {  // dateKey → dept → ["HH:mm:ss", ...]
@@ -78,6 +84,9 @@ final class DataStore {
                 HotkeyManager.shared.unregisterAll()
             }
         }
+    }
+    var todoEnabled: Bool {
+        didSet { UserDefaults.standard.set(todoEnabled, forKey: "todoEnabled") }
     }
     var rssEnabled: Bool {
         didSet {
@@ -196,6 +205,14 @@ final class DataStore {
         }
         rssPollingInterval = UserDefaults.standard.object(forKey: "rssPollingInterval") as? Int ?? 10
 
+        // Todo tasks
+        if let data = UserDefaults.standard.data(forKey: "todoTasks"),
+           let decoded = try? JSONDecoder().decode([TodoTask].self, from: data) {
+            todoTasks = decoded
+        } else {
+            todoTasks = []
+        }
+
         // Tap timestamps
         if let data = UserDefaults.standard.data(forKey: "tapTimestamps"),
            let decoded = try? JSONDecoder().decode([String: [String: [String]]].self, from: data) {
@@ -210,6 +227,7 @@ final class DataStore {
         timestampEnabled = UserDefaults.standard.object(forKey: "timestampEnabled") as? Bool ?? true
         hotkeyEnabled = UserDefaults.standard.object(forKey: "hotkeyEnabled") as? Bool ?? true
         rssEnabled = UserDefaults.standard.object(forKey: "rssEnabled") as? Bool ?? true
+        todoEnabled = UserDefaults.standard.object(forKey: "todoEnabled") as? Bool ?? true
 
         // AI
         if let data = UserDefaults.standard.data(forKey: "aiConfig"),
@@ -616,5 +634,41 @@ final class DataStore {
         if let data = try? JSONEncoder().encode(aiConfig) {
             UserDefaults.standard.set(data, forKey: "aiConfig")
         }
+    }
+
+    private func saveTodoTasks() {
+        if let data = try? JSONEncoder().encode(todoTasks) {
+            UserDefaults.standard.set(data, forKey: "todoTasks")
+        }
+    }
+
+    // MARK: - Todo Task Helpers
+
+    func tasksForKey(_ key: String) -> [TodoTask] {
+        todoTasks.filter { $0.dateKey == key }
+    }
+
+    func addTask(_ task: TodoTask, forKey key: String) {
+        var newTask = task
+        newTask.dateKey = key
+        todoTasks.append(newTask)
+    }
+
+    func updateTask(_ task: TodoTask, forKey key: String) {
+        if let index = todoTasks.firstIndex(where: { $0.id == task.id }) {
+            todoTasks[index] = task
+        }
+    }
+
+    func deleteTask(id: UUID, forKey key: String) {
+        todoTasks.removeAll { $0.id == id }
+    }
+
+    var todayTasks: [TodoTask] {
+        tasksForKey(todayKey)
+    }
+
+    var incompleteTodayTasksCount: Int {
+        todayTasks.filter { !$0.isCompleted }.count
     }
 }
