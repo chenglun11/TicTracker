@@ -32,11 +32,13 @@ struct TodoTask: Codable, Identifiable {
     var completedAt: Date?
     var notificationID: String?
     var dateKey: String
+    var reminderMinutes: Int?
 
     init(id: UUID = UUID(), title: String, description: String = "",
          isCompleted: Bool = false, dueDate: Date? = nil,
          priority: TaskPriority = .medium, createdAt: Date = Date(),
-         completedAt: Date? = nil, notificationID: String? = nil, dateKey: String) {
+         completedAt: Date? = nil, notificationID: String? = nil, dateKey: String,
+         reminderMinutes: Int? = nil) {
         self.id = id
         self.title = title
         self.description = description
@@ -47,5 +49,6 @@ struct TodoTask: Codable, Identifiable {
         self.completedAt = completedAt
         self.notificationID = notificationID
         self.dateKey = dateKey
+        self.reminderMinutes = reminderMinutes
     }
 }

@@ -27,7 +27,12 @@ struct TodoView: View {
     }
 
     private var allTasks: [TodoTask] {
-        store.tasksForKey(selectedKey)
+        let tasksForDate = store.tasksForKey(selectedKey)
+        let tasksWithDeadline = store.todoTasks.filter { task in
+            guard let dueDate = task.dueDate else { return false }
+            return Calendar.current.isDate(dueDate, inSameDayAs: selectedDate) && task.dateKey != selectedKey
+        }
+        return tasksForDate + tasksWithDeadline
     }
 
     private var filteredTasks: [TodoTask] {
@@ -481,6 +486,9 @@ struct TaskEditSheet: View {
     @State private var hasDueDate = false
     @State private var dueDate = Date()
     @State private var isCompleted = false
+    @State private var hasReminder = false
+    @State private var reminderValue = 15
+    @State private var reminderUnit = 0 // 0=分钟, 1=小时, 2=天
 
     private var isEditing: Bool { task != nil }
 
@@ -592,6 +600,45 @@ struct TaskEditSheet: View {
 
                     // Due date section
                     DueDateSection(hasDueDate: $hasDueDate, dueDate: $dueDate)
+
+                    // Reminder section
+                    if hasDueDate {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label("提醒时间", systemImage: "bell")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+
+                                Spacer()
+
+                                Toggle("", isOn: $hasReminder)
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                                    .controlSize(.mini)
+                            }
+
+                            if hasReminder {
+                                HStack(spacing: 8) {
+                                    Text("提前")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+
+                                    TextField("", value: $reminderValue, format: .number)
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(width: 60)
+                                        .font(.system(size: 12))
+
+                                    Picker("", selection: $reminderUnit) {
+                                        Text("分钟").tag(0)
+                                        Text("小时").tag(1)
+                                        Text("天").tag(2)
+                                    }
+                                    .labelsHidden()
+                                    .frame(width: 80)
+                                }
+                            }
+                        }
+                    }
                 }
                 .padding(20)
             }
@@ -607,6 +654,19 @@ struct TaskEditSheet: View {
                     hasDueDate = true
                     dueDate = due
                 }
+                if let minutes = task.reminderMinutes {
+                    hasReminder = true
+                    if minutes % 1440 == 0 {
+                        reminderValue = minutes / 1440
+                        reminderUnit = 2
+                    } else if minutes % 60 == 0 {
+                        reminderValue = minutes / 60
+                        reminderUnit = 1
+                    } else {
+                        reminderValue = minutes
+                        reminderUnit = 0
+                    }
+                }
             }
         }
     }
@@ -614,6 +674,16 @@ struct TaskEditSheet: View {
     private func saveTask() {
         let trimmedTitle = title.trimmingCharacters(in: .whitespaces)
         guard !trimmedTitle.isEmpty else { return }
+
+        let reminderMinutes: Int? = {
+            guard hasReminder else { return nil }
+            switch reminderUnit {
+            case 0: return reminderValue
+            case 1: return reminderValue * 60
+            case 2: return reminderValue * 1440
+            default: return nil
+            }
+        }()
 
         if let existingTask = task {
             var updatedTask = existingTask
@@ -623,12 +693,13 @@ struct TaskEditSheet: View {
             updatedTask.dueDate = hasDueDate ? dueDate : nil
             updatedTask.isCompleted = isCompleted
             updatedTask.completedAt = isCompleted ? (existingTask.isCompleted ? existingTask.completedAt : Date()) : nil
+            updatedTask.reminderMinutes = reminderMinutes
 
             if let oldNotificationID = existingTask.notificationID {
                 NotificationManager.shared.cancelTaskNotification(notificationID: oldNotificationID)
             }
 
-            if hasDueDate, !updatedTask.isCompleted, dueDate > Date() {
+            if reminderMinutes != nil, !updatedTask.isCompleted {
                 let notificationID = "task-\(updatedTask.id.uuidString)"
                 updatedTask.notificationID = notificationID
                 NotificationManager.shared.scheduleTaskNotification(task: updatedTask, dateKey: dateKey)
@@ -638,19 +709,19 @@ struct TaskEditSheet: View {
 
             store.updateTask(updatedTask, forKey: dateKey)
         } else {
-            let notificationID = hasDueDate && dueDate > Date() ? "task-\(UUID().uuidString)" : nil
             let newTask = TodoTask(
                 title: trimmedTitle,
                 description: description,
                 dueDate: hasDueDate ? dueDate : nil,
                 priority: priority,
-                notificationID: notificationID,
-                dateKey: dateKey
+                notificationID: reminderMinutes != nil ? "task-\(UUID().uuidString)" : nil,
+                dateKey: dateKey,
+                reminderMinutes: reminderMinutes
             )
 
             store.addTask(newTask, forKey: dateKey)
 
-            if hasDueDate && dueDate > Date() {
+            if reminderMinutes != nil {
                 NotificationManager.shared.scheduleTaskNotification(task: newTask, dateKey: dateKey)
             }
         }

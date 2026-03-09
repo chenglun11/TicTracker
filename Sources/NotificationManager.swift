@@ -204,7 +204,10 @@ final class NotificationManager {
     // MARK: - Todo Task Notifications
 
     func scheduleTaskNotification(task: TodoTask, dateKey: String) {
-        guard let dueDate = task.dueDate else { return }
+        guard let dueDate = task.dueDate, let reminderMinutes = task.reminderMinutes, reminderMinutes > 0 else { return }
+
+        let reminderDate = dueDate.addingTimeInterval(-Double(reminderMinutes * 60))
+        guard reminderDate > Date() else { return }
 
         let center = UNUserNotificationCenter.current()
         let notificationID = task.notificationID ?? "task-\(task.id.uuidString)"
@@ -219,7 +222,7 @@ final class NotificationManager {
             "dateKey": dateKey
         ]
 
-        let trigger = UNCalendarNotificationTrigger(dateMatching: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate), repeats: false)
+        let trigger = UNCalendarNotificationTrigger(dateMatching: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: reminderDate), repeats: false)
         let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: trigger)
 
         Task {
