@@ -30,7 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // Set up popover with MenuBarView
         popover.contentSize = NSSize(width: 360, height: 500)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: MenuBarView(store: store))
+        let vc = NSHostingController(rootView: MenuBarView(store: store))
+        vc.preferredContentSize = NSSize(width: 360, height: 500)
+        popover.contentViewController = vc
 
         // Subscribe to record changes to update status bar title
         store.$records

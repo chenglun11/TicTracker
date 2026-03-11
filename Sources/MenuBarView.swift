@@ -93,7 +93,6 @@ struct MenuBarView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
         VStack(alignment: .leading, spacing: 8) {
             // Date navigation
             HStack {
@@ -281,11 +280,9 @@ struct MenuBarView: View {
                 }
                 .buttonStyle(.borderless)
             }
-        } // VStack
+        }
         .padding()
-        .frame(width: 340)
-        } // ScrollView
-        .frame(width: 360, height: 500)
+        .frame(width: 340, height: 480)
         .onAppear {
             selectedDate = Date()
             noteText = store.noteForKey(selectedKey)
