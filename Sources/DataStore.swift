@@ -648,6 +648,16 @@ final class DataStore {
         todoTasks.filter { $0.dateKey == key }
     }
 
+    func allTasksForDate(_ date: Date) -> [TodoTask] {
+        let key = Self.dateKey(from: date)
+        let byDateKey = todoTasks.filter { $0.dateKey == key }
+        let byDueDate = todoTasks.filter { task in
+            guard let dueDate = task.dueDate else { return false }
+            return Calendar.current.isDate(dueDate, inSameDayAs: date) && task.dateKey != key
+        }
+        return byDateKey + byDueDate
+    }
+
     func addTask(_ task: TodoTask, forKey key: String) {
         var newTask = task
         newTask.dateKey = key
@@ -665,7 +675,7 @@ final class DataStore {
     }
 
     var todayTasks: [TodoTask] {
-        tasksForKey(todayKey)
+        allTasksForDate(Date())
     }
 
     var incompleteTodayTasksCount: Int {

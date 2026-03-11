@@ -27,12 +27,7 @@ struct TodoView: View {
     }
 
     private var allTasks: [TodoTask] {
-        let tasksForDate = store.tasksForKey(selectedKey)
-        let tasksWithDeadline = store.todoTasks.filter { task in
-            guard let dueDate = task.dueDate else { return false }
-            return Calendar.current.isDate(dueDate, inSameDayAs: selectedDate) && task.dateKey != selectedKey
-        }
-        return tasksForDate + tasksWithDeadline
+        store.allTasksForDate(selectedDate)
     }
 
     private var filteredTasks: [TodoTask] {

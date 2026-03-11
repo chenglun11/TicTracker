@@ -57,11 +57,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                    let taskID = UUID(uuidString: taskIDString),
                    let dateKey,
                    let capturedStore {
-                    var tasks = capturedStore.tasksForKey(dateKey)
-                    if let index = tasks.firstIndex(where: { $0.id == taskID }) {
-                        tasks[index].isCompleted = true
-                        tasks[index].completedAt = Date()
-                        capturedStore.updateTask(tasks[index], forKey: dateKey)
+                    if let index = capturedStore.todoTasks.firstIndex(where: { $0.id == taskID }) {
+                        var updatedTask = capturedStore.todoTasks[index]
+                        updatedTask.isCompleted = true
+                        updatedTask.completedAt = Date()
+                        capturedStore.updateTask(updatedTask, forKey: dateKey)
                         DevLog.shared.info("Notify", "任务已标记完成")
                     }
                 }
@@ -71,8 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                    let taskID = UUID(uuidString: taskIDString),
                    let dateKey,
                    let capturedStore {
-                    let tasks = capturedStore.tasksForKey(dateKey)
-                    if let task = tasks.first(where: { $0.id == taskID }) {
+                    if let task = capturedStore.todoTasks.first(where: { $0.id == taskID }) {
                         NotificationManager.shared.snoozeTaskNotification(task: task, dateKey: dateKey)
                     }
                 }

@@ -171,7 +171,7 @@ struct MenuBarView: View {
 
             // Todo tasks section
             if store.todoEnabled {
-                let tasks = store.tasksForKey(selectedKey).filter { !$0.isCompleted }
+                let tasks = store.allTasksForDate(selectedDate).filter { !$0.isCompleted }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Image(systemName: "checklist")

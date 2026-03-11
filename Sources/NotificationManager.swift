@@ -232,7 +232,9 @@ final class NotificationManager {
     }
 
     func cancelTaskNotification(notificationID: String) {
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [notificationID])
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [notificationID])
+        center.removeDeliveredNotifications(withIdentifiers: [notificationID])
         DevLog.shared.info("Notify", "任务通知已取消: \(notificationID)")
     }
 
