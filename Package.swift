@@ -1,17 +1,13 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 5.9
 import PackageDescription
 
 let package = Package(
     name: "TicTracker",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v10_15)],
     targets: [
         .executableTarget(
             name: "TicTracker",
-            path: "Sources",
-            swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
-                .unsafeFlags(["-warnings-as-errors"]),
-            ]
+            path: "Sources"
         )
     ]
 )

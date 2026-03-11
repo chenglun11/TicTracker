@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 
-@MainActor
 struct WeeklyReport {
     static func generate(from store: DataStore) -> String {
         let calendar = Calendar.current
@@ -54,37 +53,12 @@ struct WeeklyReport {
         let grand = totals.values.reduce(0, +)
         lines.append("合计: \(grand) 次")
 
-        // Jira issue counts for the week
-        var jiraTotals: [String: Int] = [:]
-        var jiraDate = monday
-        while jiraDate <= today {
-            let key = fmt.string(from: jiraDate)
-            if let dayCounts = store.jiraIssueCounts[key] {
-                for (issueKey, count) in dayCounts {
-                    jiraTotals[issueKey, default: 0] += count
-                }
-            }
-            jiraDate = calendar.date(byAdding: .day, value: 1, to: jiraDate)!
-        }
-        if !jiraTotals.isEmpty {
-            lines.append("")
-            lines.append("--- Jira 工单支持 ---")
-            let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
-            for (issueKey, count) in jiraTotals.sorted(by: { $0.value > $1.value }) {
-                let summary = issueMap[issueKey].map { " \($0)" } ?? ""
-                lines.append("\(issueKey)\(summary): \(count) 次")
-            }
-            let jiraGrand = jiraTotals.values.reduce(0, +)
-            lines.append("Jira 合计: \(jiraGrand) 次")
-        }
-
         // Daily breakdown
         let weekdayFmt = DateFormatter()
         weekdayFmt.dateFormat = "M/d（EEE）"
         weekdayFmt.locale = Locale(identifier: "zh_CN")
 
         var detailLines: [String] = []
-        let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
         var detailDate = monday
         while detailDate <= today {
             let key = fmt.string(from: detailDate)
@@ -93,14 +67,6 @@ struct WeeklyReport {
                 parts += allDepts
                     .filter { dayRecords[$0, default: 0] > 0 }
                     .map { "\($0)×\(dayRecords[$0]!)" }
-            }
-            if let dayCounts = store.jiraIssueCounts[key] {
-                let jiraParts = dayCounts.sorted(by: { $0.value > $1.value })
-                    .map { issueKey, count in
-                        let summary = issueMap[issueKey] ?? issueKey
-                        return "\(summary)×\(count)"
-                    }
-                parts += jiraParts
             }
             if !parts.isEmpty {
                 let label = weekdayFmt.string(from: detailDate)

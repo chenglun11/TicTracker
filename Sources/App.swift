@@ -1,180 +1,144 @@
+import AppKit
 import SwiftUI
+import Combine
 import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    var store: DataStore?
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        UNUserNotificationCenter.current().delegate = self
-        if let store {
-            HotkeyManager.shared.setup(store: store)
-        }
-    }
-
-    // Show banner + sound even when app is in foreground
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                willPresent notification: UNNotification,
-                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound])
-    }
-
-    // Handle notification action buttons
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                didReceive response: UNNotificationResponse,
-                                withCompletionHandler completionHandler: @escaping () -> Void) {
-        let actionID = response.actionIdentifier
-        let link = response.notification.request.content.userInfo["link"] as? String
-        let taskIDString = response.notification.request.content.userInfo["taskID"] as? String
-        let dateKey = response.notification.request.content.userInfo["dateKey"] as? String
-        let capturedStore = store
-
-        MainActor.assumeIsolated {
-            switch actionID {
-            case NotificationManager.actionOpenDaily:
-                NSApp.activate(ignoringOtherApps: true)
-                NotificationCenter.default.post(name: .openWindowRequest, object: "recent-notes")
-
-            case NotificationManager.actionSnooze:
-                NotificationManager.shared.snoozeReminder()
-
-            case NotificationManager.actionOpenRSSLink:
-                if let link, let url = URL(string: link) {
-                    NSWorkspace.shared.open(url)
-                }
-
-            case NotificationManager.actionCopyWeekly:
-                if let capturedStore {
-                    WeeklyReport.copyToClipboard(from: capturedStore)
-                    DevLog.shared.info("Notify", "周报已复制到剪贴板")
-                }
-
-            case NotificationManager.actionViewStats:
-                NSApp.activate(ignoringOtherApps: true)
-                NotificationCenter.default.post(name: .openWindowRequest, object: "statistics")
-
-            case NotificationManager.actionCompleteTask:
-                if let taskIDString,
-                   let taskID = UUID(uuidString: taskIDString),
-                   let dateKey,
-                   let capturedStore {
-                    if let index = capturedStore.todoTasks.firstIndex(where: { $0.id == taskID }) {
-                        var updatedTask = capturedStore.todoTasks[index]
-                        updatedTask.isCompleted = true
-                        updatedTask.completedAt = Date()
-                        capturedStore.updateTask(updatedTask, forKey: dateKey)
-                        DevLog.shared.info("Notify", "任务已标记完成")
-                    }
-                }
-
-            case NotificationManager.actionSnoozeTask:
-                if let taskIDString,
-                   let taskID = UUID(uuidString: taskIDString),
-                   let dateKey,
-                   let capturedStore {
-                    if let task = capturedStore.todoTasks.first(where: { $0.id == taskID }) {
-                        NotificationManager.shared.snoozeTaskNotification(task: task, dateKey: dateKey)
-                    }
-                }
-
-            case NotificationManager.actionOpenTodo:
-                NSApp.activate(ignoringOtherApps: true)
-                NotificationCenter.default.post(name: .openWindowRequest, object: "todo")
-
-            case UNNotificationDefaultActionIdentifier:
-                NSApp.activate(ignoringOtherApps: true)
-
-            default:
-                break
-            }
-        }
-
-        completionHandler()
-    }
-}
-
 extension Notification.Name {
-    static let openWindowRequest = Notification.Name("openWindowRequest")
+    static let openSettings = Notification.Name("openSettings")
     static let generateWeeklyReport = Notification.Name("generateWeeklyReport")
 }
 
 @main
-struct TicTrackerApp: App {
-    @State private var store = DataStore()
-    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
-    @Environment(\.openWindow) private var openWindow
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    private var statusItem: NSStatusItem!
+    private let popover = NSPopover()
+    private let store = DataStore()
+    private var cancellables = Set<AnyCancellable>()
+    private var settingsWindow: NSWindow?
 
-    var body: some Scene {
-        MenuBarExtra {
-            MenuBarView(store: store)
-                .onAppear {
-                    if appDelegate.store == nil {
-                        appDelegate.store = store
-                        DevLog.shared.info("App", "启动 TicTracker")
-                        HotkeyManager.shared.setup(store: store)
-                        NotificationManager.shared.refreshReminderIfNeeded()
-                        NotificationManager.shared.sendWelcome()
-                        UpdateChecker.shared.checkInBackground()
-                        RSSFeedManager.shared.setup(store: store)
-                        if store.rssEnabled {
-                            RSSFeedManager.shared.startPolling()
-                        }
-                        JiraService.shared.setup(store: store)
-                        if store.jiraConfig.enabled {
-                            JiraService.shared.startPolling()
-                        }
-                    }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Set up notification delegate
+        UNUserNotificationCenter.current().delegate = self
+
+        // Create status bar item
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem.button {
+            button.title = "\(store.todayTotal)"
+            button.target = self
+            button.action = #selector(togglePopover(_:))
+        }
+
+        // Set up popover with MenuBarView
+        popover.contentSize = NSSize(width: 360, height: 500)
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: MenuBarView(store: store))
+
+        // Subscribe to store changes to update status bar title
+        store.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                DispatchQueue.main.async {
+                    self.statusItem.button?.title = "\(self.store.todayTotal)"
                 }
-                .onReceive(NotificationCenter.default.publisher(for: .openWindowRequest)) { notification in
-                    if let windowID = notification.object as? String {
-                        openWindow(id: windowID)
-                    }
-                }
-        } label: {
-            HStack(spacing: 2) {
-                Image(systemName: "plus.circle.fill")
-                Text("\(store.todayTotal)")
             }
-        }
-        .menuBarExtraStyle(.window)
+            .store(in: &cancellables)
 
-        Window("设置", id: "settings") {
-            SettingsView(store: store)
-        }
-        .defaultSize(width: 600, height: 460)
+        // Listen for openSettings notification
+        NotificationCenter.default.publisher(for: .openSettings)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.openSettingsWindow()
+            }
+            .store(in: &cancellables)
 
-        Window("最近日记", id: "recent-notes") {
-            RecentNotesView(store: store)
-        }
-        .defaultSize(width: 360, height: 420)
+        // Listen for generateWeeklyReport notification
+        NotificationCenter.default.publisher(for: .generateWeeklyReport)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                WeeklyReport.copyToClipboard(from: self.store)
+            }
+            .store(in: &cancellables)
 
-        Window("RSS 订阅", id: "rss-reader") {
-            RSSReaderView(store: store)
-        }
-        .defaultSize(width: 650, height: 500)
+        // Initialize services
+        NotificationManager.shared.requestPermission()
+        NotificationManager.shared.refreshReminderIfNeeded()
+        NotificationManager.shared.sendWelcome()
+    }
 
-        Window("Jira 工单", id: "jira") {
-            JiraView(store: store)
-        }
-        .defaultSize(width: 700, height: 500)
+    // MARK: - Popover
 
-        Window("开发者日志", id: "dev-log") {
-            DevLogView()
+    @objc private func togglePopover(_ sender: Any?) {
+        if popover.isShown {
+            popover.performClose(sender)
+        } else if let button = statusItem.button {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            NSApp.activate(ignoringOtherApps: true)
         }
-        .defaultSize(width: 700, height: 450)
+    }
 
-        Window("统计", id: "statistics") {
-            StatisticsView(store: store)
-        }
-        .defaultSize(width: 650, height: 500)
+    // MARK: - Settings Window
 
-        Window("AI 对话", id: "ai-chat") {
-            AIChatView(store: store)
+    private func openSettingsWindow() {
+        if let window = settingsWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
         }
-        .defaultSize(width: 600, height: 700)
 
-        Window("待办任务", id: "todo") {
-            TodoView(store: store)
+        let settingsView = SettingsView(store: store)
+        let hostingView = NSHostingView(rootView: settingsView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 600, height: 460)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 460),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "设置"
+        window.contentView = hostingView
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        settingsWindow = window
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.alert, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let actionID = response.actionIdentifier
+
+        switch actionID {
+        case NotificationManager.actionOpenDaily:
+            NSApp.activate(ignoringOtherApps: true)
+
+        case NotificationManager.actionSnooze:
+            NotificationManager.shared.snoozeReminder()
+
+        case NotificationManager.actionCopyWeekly:
+            WeeklyReport.copyToClipboard(from: store)
+
+        case NotificationManager.actionViewStats:
+            NSApp.activate(ignoringOtherApps: true)
+
+        case UNNotificationDefaultActionIdentifier:
+            NSApp.activate(ignoringOtherApps: true)
+
+        default:
+            break
         }
-        .defaultSize(width: 650, height: 550)
+
+        completionHandler()
     }
 }

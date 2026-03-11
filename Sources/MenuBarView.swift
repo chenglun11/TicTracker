@@ -1,13 +1,73 @@
 import SwiftUI
+import Combine
+
+let departmentColors: [Color] = [.blue, .purple, .orange, .green, .pink, .yellow, .red, .gray, Color(red: 0, green: 0.8, blue: 0.8)]
+
+// MARK: - NoteTextView (NSViewRepresentable)
+
+struct NoteTextView: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        let textView = NSTextView()
+
+        textView.delegate = context.coordinator
+        textView.isRichText = false
+        textView.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 4, height: 4)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        textView.autoresizingMask = [.width]
+
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? NSTextView else { return }
+        if textView.string != text {
+            textView.string = text
+        }
+    }
+
+    class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: NoteTextView
+
+        init(_ parent: NoteTextView) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+        }
+    }
+}
+
+// MARK: - MenuBarView
 
 struct MenuBarView: View {
-    @Bindable var store: DataStore
-    @Environment(\.openWindow) private var openWindow
+    @ObservedObject var store: DataStore
     @State private var noteText = ""
     @State private var selectedDate = Date()
     @State private var trendExpanded = true
-    @State private var jiraRefreshing = false
-    @State private var animatingDept: String?
+    @State private var weeklyReportLoading = false
+    @State private var weeklyReportResult: String?
 
     private var selectedKey: String {
         DataStore.dateKey(from: selectedDate)
@@ -32,8 +92,8 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 8) {
             // Date navigation
             HStack {
-                Button { shiftDate(-1) } label: {
-                    Image(systemName: "chevron.left")
+                Button(action: { shiftDate(-1) }) {
+                    Text("◀")
                 }
                 .buttonStyle(.borderless)
 
@@ -44,12 +104,12 @@ struct MenuBarView: View {
 
                 Text("· \(displayDate)")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
 
                 Spacer()
 
-                Button { shiftDate(1) } label: {
-                    Image(systemName: "chevron.right")
+                Button(action: { shiftDate(1) }) {
+                    Text("▶")
                 }
                 .buttonStyle(.borderless)
                 .disabled(isToday)
@@ -61,13 +121,14 @@ struct MenuBarView: View {
             }
             .font(.caption)
             .buttonStyle(.borderless)
-            .foregroundStyle(Color.accentColor)
+            .foregroundColor(Color.accentColor)
             .opacity(isToday ? 0 : 1)
             .disabled(isToday)
 
+            // Department counters
             if store.departments.isEmpty {
                 Text("暂无项目，请在设置中添加")
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
             } else {
                 let dayRecords = store.recordsForKey(selectedKey)
                 ForEach(store.departments, id: \.self) { dept in
@@ -76,31 +137,19 @@ struct MenuBarView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         let count = dayRecords[dept, default: 0]
                         Text("\(count)")
-                            .monospacedDigit()
+                            .font(.system(.body, design: .monospaced))
                             .frame(width: 30, alignment: .trailing)
-                        Button { store.decrementForKey(selectedKey, dept: dept) } label: {
-                            Image(systemName: "minus.circle")
+                        Button(action: { store.decrementForKey(selectedKey, dept: dept) }) {
+                            Text("−")
                         }
                         .buttonStyle(.borderless)
                         .disabled(count == 0)
-                        Button {
-                            store.incrementForKey(selectedKey, dept: dept)
-                            DevLog.shared.info("Click", "\(dept) +1")
-                        } label: {
-                            Image(systemName: "plus.circle.fill")
-                                .scaleEffect(animatingDept == dept ? 1.3 : 1.0)
-                                .foregroundStyle(animatingDept == dept ? Color.green : Color.accentColor)
+                        Button(action: { store.incrementForKey(selectedKey, dept: dept) }) {
+                            Text("+")
                         }
                         .buttonStyle(.borderless)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.5), value: animatingDept)
                     }
                 }
-            }
-
-            // Jira section
-            if store.jiraConfig.showInMenuBar {
-                Divider()
-                jiraSection
             }
 
             // Mini weekly trend chart
@@ -108,24 +157,24 @@ struct MenuBarView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Button {
+                        Button(action: {
                             withAnimation { trendExpanded.toggle() }
-                        } label: {
+                        }) {
                             HStack(spacing: 4) {
-                                Image(systemName: trendExpanded ? "chevron.down" : "chevron.right")
-                                    .font(.caption2)
+                                Text(trendExpanded ? "▼" : "▶")
+                                    .font(.system(size: 10))
                                     .frame(width: 10)
                                 Text("本周趋势")
                                     .font(.subheadline)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundColor(.secondary)
                             }
                         }
                         .buttonStyle(.borderless)
                         Spacer()
                         if store.currentStreak > 0 {
-                            Text("🔥 连续 \(store.currentStreak) 天")
+                            Text("连续 \(store.currentStreak) 天")
                                 .font(.caption)
-                                .foregroundStyle(.orange)
+                                .foregroundColor(.orange)
                         }
                     }
                     if trendExpanded {
@@ -136,203 +185,91 @@ struct MenuBarView: View {
 
             Divider()
 
+            // Daily notes
             if store.dailyNoteEnabled {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(store.noteTitle)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    TextEditor(text: $noteText)
-                        .font(.body)
-                        .scrollContentBackground(.hidden)
-                        .scrollIndicators(.hidden)
-                        .frame(height: 80)
-                        .overlay(alignment: .topLeading) {
-                            if noteText.isEmpty {
-                                Text("记录今天做了什么…")
-                                    .font(.body)
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.leading, 5)
-                                    .padding(.top, 1)
-                                    .allowsHitTesting(false)
-                            }
+                        .foregroundColor(.secondary)
+                    ZStack(alignment: .topLeading) {
+                        NoteTextView(text: $noteText)
+                            .frame(height: 80)
+                        if noteText.isEmpty {
+                            Text("记录今天做了什么…")
+                                .font(.body)
+                                .foregroundColor(Color.secondary.opacity(0.5))
+                                .padding(.leading, 8)
+                                .padding(.top, 6)
+                                .allowsHitTesting(false)
                         }
-                        .padding(4)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.secondary.opacity(0.3))
-                        )
-                        .onChange(of: noteText) { _, newValue in
-                            store.setNoteForKey(selectedKey, text: newValue)
-                        }
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.3))
+                    )
+                    .onReceive(Just(noteText)) { newValue in
+                        store.setNoteForKey(selectedKey, text: newValue)
+                    }
                 }
 
                 Divider()
             }
 
-            // Todo tasks section
-            if store.todoEnabled {
-                let tasks = store.allTasksForDate(selectedDate).filter { !$0.isCompleted }
-                VStack(alignment: .leading, spacing: 6) {
+            // Weekly report result
+            if let result = weeklyReportResult {
+                VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Image(systemName: "checklist")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(isToday ? "今日待办" : "当日待办")
+                        Text("AI 周报")
                             .font(.caption.bold())
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(.secondary)
                         Spacer()
-                        if !tasks.isEmpty {
-                            Text("\(tasks.count)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        Button("关闭") {
+                            weeklyReportResult = nil
                         }
-                        Button {
-                            NSApp.setActivationPolicy(.regular)
-                            openWindow(id: "todo")
-                            NSApp.activate(ignoringOtherApps: true)
-                        } label: {
-                            Text("打开")
-                                .font(.caption)
-                        }
+                        .font(.caption)
                         .buttonStyle(.borderless)
-                        .foregroundStyle(.blue)
                     }
-
-                    if tasks.isEmpty {
-                        Text("暂无待办任务")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        ForEach(tasks.prefix(3)) { task in
-                            CompactTaskRow(task: task, dateKey: selectedKey, store: store)
-                        }
-
-                        if tasks.count > 3 {
-                            Text("还有 \(tasks.count - 3) 个任务…")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
+                    Text(result)
+                        .font(.caption)
+                        .lineLimit(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.vertical, 4)
-
                 Divider()
             }
 
+            // Bottom toolbar
             HStack {
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "statistics")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "chart.bar.xaxis")
+                Button(action: {
+                    NotificationCenter.default.post(name: .openSettings, object: nil)
+                }) {
+                    Text("⚙")
                 }
                 .buttonStyle(.borderless)
-                .help("统计")
 
                 Spacer()
 
-                if store.rssEnabled {
-                    Button {
-                        NSApp.setActivationPolicy(.regular)
-                        openWindow(id: "rss-reader")
-                        NSApp.activate(ignoringOtherApps: true)
-                    } label: {
-                        Image(systemName: "dot.radiowaves.up.forward")
+                Button(action: {
+                    generateWeeklyReport()
+                }) {
+                    if weeklyReportLoading {
+                        Text("生成中…")
+                            .font(.caption)
+                    } else {
+                        Text("周报")
+                            .font(.caption)
                     }
-                    .buttonStyle(.borderless)
-                    .help("RSS 订阅")
-
-                    Spacer()
-                }
-
-                if store.jiraConfig.showInMenuBar {
-                    Button {
-                        NSApp.setActivationPolicy(.regular)
-                        openWindow(id: "jira")
-                        NSApp.activate(ignoringOtherApps: true)
-                    } label: {
-                        Image(systemName: "server.rack")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Jira 工单")
-
-                    Spacer()
-                }
-
-                if store.dailyNoteEnabled {
-                    Button {
-                        NSApp.setActivationPolicy(.regular)
-                        openWindow(id: "recent-notes")
-                        NSApp.activate(ignoringOtherApps: true)
-                    } label: {
-                        Image(systemName: "clock.arrow.circlepath")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("查看日记")
-
-                    Spacer()
-                }
-
-                if store.aiEnabled {
-                    Button {
-                        NSApp.setActivationPolicy(.regular)
-                        openWindow(id: "ai-chat")
-                        NSApp.activate(ignoringOtherApps: true)
-                    } label: {
-                        Image(systemName: "bubble.left.and.bubble.right")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("AI 对话")
-
-                    Spacer()
-                }
-
-                if store.todoEnabled {
-                    Button {
-                        NSApp.setActivationPolicy(.regular)
-                        openWindow(id: "todo")
-                        NSApp.activate(ignoringOtherApps: true)
-                    } label: {
-                        Image(systemName: "checklist")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("待办任务")
-
-                    Spacer()
-                }
-
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "dev-log")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "terminal")
                 }
                 .buttonStyle(.borderless)
-                .help("开发者日志")
+                .disabled(weeklyReportLoading)
 
                 Spacer()
 
-                Button {
-                    NSApp.setActivationPolicy(.regular)
-                    openWindow(id: "settings")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .help("设置")
-
-                Spacer()
-
-                Button {
+                Button(action: {
                     NSApp.terminate(nil)
-                } label: {
-                    Image(systemName: "power")
+                }) {
+                    Text("✕")
                 }
                 .buttonStyle(.borderless)
-                .help("退出")
             }
         }
         .padding()
@@ -341,73 +278,41 @@ struct MenuBarView: View {
             selectedDate = Date()
             noteText = store.noteForKey(selectedKey)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .hotkeyTriggered)) { notification in
-            guard let dept = notification.object as? String else { return }
-            animatingDept = dept
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(300))
-                animatingDept = nil
-            }
-        }
     }
 
-    // MARK: - Jira Section
-
-    @ViewBuilder
-    private var jiraSection: some View {
-        HStack {
-            HStack(spacing: 4) {
-                Image(systemName: "server.rack")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text("Jira")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                if store.jiraConfig.enabled {
-                    Text("\(store.jiraIssues.count) 个工单")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            Spacer()
-
-            if store.jiraConfig.enabled {
-                Button {
-                    jiraRefreshing = true
-                    Task {
-                        _ = await JiraService.shared.fetchMyIssues()
-                        jiraRefreshing = false
-                    }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .disabled(jiraRefreshing)
-            }
-
-            Button {
-                NSApp.setActivationPolicy(.regular)
-                openWindow(id: "jira")
-                NSApp.activate(ignoringOtherApps: true)
-            } label: {
-                Text("打开")
-                    .font(.caption)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.blue)
-        }
-    }
+    // MARK: - Helpers
 
     private func shiftDate(_ days: Int) {
         if let d = Calendar.current.date(byAdding: .day, value: days, to: selectedDate) {
-            // Don't go past today
             selectedDate = min(d, Date())
             noteText = store.noteForKey(selectedKey)
         }
     }
+
+    private func generateWeeklyReport() {
+        let rawReport = WeeklyReport.generate(from: store)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(rawReport, forType: .string)
+
+        if store.aiEnabled {
+            weeklyReportLoading = true
+            let config = store.aiConfig
+            Task { @MainActor in
+                do {
+                    let aiReport = try await AIService.shared.generateWeeklyReport(rawReport: rawReport, config: config)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(aiReport, forType: .string)
+                    weeklyReportResult = aiReport
+                } catch {
+                    weeklyReportResult = "AI 生成失败: \(error.localizedDescription)"
+                }
+                weeklyReportLoading = false
+            }
+        }
+    }
 }
+
+// MARK: - MiniChartView
 
 private struct MiniChartView: View {
     let data: [(date: String, weekday: String, breakdown: [(dept: String, count: Int)])]
@@ -424,12 +329,12 @@ private struct MiniChartView: View {
                     if total > 0 {
                         Text("\(total)")
                             .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(.secondary)
                     }
                     stackedBar(date: item.date, breakdown: item.breakdown, total: total, maxVal: maxVal)
                     Text(item.weekday)
                         .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .foregroundColor(Color.secondary.opacity(0.5))
                 }
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
@@ -485,8 +390,7 @@ private struct MiniChartView: View {
                         .font(.caption)
                     Spacer()
                     Text("\(segment.count)")
-                        .font(.caption)
-                        .monospacedDigit()
+                        .font(.system(.caption, design: .monospaced))
                 }
             }
             if total > 0 {
@@ -494,95 +398,11 @@ private struct MiniChartView: View {
                 HStack {
                     Text("合计").font(.caption.bold())
                     Spacer()
-                    Text("\(total)").font(.caption.bold()).monospacedDigit()
+                    Text("\(total)").font(.system(.caption, design: .monospaced)).bold()
                 }
             }
         }
         .padding(8)
         .frame(width: 150)
-    }
-}
-
-// MARK: - Compact Task Row
-
-struct CompactTaskRow: View {
-    let task: TodoTask
-    let dateKey: String
-    @Bindable var store: DataStore
-
-    private var isOverdue: Bool {
-        guard let dueDate = task.dueDate else { return false }
-        return dueDate < Date()
-    }
-
-    private var priorityColor: Color {
-        switch task.priority {
-        case .low: return .green
-        case .medium: return .orange
-        case .high: return .red
-        }
-    }
-
-    private static let timeFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "HH:mm"
-        return fmt
-    }()
-
-    private static let dateFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "M/d"
-        return fmt
-    }()
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Button {
-                toggleCompletion()
-            } label: {
-                Image(systemName: "circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-
-            Circle()
-                .fill(priorityColor)
-                .frame(width: 4, height: 4)
-
-            Text(task.title)
-                .font(.caption)
-                .lineLimit(1)
-
-            Spacer()
-
-            if let dueDate = task.dueDate {
-                Text(formatDueDate(dueDate))
-                    .font(.caption2)
-                    .foregroundStyle(isOverdue ? .red : .secondary)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func toggleCompletion() {
-        var updatedTask = task
-        updatedTask.isCompleted = true
-        updatedTask.completedAt = Date()
-
-        if let notificationID = updatedTask.notificationID {
-            NotificationManager.shared.cancelTaskNotification(notificationID: notificationID)
-        }
-
-        store.updateTask(updatedTask, forKey: dateKey)
-    }
-
-    private func formatDueDate(_ date: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) {
-            return Self.timeFormatter.string(from: date)
-        } else {
-            return Self.dateFormatter.string(from: date)
-        }
     }
 }
