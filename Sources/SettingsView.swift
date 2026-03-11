@@ -163,9 +163,12 @@ struct SettingsView: View {
                         Text("自定义 Prompt（留空使用默认）")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        // Use a plain TextField for the prompt since TextEditor requires macOS 11
-                        TextField("自定义周报生成 Prompt", text: $store.aiConfig.customPrompt)
-                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                        NoteTextView(text: $store.aiConfig.customPrompt)
+                            .frame(height: 120)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.3))
+                            )
                     }
                 }
             }

@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 
 let departmentColors: [Color] = [.blue, .purple, .orange, .green, .pink, .yellow, .red, .gray, Color(red: 0, green: 0.8, blue: 0.8)]
 
@@ -7,6 +6,7 @@ let departmentColors: [Color] = [.blue, .purple, .orange, .green, .pink, .yellow
 
 struct NoteTextView: NSViewRepresentable {
     @Binding var text: String
+    var onTextChange: ((String) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -41,20 +41,24 @@ struct NoteTextView: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
         if textView.string != text {
+            context.coordinator.isUpdating = true
             textView.string = text
+            context.coordinator.isUpdating = false
         }
     }
 
     class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NoteTextView
+        var isUpdating = false
 
         init(_ parent: NoteTextView) {
             self.parent = parent
         }
 
         func textDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
+            guard !isUpdating, let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
+            parent.onTextChange?(textView.string)
         }
     }
 }
@@ -89,6 +93,7 @@ struct MenuBarView: View {
     }
 
     var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
         VStack(alignment: .leading, spacing: 8) {
             // Date navigation
             HStack {
@@ -192,7 +197,9 @@ struct MenuBarView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     ZStack(alignment: .topLeading) {
-                        NoteTextView(text: $noteText)
+                        NoteTextView(text: $noteText) { newValue in
+                            store.setNoteForKey(selectedKey, text: newValue)
+                        }
                             .frame(height: 80)
                         if noteText.isEmpty {
                             Text("记录今天做了什么…")
@@ -207,9 +214,6 @@ struct MenuBarView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(Color.secondary.opacity(0.3))
                     )
-                    .onReceive(Just(noteText)) { newValue in
-                        store.setNoteForKey(selectedKey, text: newValue)
-                    }
                 }
 
                 Divider()
@@ -223,6 +227,12 @@ struct MenuBarView: View {
                             .font(.caption.bold())
                             .foregroundColor(.secondary)
                         Spacer()
+                        Button("复制") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(result, forType: .string)
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
                         Button("关闭") {
                             weeklyReportResult = nil
                         }
@@ -271,9 +281,11 @@ struct MenuBarView: View {
                 }
                 .buttonStyle(.borderless)
             }
-        }
+        } // VStack
         .padding()
-        .frame(width: 300)
+        .frame(width: 340)
+        } // ScrollView
+        .frame(width: 360, height: 500)
         .onAppear {
             selectedDate = Date()
             noteText = store.noteForKey(selectedKey)

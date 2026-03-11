@@ -8,7 +8,6 @@ extension Notification.Name {
     static let generateWeeklyReport = Notification.Name("generateWeeklyReport")
 }
 
-@main
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -33,14 +32,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: MenuBarView(store: store))
 
-        // Subscribe to store changes to update status bar title
-        store.objectWillChange
-            .receive(on: DispatchQueue.main)
+        // Subscribe to record changes to update status bar title
+        store.$records
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self = self else { return }
-                DispatchQueue.main.async {
-                    self.statusItem.button?.title = "\(self.store.todayTotal)"
-                }
+                self.statusItem.button?.title = "\(self.store.todayTotal)"
             }
             .store(in: &cancellables)
 
