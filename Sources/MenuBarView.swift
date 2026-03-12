@@ -447,6 +447,11 @@ final class MenuBarViewController: NSViewController {
         let displayDate = Self.displayDateFormatter.string(from: selectedDate)
         dateLabel.stringValue = "\(store.popoverTitle) · \(displayDate)"
         backTodayButton.isHidden = isToday
+
+        // Disable next button when showing today
+        if let nextBtn = view.viewWithTag(1) as? NSButton {
+            nextBtn.isEnabled = !isToday
+        }
     }
 
     private func refreshDepartments() {
