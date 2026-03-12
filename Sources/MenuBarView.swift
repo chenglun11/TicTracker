@@ -83,8 +83,6 @@ final class MenuBarViewController: NSViewController {
     private var weeklyReportResult: String?
 
     // UI elements
-    private let scrollView = NSScrollView()
-    private let contentView = NSView()
     private var dateLabel: NSTextField!
     private var backTodayButton: NSButton!
     private var departmentRows: NSStackView!
@@ -162,7 +160,9 @@ final class MenuBarViewController: NSViewController {
         backTodayButton = NSButton(title: "回到今天", target: self, action: #selector(backToToday))
         backTodayButton.isBordered = false
         backTodayButton.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        backTodayButton.contentTintColor = .controlAccentColor
+        if #available(macOS 11.0, *) {
+            backTodayButton.contentTintColor = .controlAccentColor
+        }
         stack.addArrangedSubview(backTodayButton)
 
         // 3. Department counters
@@ -262,7 +262,9 @@ final class MenuBarViewController: NSViewController {
         trendToggleButton = NSButton(title: "▼ 本周趋势", target: self, action: #selector(toggleTrend))
         trendToggleButton.isBordered = false
         trendToggleButton.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        trendToggleButton.contentTintColor = .secondaryLabelColor
+        if #available(macOS 11.0, *) {
+            trendToggleButton.contentTintColor = .secondaryLabelColor
+        }
         headerRow.addArrangedSubview(trendToggleButton)
 
         streakLabel = makeLabel("", font: .systemFont(ofSize: NSFont.smallSystemFontSize))
@@ -410,14 +412,18 @@ final class MenuBarViewController: NSViewController {
         settingsBtn.font = NSFont.systemFont(ofSize: 14)
         row.addArrangedSubview(settingsBtn)
 
-        row.addArrangedSubview(NSView()) // spacer
+        let spacer1 = NSView()
+        spacer1.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(spacer1)
 
         weeklyButton = NSButton(title: "周报", target: self, action: #selector(generateReport))
         weeklyButton.isBordered = false
         weeklyButton.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         row.addArrangedSubview(weeklyButton)
 
-        row.addArrangedSubview(NSView()) // spacer
+        let spacer2 = NSView()
+        spacer2.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(spacer2)
 
         let quitBtn = NSButton(title: "✕", target: self, action: #selector(quitApp))
         quitBtn.isBordered = false
