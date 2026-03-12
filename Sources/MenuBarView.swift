@@ -1,8 +1,8 @@
+import AppKit
+import Combine
 import SwiftUI
 
-let departmentColors: [Color] = [.blue, .purple, .orange, .green, .pink, .yellow, .red, .gray, Color(red: 0, green: 0.8, blue: 0.8)]
-
-// MARK: - NoteTextView (NSViewRepresentable)
+// MARK: - SwiftUI NoteTextView (for SettingsView)
 
 struct NoteTextView: NSViewRepresentable {
     @Binding var text: String
@@ -63,15 +63,42 @@ struct NoteTextView: NSViewRepresentable {
     }
 }
 
-// MARK: - MenuBarView
+// MARK: - NSColor helpers
 
-struct MenuBarView: View {
-    @ObservedObject var store: DataStore
-    @State private var noteText = ""
-    @State private var selectedDate = Date()
-    @State private var trendExpanded = true
-    @State private var weeklyReportLoading = false
-    @State private var weeklyReportResult: String?
+private let departmentNSColors: [NSColor] = [
+    .systemBlue, .systemPurple, .systemOrange, .systemGreen, .systemPink,
+    .systemYellow, .systemRed, .systemGray, NSColor(red: 0, green: 0.8, blue: 0.8, alpha: 1)
+]
+
+// MARK: - MenuBarViewController
+
+final class MenuBarViewController: NSViewController {
+    private let store: DataStore
+    private var cancellables = Set<AnyCancellable>()
+
+    private var selectedDate = Date()
+    private var noteText = ""
+    private var trendExpanded = true
+    private var weeklyReportLoading = false
+    private var weeklyReportResult: String?
+
+    // UI elements
+    private let scrollView = NSScrollView()
+    private let contentView = NSView()
+    private var dateLabel: NSTextField!
+    private var backTodayButton: NSButton!
+    private var departmentRows: NSStackView!
+    private var trendSection: NSStackView!
+    private var trendChartView: MiniChartNSView!
+    private var trendToggleButton: NSButton!
+    private var streakLabel: NSTextField!
+    private var noteSection: NSStackView!
+    private var noteTextView: NSTextView!
+    private var noteScrollView: NSScrollView!
+    private var notePlaceholder: NSTextField!
+    private var reportSection: NSStackView!
+    private var reportTextView: NSTextField!
+    private var weeklyButton: NSButton!
 
     private var selectedKey: String {
         DataStore.dateKey(from: selectedDate)
@@ -88,332 +115,617 @@ struct MenuBarView: View {
         return fmt
     }()
 
-    private var displayDate: String {
-        Self.displayDateFormatter.string(from: selectedDate)
+    init(store: DataStore) {
+        self.store = store
+        super.init(nibName: nil, bundle: nil)
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Date navigation
-            HStack {
-                Button(action: { shiftDate(-1) }) {
-                    Text("◀")
-                }
-                .buttonStyle(.borderless)
+    required init?(coder: NSCoder) { fatalError() }
 
-                Spacer()
+    override func loadView() {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 480))
+        self.view = container
+        buildUI(in: container)
+    }
 
-                Text(store.popoverTitle)
-                    .font(.headline)
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        selectedDate = Date()
+        noteText = store.noteForKey(selectedKey)
+        refreshAll()
+    }
 
-                Text("· \(displayDate)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+    // MARK: - Build UI
 
-                Spacer()
+    private func buildUI(in container: NSView) {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
 
-                Button(action: { shiftDate(1) }) {
-                    Text("▶")
-                }
-                .buttonStyle(.borderless)
-                .disabled(isToday)
-            }
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
 
-            Button("回到今天") {
-                selectedDate = Date()
-                noteText = store.noteForKey(store.todayKey)
-            }
-            .font(.caption)
-            .buttonStyle(.borderless)
-            .foregroundColor(Color.accentColor)
-            .opacity(isToday ? 0 : 1)
-            .disabled(isToday)
+        // 1. Date navigation row
+        let dateRow = buildDateRow()
+        stack.addArrangedSubview(dateRow)
+        dateRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
 
-            // Department counters
-            if store.departments.isEmpty {
-                Text("暂无项目，请在设置中添加")
-                    .foregroundColor(.secondary)
-            } else {
-                let dayRecords = store.recordsForKey(selectedKey)
-                ForEach(store.departments, id: \.self) { dept in
-                    HStack {
-                        Text(dept)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        let count = dayRecords[dept, default: 0]
-                        Text("\(count)")
-                            .font(.system(.body, design: .monospaced))
-                            .frame(width: 30, alignment: .trailing)
-                        Button(action: { store.decrementForKey(selectedKey, dept: dept) }) {
-                            Text("−")
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(count == 0)
-                        Button(action: { store.incrementForKey(selectedKey, dept: dept) }) {
-                            Text("+")
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-            }
+        // 2. Back to today button
+        backTodayButton = NSButton(title: "回到今天", target: self, action: #selector(backToToday))
+        backTodayButton.isBordered = false
+        backTodayButton.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        backTodayButton.contentTintColor = .controlAccentColor
+        stack.addArrangedSubview(backTodayButton)
 
-            // Mini weekly trend chart
-            if store.trendChartEnabled {
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Button(action: {
-                            withAnimation { trendExpanded.toggle() }
-                        }) {
-                            HStack(spacing: 4) {
-                                Text(trendExpanded ? "▼" : "▶")
-                                    .font(.system(size: 10))
-                                    .frame(width: 10)
-                                Text("本周趋势")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .buttonStyle(.borderless)
-                        Spacer()
-                        if store.currentStreak > 0 {
-                            Text("连续 \(store.currentStreak) 天")
-                                .font(.caption)
-                                .foregroundColor(.orange)
-                        }
-                    }
-                    if trendExpanded {
-                        MiniChartView(data: store.past7DaysBreakdown, departments: store.departments, todayKey: store.todayKey)
-                    }
-                }
-            }
+        // 3. Department counters
+        departmentRows = NSStackView()
+        departmentRows.orientation = .vertical
+        departmentRows.alignment = .leading
+        departmentRows.spacing = 4
+        stack.addArrangedSubview(departmentRows)
+        departmentRows.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
 
-            Divider()
+        // 4. Trend section
+        trendSection = buildTrendSection()
+        stack.addArrangedSubview(trendSection)
+        trendSection.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
 
-            // Daily notes
-            if store.dailyNoteEnabled {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(store.noteTitle)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    ZStack(alignment: .topLeading) {
-                        NoteTextView(text: $noteText) { newValue in
-                            store.setNoteForKey(selectedKey, text: newValue)
-                        }
-                            .frame(height: 80)
-                        if noteText.isEmpty {
-                            Text("记录今天做了什么…")
-                                .font(.body)
-                                .foregroundColor(Color.secondary.opacity(0.5))
-                                .padding(.leading, 8)
-                                .padding(.top, 6)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.3))
-                    )
-                }
+        // 5. Divider
+        stack.addArrangedSubview(makeDivider())
 
-                Divider()
-            }
+        // 6. Note section
+        noteSection = buildNoteSection()
+        stack.addArrangedSubview(noteSection)
+        noteSection.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
 
-            // Weekly report result
-            if let result = weeklyReportResult {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("AI 周报")
-                            .font(.caption.bold())
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Button("复制") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(result, forType: .string)
-                        }
-                        .font(.caption)
-                        .buttonStyle(.borderless)
-                        Button("关闭") {
-                            weeklyReportResult = nil
-                        }
-                        .font(.caption)
-                        .buttonStyle(.borderless)
-                    }
-                    Text(result)
-                        .font(.caption)
-                        .lineLimit(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Divider()
-            }
+        // 7. Report section (hidden by default)
+        reportSection = buildReportSection()
+        reportSection.isHidden = true
+        stack.addArrangedSubview(reportSection)
+        reportSection.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
 
-            Spacer()
+        // 8. Spacer (flexible space)
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        stack.addArrangedSubview(spacer)
 
-            // Bottom toolbar
-            HStack {
-                Button(action: {
-                    NotificationCenter.default.post(name: .openSettings, object: nil)
-                }) {
-                    Text("⚙")
-                }
-                .buttonStyle(.borderless)
+        // 9. Bottom toolbar
+        let toolbar = buildToolbar()
+        stack.addArrangedSubview(toolbar)
+        toolbar.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
 
-                Spacer()
+        // Subscribe to store changes
+        store.$records
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshDepartments() }
+            .store(in: &cancellables)
 
-                Button(action: {
-                    generateWeeklyReport()
-                }) {
-                    if weeklyReportLoading {
-                        Text("生成中…")
-                            .font(.caption)
-                    } else {
-                        Text("周报")
-                            .font(.caption)
-                    }
-                }
-                .buttonStyle(.borderless)
-                .disabled(weeklyReportLoading)
+        store.$departments
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshDepartments() }
+            .store(in: &cancellables)
+    }
 
-                Spacer()
+    // MARK: - Date Row
 
-                Button(action: {
-                    NSApp.terminate(nil)
-                }) {
-                    Text("✕")
-                }
-                .buttonStyle(.borderless)
-            }
+    private func buildDateRow() -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 4
+
+        let prevBtn = NSButton(title: "◀", target: self, action: #selector(prevDay))
+        prevBtn.isBordered = false
+        prevBtn.font = NSFont.systemFont(ofSize: 13)
+        row.addArrangedSubview(prevBtn)
+
+        dateLabel = makeLabel("", font: .systemFont(ofSize: 14, weight: .semibold))
+        dateLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        dateLabel.alignment = .center
+        row.addArrangedSubview(dateLabel)
+
+        let nextBtn = NSButton(title: "▶", target: self, action: #selector(nextDay))
+        nextBtn.isBordered = false
+        nextBtn.font = NSFont.systemFont(ofSize: 13)
+        nextBtn.tag = 1 // tag=1 to identify for disabling
+        row.addArrangedSubview(nextBtn)
+
+        return row
+    }
+
+    // MARK: - Trend Section
+
+    private func buildTrendSection() -> NSStackView {
+        let section = NSStackView()
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 4
+
+        // Divider above
+        section.addArrangedSubview(makeDivider())
+
+        // Header row
+        let headerRow = NSStackView()
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+
+        trendToggleButton = NSButton(title: "▼ 本周趋势", target: self, action: #selector(toggleTrend))
+        trendToggleButton.isBordered = false
+        trendToggleButton.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        trendToggleButton.contentTintColor = .secondaryLabelColor
+        headerRow.addArrangedSubview(trendToggleButton)
+
+        streakLabel = makeLabel("", font: .systemFont(ofSize: NSFont.smallSystemFontSize))
+        streakLabel.textColor = .systemOrange
+        headerRow.addArrangedSubview(streakLabel)
+
+        section.addArrangedSubview(headerRow)
+        headerRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+
+        // Chart
+        trendChartView = MiniChartNSView(frame: NSRect(x: 0, y: 0, width: 310, height: 60))
+        trendChartView.translatesAutoresizingMaskIntoConstraints = false
+        trendChartView.heightAnchor.constraint(equalToConstant: 60).isActive = true
+        section.addArrangedSubview(trendChartView)
+        trendChartView.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+
+        return section
+    }
+
+    // MARK: - Note Section
+
+    private func buildNoteSection() -> NSStackView {
+        let section = NSStackView()
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 4
+
+        let titleLabel = makeLabel("", font: .systemFont(ofSize: NSFont.smallSystemFontSize))
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.tag = 100 // for updating
+        section.addArrangedSubview(titleLabel)
+
+        // Note text view in scroll view
+        noteScrollView = NSScrollView()
+        noteScrollView.hasVerticalScroller = false
+        noteScrollView.hasHorizontalScroller = false
+        noteScrollView.borderType = .noBorder
+        noteScrollView.translatesAutoresizingMaskIntoConstraints = false
+        noteScrollView.heightAnchor.constraint(equalToConstant: 80).isActive = true
+
+        noteTextView = NSTextView()
+        noteTextView.delegate = self
+        noteTextView.isRichText = false
+        noteTextView.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        noteTextView.isEditable = true
+        noteTextView.isSelectable = true
+        noteTextView.allowsUndo = true
+        noteTextView.drawsBackground = false
+        noteTextView.textContainerInset = NSSize(width: 4, height: 4)
+        noteTextView.isVerticallyResizable = true
+        noteTextView.isHorizontallyResizable = false
+        noteTextView.textContainer?.widthTracksTextView = true
+        noteTextView.autoresizingMask = [.width]
+
+        noteScrollView.documentView = noteTextView
+        noteScrollView.drawsBackground = false
+
+        // Border container
+        let borderView = NSView()
+        borderView.wantsLayer = true
+        borderView.layer?.borderColor = NSColor.separatorColor.cgColor
+        borderView.layer?.borderWidth = 1
+        borderView.layer?.cornerRadius = 6
+        borderView.translatesAutoresizingMaskIntoConstraints = false
+
+        borderView.addSubview(noteScrollView)
+        NSLayoutConstraint.activate([
+            noteScrollView.topAnchor.constraint(equalTo: borderView.topAnchor, constant: 2),
+            noteScrollView.leadingAnchor.constraint(equalTo: borderView.leadingAnchor, constant: 2),
+            noteScrollView.trailingAnchor.constraint(equalTo: borderView.trailingAnchor, constant: -2),
+            noteScrollView.bottomAnchor.constraint(equalTo: borderView.bottomAnchor, constant: -2),
+        ])
+        borderView.heightAnchor.constraint(equalToConstant: 84).isActive = true
+
+        // Placeholder
+        notePlaceholder = makeLabel("记录今天做了什么…", font: .systemFont(ofSize: NSFont.systemFontSize))
+        notePlaceholder.textColor = NSColor.secondaryLabelColor.withAlphaComponent(0.5)
+        notePlaceholder.translatesAutoresizingMaskIntoConstraints = false
+        borderView.addSubview(notePlaceholder)
+        NSLayoutConstraint.activate([
+            notePlaceholder.leadingAnchor.constraint(equalTo: borderView.leadingAnchor, constant: 10),
+            notePlaceholder.topAnchor.constraint(equalTo: borderView.topAnchor, constant: 8),
+        ])
+
+        section.addArrangedSubview(borderView)
+        borderView.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+
+        // Divider below
+        section.addArrangedSubview(makeDivider())
+
+        return section
+    }
+
+    // MARK: - Report Section
+
+    private func buildReportSection() -> NSStackView {
+        let section = NSStackView()
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 4
+
+        let headerRow = NSStackView()
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+
+        let titleLabel = makeLabel("AI 周报", font: .boldSystemFont(ofSize: NSFont.smallSystemFontSize))
+        titleLabel.textColor = .secondaryLabelColor
+        headerRow.addArrangedSubview(titleLabel)
+
+        let copyBtn = NSButton(title: "复制", target: self, action: #selector(copyReport))
+        copyBtn.isBordered = false
+        copyBtn.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        headerRow.addArrangedSubview(copyBtn)
+
+        let closeBtn = NSButton(title: "关闭", target: self, action: #selector(closeReport))
+        closeBtn.isBordered = false
+        closeBtn.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        headerRow.addArrangedSubview(closeBtn)
+
+        section.addArrangedSubview(headerRow)
+        headerRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+
+        reportTextView = makeLabel("", font: .systemFont(ofSize: NSFont.smallSystemFontSize))
+        reportTextView.maximumNumberOfLines = 10
+        reportTextView.lineBreakMode = .byWordWrapping
+        reportTextView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        section.addArrangedSubview(reportTextView)
+        reportTextView.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+
+        section.addArrangedSubview(makeDivider())
+
+        return section
+    }
+
+    // MARK: - Toolbar
+
+    private func buildToolbar() -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+
+        let settingsBtn = NSButton(title: "⚙", target: self, action: #selector(openSettings))
+        settingsBtn.isBordered = false
+        settingsBtn.font = NSFont.systemFont(ofSize: 14)
+        row.addArrangedSubview(settingsBtn)
+
+        row.addArrangedSubview(NSView()) // spacer
+
+        weeklyButton = NSButton(title: "周报", target: self, action: #selector(generateReport))
+        weeklyButton.isBordered = false
+        weeklyButton.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        row.addArrangedSubview(weeklyButton)
+
+        row.addArrangedSubview(NSView()) // spacer
+
+        let quitBtn = NSButton(title: "✕", target: self, action: #selector(quitApp))
+        quitBtn.isBordered = false
+        quitBtn.font = NSFont.systemFont(ofSize: 14)
+        row.addArrangedSubview(quitBtn)
+
+        return row
+    }
+
+    // MARK: - Refresh
+
+    private func refreshAll() {
+        refreshDateLabel()
+        refreshDepartments()
+        refreshTrend()
+        refreshNote()
+        refreshReport()
+    }
+
+    private func refreshDateLabel() {
+        let displayDate = Self.displayDateFormatter.string(from: selectedDate)
+        dateLabel.stringValue = "\(store.popoverTitle) · \(displayDate)"
+        backTodayButton.isHidden = isToday
+    }
+
+    private func refreshDepartments() {
+        // Remove old rows
+        for view in departmentRows.arrangedSubviews {
+            departmentRows.removeArrangedSubview(view)
+            view.removeFromSuperview()
         }
-        .padding()
-        .frame(width: 340, height: 480)
-        .onAppear {
-            selectedDate = Date()
-            noteText = store.noteForKey(selectedKey)
+
+        if store.departments.isEmpty {
+            let empty = makeLabel("暂无项目，请在设置中添加", font: .systemFont(ofSize: NSFont.systemFontSize))
+            empty.textColor = .secondaryLabelColor
+            departmentRows.addArrangedSubview(empty)
+            return
+        }
+
+        let dayRecords = store.recordsForKey(selectedKey)
+        for dept in store.departments {
+            let count = dayRecords[dept, default: 0]
+            let row = buildDepartmentRow(dept: dept, count: count)
+            departmentRows.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: departmentRows.widthAnchor).isActive = true
         }
     }
 
-    // MARK: - Helpers
+    private func buildDepartmentRow(dept: String, count: Int) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 4
 
-    private func shiftDate(_ days: Int) {
-        if let d = Calendar.current.date(byAdding: .day, value: days, to: selectedDate) {
-            selectedDate = min(d, Date())
-            noteText = store.noteForKey(selectedKey)
+        let nameLabel = makeLabel(dept, font: .systemFont(ofSize: NSFont.systemFontSize))
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(nameLabel)
+
+        let countLabel = makeLabel("\(count)", font: .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular))
+        countLabel.alignment = .right
+        countLabel.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        row.addArrangedSubview(countLabel)
+
+        let minusBtn = NSButton(title: "−", target: self, action: #selector(decrementDept(_:)))
+        minusBtn.isBordered = false
+        minusBtn.font = NSFont.systemFont(ofSize: 14)
+        minusBtn.identifier = NSUserInterfaceItemIdentifier(dept)
+        minusBtn.isEnabled = count > 0
+        row.addArrangedSubview(minusBtn)
+
+        let plusBtn = NSButton(title: "+", target: self, action: #selector(incrementDept(_:)))
+        plusBtn.isBordered = false
+        plusBtn.font = NSFont.systemFont(ofSize: 14)
+        plusBtn.identifier = NSUserInterfaceItemIdentifier(dept)
+        row.addArrangedSubview(plusBtn)
+
+        return row
+    }
+
+    private func refreshTrend() {
+        trendSection.isHidden = !store.trendChartEnabled
+        guard store.trendChartEnabled else { return }
+
+        trendToggleButton.title = "\(trendExpanded ? "▼" : "▶") 本周趋势"
+        trendChartView.isHidden = !trendExpanded
+
+        if store.currentStreak > 0 {
+            streakLabel.stringValue = "连续 \(store.currentStreak) 天"
+            streakLabel.isHidden = false
+        } else {
+            streakLabel.isHidden = true
+        }
+
+        if trendExpanded {
+            trendChartView.update(data: store.past7DaysBreakdown, departments: store.departments, todayKey: store.todayKey)
         }
     }
 
-    private func generateWeeklyReport() {
+    private func refreshNote() {
+        noteSection.isHidden = !store.dailyNoteEnabled
+        guard store.dailyNoteEnabled else { return }
+
+        // Update title label
+        if let titleLabel = noteSection.arrangedSubviews.first as? NSTextField {
+            titleLabel.stringValue = store.noteTitle
+        }
+
+        noteTextView.string = noteText
+        notePlaceholder.isHidden = !noteText.isEmpty
+    }
+
+    private func refreshReport() {
+        if let result = weeklyReportResult {
+            reportSection.isHidden = false
+            reportTextView.stringValue = result
+        } else {
+            reportSection.isHidden = true
+        }
+        weeklyButton.title = weeklyReportLoading ? "生成中…" : "周报"
+        weeklyButton.isEnabled = !weeklyReportLoading
+    }
+
+    // MARK: - Actions
+
+    @objc private func prevDay() {
+        shiftDate(-1)
+    }
+
+    @objc private func nextDay() {
+        shiftDate(1)
+    }
+
+    @objc private func backToToday() {
+        selectedDate = Date()
+        noteText = store.noteForKey(selectedKey)
+        refreshAll()
+    }
+
+    @objc private func decrementDept(_ sender: NSButton) {
+        guard let dept = sender.identifier?.rawValue else { return }
+        store.decrementForKey(selectedKey, dept: dept)
+        refreshDepartments()
+    }
+
+    @objc private func incrementDept(_ sender: NSButton) {
+        guard let dept = sender.identifier?.rawValue else { return }
+        store.incrementForKey(selectedKey, dept: dept)
+        refreshDepartments()
+    }
+
+    @objc private func toggleTrend() {
+        trendExpanded.toggle()
+        refreshTrend()
+    }
+
+    @objc private func openSettings() {
+        NotificationCenter.default.post(name: .openSettings, object: nil)
+    }
+
+    @objc private func generateReport() {
         let rawReport = WeeklyReport.generate(from: store)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(rawReport, forType: .string)
 
         if store.aiEnabled {
             weeklyReportLoading = true
+            refreshReport()
             let config = store.aiConfig
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 do {
                     let aiReport = try await AIService.shared.generateWeeklyReport(rawReport: rawReport, config: config)
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(aiReport, forType: .string)
-                    weeklyReportResult = aiReport
+                    self.weeklyReportResult = aiReport
                 } catch {
-                    weeklyReportResult = "AI 生成失败: \(error.localizedDescription)"
+                    self.weeklyReportResult = "AI 生成失败: \(error.localizedDescription)"
                 }
-                weeklyReportLoading = false
+                self.weeklyReportLoading = false
+                self.refreshReport()
             }
         }
+    }
+
+    @objc private func copyReport() {
+        guard let result = weeklyReportResult else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(result, forType: .string)
+    }
+
+    @objc private func closeReport() {
+        weeklyReportResult = nil
+        refreshReport()
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
+    }
+
+    private func shiftDate(_ days: Int) {
+        if let d = Calendar.current.date(byAdding: .day, value: days, to: selectedDate) {
+            selectedDate = min(d, Date())
+            noteText = store.noteForKey(selectedKey)
+            refreshAll()
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func makeLabel(_ text: String, font: NSFont) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = font
+        label.isEditable = false
+        label.isSelectable = false
+        label.isBordered = false
+        label.drawsBackground = false
+        label.lineBreakMode = .byTruncatingTail
+        return label
+    }
+
+    private func makeDivider() -> NSView {
+        let divider = NSBox()
+        divider.boxType = .separator
+        return divider
     }
 }
 
-// MARK: - MiniChartView
+// MARK: - NSTextViewDelegate
 
-private struct MiniChartView: View {
-    let data: [(date: String, weekday: String, breakdown: [(dept: String, count: Int)])]
-    let departments: [String]
-    let todayKey: String
-    @State private var selectedDay: String?
+extension MenuBarViewController: NSTextViewDelegate {
+    func textDidChange(_ notification: Notification) {
+        guard let textView = notification.object as? NSTextView else { return }
+        noteText = textView.string
+        store.setNoteForKey(selectedKey, text: noteText)
+        notePlaceholder.isHidden = !noteText.isEmpty
+    }
+}
 
-    var body: some View {
-        let maxVal = max(data.map { $0.breakdown.reduce(0) { $0 + $1.count } }.max() ?? 1, 1)
-        HStack(alignment: .bottom, spacing: 6) {
-            ForEach(data, id: \.date) { item in
-                let total = item.breakdown.reduce(0) { $0 + $1.count }
-                VStack(spacing: 2) {
-                    if total > 0 {
-                        Text("\(total)")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
-                    }
-                    stackedBar(date: item.date, breakdown: item.breakdown, total: total, maxVal: maxVal)
-                    Text(item.weekday)
-                        .font(.system(size: 9))
-                        .foregroundColor(Color.secondary.opacity(0.5))
-                }
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    selectedDay = selectedDay == item.date ? nil : item.date
-                }
-                .popover(isPresented: Binding(
-                    get: { selectedDay == item.date },
-                    set: { if !$0 { selectedDay = nil } }
-                )) {
-                    dayDetail(date: item.date, weekday: item.weekday, breakdown: item.breakdown, total: total)
-                }
-            }
-        }
-        .frame(height: 50)
+// MARK: - MiniChartNSView
+
+final class MiniChartNSView: NSView {
+    private var data: [(date: String, weekday: String, breakdown: [(dept: String, count: Int)])] = []
+    private var departments: [String] = []
+    private var todayKey: String = ""
+
+    func update(data: [(date: String, weekday: String, breakdown: [(dept: String, count: Int)])], departments: [String], todayKey: String) {
+        self.data = data
+        self.departments = departments
+        self.todayKey = todayKey
+        needsDisplay = true
     }
 
-    @ViewBuilder
-    private func stackedBar(date: String, breakdown: [(dept: String, count: Int)], total: Int, maxVal: Int) -> some View {
-        let barHeight = max(CGFloat(total) / CGFloat(maxVal) * 30, total > 0 ? 4 : 1)
-        let isToday = date == todayKey
-        if breakdown.isEmpty {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color.secondary.opacity(0.2))
-                .frame(height: 1)
-        } else {
-            VStack(spacing: 0) {
-                ForEach(Array(breakdown.reversed().enumerated()), id: \.offset) { _, segment in
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard !data.isEmpty else { return }
+
+        let maxVal = max(data.map { $0.breakdown.reduce(0) { $0 + $1.count } }.max() ?? 1, 1)
+        let barWidth: CGFloat = 20
+        let spacing: CGFloat = (bounds.width - barWidth * CGFloat(data.count)) / CGFloat(data.count + 1)
+        let labelHeight: CGFloat = 14
+        let countHeight: CGFloat = 12
+        let chartBottom = labelHeight + 2
+        let chartTop = bounds.height - countHeight - 2
+
+        for (i, item) in data.enumerated() {
+            let total = item.breakdown.reduce(0) { $0 + $1.count }
+            let x = spacing + CGFloat(i) * (barWidth + spacing)
+            let isToday = item.date == todayKey
+
+            // Weekday label at bottom
+            let weekdayAttr: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 9),
+                .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.5),
+            ]
+            let weekdayStr = NSAttributedString(string: item.weekday, attributes: weekdayAttr)
+            let weekdaySize = weekdayStr.size()
+            weekdayStr.draw(at: NSPoint(x: x + (barWidth - weekdaySize.width) / 2, y: 0))
+
+            // Count label at top
+            if total > 0 {
+                let countAttr: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 9),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+                let countStr = NSAttributedString(string: "\(total)", attributes: countAttr)
+                let countSize = countStr.size()
+                countStr.draw(at: NSPoint(x: x + (barWidth - countSize.width) / 2, y: chartTop + 2))
+            }
+
+            // Stacked bar
+            let barHeight = total > 0 ? max(CGFloat(total) / CGFloat(maxVal) * (chartTop - chartBottom), 4) : 1
+            var currentY = chartBottom
+
+            if item.breakdown.isEmpty {
+                let rect = NSRect(x: x, y: chartBottom, width: barWidth, height: 1)
+                NSColor.secondaryLabelColor.withAlphaComponent(0.2).setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
+            } else {
+                for segment in item.breakdown {
                     let segmentHeight = CGFloat(segment.count) / CGFloat(total) * barHeight
                     let colorIndex = departments.firstIndex(of: segment.dept) ?? 0
-                    Rectangle()
-                        .fill(departmentColors[colorIndex % departmentColors.count].opacity(isToday ? 1.0 : 0.55))
-                        .frame(height: segmentHeight)
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 2))
-            .frame(height: barHeight)
-        }
-    }
-
-    private func dayDetail(date: String, weekday: String, breakdown: [(dept: String, count: Int)], total: Int) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("\(date) \(weekday)")
-                .font(.caption.bold())
-            Divider()
-            ForEach(breakdown, id: \.dept) { segment in
-                HStack {
-                    let colorIndex = departments.firstIndex(of: segment.dept) ?? 0
-                    Circle()
-                        .fill(departmentColors[colorIndex % departmentColors.count])
-                        .frame(width: 6, height: 6)
-                    Text(segment.dept)
-                        .font(.caption)
-                    Spacer()
-                    Text("\(segment.count)")
-                        .font(.system(.caption, design: .monospaced))
-                }
-            }
-            if total > 0 {
-                Divider()
-                HStack {
-                    Text("合计").font(.caption.bold())
-                    Spacer()
-                    Text("\(total)").font(.system(.caption, design: .monospaced)).bold()
+                    let color = departmentNSColors[colorIndex % departmentNSColors.count]
+                    let rect = NSRect(x: x, y: currentY, width: barWidth, height: segmentHeight)
+                    color.withAlphaComponent(isToday ? 1.0 : 0.55).setFill()
+                    rect.fill()
+                    currentY += segmentHeight
                 }
             }
         }
-        .padding(8)
-        .frame(width: 150)
     }
 }
