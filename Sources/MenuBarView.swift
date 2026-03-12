@@ -246,6 +246,8 @@ struct MenuBarView: View {
                 Divider()
             }
 
+            Spacer()
+
             // Bottom toolbar
             HStack {
                 Button(action: {
