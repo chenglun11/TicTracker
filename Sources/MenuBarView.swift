@@ -8,6 +8,7 @@ struct MenuBarView: View {
     @State private var trendExpanded = true
     @State private var jiraRefreshing = false
     @State private var animatingDept: String?
+    @State private var saveState = AutoSaveState()
 
     private var selectedKey: String {
         DataStore.dateKey(from: selectedDate)
@@ -163,6 +164,7 @@ struct MenuBarView: View {
                         )
                         .onChange(of: noteText) { _, newValue in
                             store.setNoteForKey(selectedKey, text: newValue)
+                            saveState.debouncedSave()
                         }
                 }
 
@@ -337,6 +339,7 @@ struct MenuBarView: View {
         }
         .padding()
         .frame(width: 300)
+        .autoSaveIndicator(saveState)
         .onAppear {
             selectedDate = Date()
             noteText = store.noteForKey(selectedKey)

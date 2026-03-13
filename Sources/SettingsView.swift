@@ -95,6 +95,7 @@ private struct DepartmentTab: View {
     @State private var editingDept: String?
     @State private var editText = ""
     @State private var deletingDept: String?
+    @State private var saveState = AutoSaveState()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -177,6 +178,8 @@ private struct DepartmentTab: View {
             let count = store.totalCountForDepartment(deletingDept ?? "")
             Text(count > 0 ? "该项目已有 \(count) 条历史记录，删除后项目名将从列表移除" : "确定要删除这个项目吗？")
         }
+        .onChange(of: store.departments) { _, _ in saveState.triggerSave() }
+        .autoSaveIndicator(saveState)
     }
 
     @ViewBuilder
@@ -246,14 +249,17 @@ private struct GeneralTab: View {
         return m == 0 && !UserDefaults.standard.bool(forKey: "reminderEnabled") ? 30 : m
     }()
     @State private var summaryEnabled: Bool = UserDefaults.standard.object(forKey: "summaryEnabled") as? Bool ?? true
+    @State private var saveState = AutoSaveState()
 
     var body: some View {
         Form {
             Section("显示名称") {
                 TextField("主标题", text: Bindable(store).popoverTitle)
                     .textFieldStyle(UnderlineTextFieldStyle())
+                    .onChange(of: store.popoverTitle) { _, _ in saveState.debouncedSave() }
                 TextField("小记标题", text: Bindable(store).noteTitle)
                     .textFieldStyle(UnderlineTextFieldStyle())
+                    .onChange(of: store.noteTitle) { _, _ in saveState.debouncedSave() }
             }
 
             Section("启动") {
@@ -280,6 +286,7 @@ private struct GeneralTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .onChange(of: store.dailyNoteEnabled) { _, _ in saveState.triggerSave() }
                 Toggle(isOn: Bindable(store).todoEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("待办任务")
@@ -288,6 +295,7 @@ private struct GeneralTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .onChange(of: store.todoEnabled) { _, _ in saveState.triggerSave() }
                 Toggle(isOn: Bindable(store).trendChartEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("本周趋势图")
@@ -296,6 +304,7 @@ private struct GeneralTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .onChange(of: store.trendChartEnabled) { _, _ in saveState.triggerSave() }
                 Toggle(isOn: Bindable(store).timestampEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("时间戳记录")
@@ -304,6 +313,7 @@ private struct GeneralTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .onChange(of: store.timestampEnabled) { _, _ in saveState.triggerSave() }
             }
 
             Section("日报提醒") {
@@ -315,6 +325,7 @@ private struct GeneralTab: View {
                         } else {
                             NotificationManager.shared.cancelReminder()
                         }
+                        saveState.triggerSave()
                     }
                 if reminderEnabled {
                     HStack {
@@ -328,7 +339,10 @@ private struct GeneralTab: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(width: 70)
-                        .onChange(of: reminderHour) { _, _ in applyReminder() }
+                        .onChange(of: reminderHour) { _, _ in
+                            applyReminder()
+                            saveState.triggerSave()
+                        }
                         Text(":")
                         Picker("分", selection: $reminderMinute) {
                             ForEach(Array(stride(from: 0, to: 60, by: 5)), id: \.self) { m in
@@ -338,7 +352,10 @@ private struct GeneralTab: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(width: 70)
-                        .onChange(of: reminderMinute) { _, _ in applyReminder() }
+                        .onChange(of: reminderMinute) { _, _ in
+                            applyReminder()
+                            saveState.triggerSave()
+                        }
                     }
                 }
                 if reminderEnabled {
@@ -357,6 +374,7 @@ private struct GeneralTab: View {
                         } else {
                             NotificationManager.shared.cancelSummary()
                         }
+                        saveState.triggerSave()
                     }
                 }
             }
@@ -370,6 +388,7 @@ private struct GeneralTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .onChange(of: store.hotkeyEnabled) { _, _ in saveState.triggerSave() }
                 if store.hotkeyEnabled {
                     ForEach(Array(store.departments.enumerated()), id: \.element) { i, dept in
                         HStack(spacing: 10) {
@@ -411,6 +430,7 @@ private struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
+        .autoSaveIndicator(saveState)
         .onAppear {
             NotificationManager.shared.requestPermission()
         }
@@ -433,6 +453,7 @@ private struct RSSTab: View {
     @State private var checkResult: String?
     @State private var deletingFeed: RSSFeed?
     @State private var expandedFeeds: Set<UUID> = []
+    @State private var saveState = AutoSaveState()
 
     var body: some View {
         Form {
@@ -445,6 +466,7 @@ private struct RSSTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .onChange(of: store.rssEnabled) { _, _ in saveState.triggerSave() }
             }
 
             if store.rssEnabled {
@@ -473,7 +495,10 @@ private struct RSSTab: View {
                                 HStack(spacing: 8) {
                                     Toggle("", isOn: Binding(
                                         get: { feed.enabled },
-                                        set: { store.rssFeeds[i].enabled = $0 }
+                                        set: {
+                                            store.rssFeeds[i].enabled = $0
+                                            saveState.triggerSave()
+                                        }
                                     ))
                                     .labelsHidden()
                                     .toggleStyle(.switch)
@@ -541,6 +566,7 @@ private struct RSSTab: View {
                                             set: {
                                                 store.rssFeeds[i].pollingInterval = $0
                                                 RSSFeedManager.shared.restartPolling(for: feed.id)
+                                                saveState.triggerSave()
                                             }
                                         )) {
                                             Text("5m").tag(5)
@@ -584,6 +610,7 @@ private struct RSSTab: View {
             }
         }
         .formStyle(.grouped)
+        .autoSaveIndicator(saveState)
         .alert("确认删除「\(deletingFeed?.name ?? "")」？", isPresented: Binding(
             get: { deletingFeed != nil },
             set: { if !$0 { deletingFeed = nil } }
@@ -652,6 +679,7 @@ private struct JiraTab: View {
     @State private var testResult: String?
     @State private var testSuccess = false
     @FocusState private var isTokenFocused: Bool
+    @State private var saveState = AutoSaveState()
 
     private let jqlPresets: [(label: String, jql: String)] = [
         ("待处理", "assignee=currentUser() AND resolution=Unresolved ORDER BY updated DESC"),
@@ -677,6 +705,7 @@ private struct JiraTab: View {
                     } else {
                         JiraService.shared.stopPolling()
                     }
+                    saveState.triggerSave()
                 }
                 Toggle(isOn: Bindable(store).jiraConfig.showInMenuBar) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -686,16 +715,19 @@ private struct JiraTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .onChange(of: store.jiraConfig.showInMenuBar) { _, _ in saveState.triggerSave() }
             }
 
             Section("连接 🔒") {
                 TextField("服务器地址", text: Bindable(store).jiraConfig.serverURL, prompt: Text("https://jira.example.com"))
                     .textFieldStyle(UnderlineTextFieldStyle())
+                    .onChange(of: store.jiraConfig.serverURL) { _, _ in saveState.debouncedSave() }
                 Picker("认证方式", selection: Bindable(store).jiraConfig.authMode) {
                     Text("用户名 + 密码").tag(JiraAuthMode.password)
                     Text("Personal Access Token").tag(JiraAuthMode.pat)
                 }
                 .pickerStyle(.segmented)
+                .onChange(of: store.jiraConfig.authMode) { _, _ in saveState.triggerSave() }
                 if store.jiraConfig.authMode == .pat {
                     Text("在 Jira 个人设置中生成 Personal Access Token")
                         .font(.caption)
@@ -704,6 +736,7 @@ private struct JiraTab: View {
                 if store.jiraConfig.authMode == .password {
                     TextField("用户名", text: Bindable(store).jiraConfig.username)
                         .textFieldStyle(UnderlineTextFieldStyle())
+                        .onChange(of: store.jiraConfig.username) { _, _ in saveState.debouncedSave() }
                     autoSaveSecureField("密码", text: $tokenInput, saved: $tokenSaved, focused: $isTokenFocused, onSave: saveToken)
                 } else {
                     autoSaveSecureField("Token", text: $tokenInput, saved: $tokenSaved, focused: $isTokenFocused, onSave: saveToken)
@@ -750,6 +783,7 @@ private struct JiraTab: View {
                 TextField("JQL", text: Bindable(store).jiraConfig.jql)
                     .textFieldStyle(UnderlineTextFieldStyle())
                     .font(.callout.monospaced())
+                    .onChange(of: store.jiraConfig.jql) { _, _ in saveState.debouncedSave() }
                 HStack {
                     Text("轮询间隔")
                     Spacer()
@@ -767,6 +801,7 @@ private struct JiraTab: View {
                         if store.jiraConfig.enabled {
                             JiraService.shared.restartPolling()
                         }
+                        saveState.triggerSave()
                     }
                 }
                 HStack {
@@ -850,6 +885,7 @@ private struct JiraTab: View {
             }
         }
         .formStyle(.grouped)
+        .autoSaveIndicator(saveState)
         .onAppear {
             if let data = KeychainHelper.load(), let str = String(data: data, encoding: .utf8) {
                 tokenInput = str
@@ -899,6 +935,15 @@ private struct AITab: View {
     @FocusState private var isAPIKeyFocused: Bool
     @FocusState private var isBaseURLFocused: Bool
     @FocusState private var isModelFocused: Bool
+    @State private var saveState = AutoSaveState()
+
+    // 周报 Prompt 编辑状态
+    @State private var customPromptDraft = ""
+    @State private var customPromptSaved = false
+
+    // 对话 System Prompt 编辑状态
+    @State private var chatSystemPromptDraft = ""
+    @State private var chatSystemPromptSaved = false
 
     var body: some View {
         Form {
@@ -909,6 +954,7 @@ private struct AITab: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .onChange(of: store.aiConfig.provider) { _, _ in saveState.triggerSave() }
             }
 
             Section("连接 🔒") {
@@ -924,6 +970,7 @@ private struct AITab: View {
                         if !focused {
                             store.aiConfig.baseURL = baseURLInput
                             AIService.shared.saveBaseURL(baseURLInput)
+                            saveState.triggerSave()
                         }
                     }
                 Text("默认: \(store.aiConfig.effectiveBaseURL)")
@@ -938,6 +985,7 @@ private struct AITab: View {
                         if !focused {
                             store.aiConfig.model = modelInput
                             AIService.shared.saveModel(modelInput)
+                            saveState.triggerSave()
                         }
                     }
                 Text("默认: \(store.aiConfig.effectiveModel)")
@@ -954,14 +1002,15 @@ private struct AITab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .onChange(of: store.aiEnabled) { _, _ in saveState.triggerSave() }
             }
 
             Section("周报 Prompt") {
-                TextEditor(text: Bindable(store).aiConfig.customPrompt)
+                TextEditor(text: $customPromptDraft)
                     .font(.callout)
                     .frame(height: 120)
                     .overlay(alignment: .topLeading) {
-                        if store.aiConfig.customPrompt.isEmpty {
+                        if customPromptDraft.isEmpty {
                             Text("留空使用默认 Prompt")
                                 .font(.callout)
                                 .foregroundStyle(.tertiary)
@@ -970,15 +1019,42 @@ private struct AITab: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                if store.aiConfig.customPrompt.isEmpty {
-                    Text("默认: 生成简洁周报摘要，按项目总结，提炼日报要点，不写展望")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Button("恢复默认") {
-                        store.aiConfig.customPrompt = ""
+
+                HStack {
+                    if customPromptDraft.isEmpty {
+                        Text("默认: 生成简洁周报摘要，按项目总结，提炼日报要点，不写展望")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("恢复默认") {
+                            customPromptDraft = ""
+                        }
+                        .controlSize(.small)
                     }
+
+                    Spacer()
+
+                    if customPromptSaved {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("已保存")
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                    }
+
+                    Button("保存") {
+                        store.aiConfig.customPrompt = customPromptDraft
+                        customPromptSaved = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            customPromptSaved = false
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .disabled(customPromptDraft == store.aiConfig.customPrompt)
                 }
             }
 
@@ -997,6 +1073,7 @@ private struct AITab: View {
                                 } else if newValue > 50 {
                                     store.aiConfig.chatMaxHistory = 50
                                 }
+                                saveState.triggerSave()
                             }
                     }
                     Text("保留最近 \(store.aiConfig.chatMaxHistory) 轮对话作为上下文（1-50）")
@@ -1006,6 +1083,7 @@ private struct AITab: View {
                     TextField("对话模型（留空使用周报模型）", text: Bindable(store).aiConfig.chatModel)
                         .textFieldStyle(UnderlineTextFieldStyle())
                         .font(.callout.monospaced())
+                        .onChange(of: store.aiConfig.chatModel) { _, _ in saveState.debouncedSave() }
                     Text("默认: \(store.aiConfig.effectiveChatModel)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1014,11 +1092,11 @@ private struct AITab: View {
                         Text("对话 System Prompt")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        TextEditor(text: Bindable(store).aiConfig.chatSystemPrompt)
+                        TextEditor(text: $chatSystemPromptDraft)
                             .font(.callout)
                             .frame(height: 80)
                             .overlay(alignment: .topLeading) {
-                                if store.aiConfig.chatSystemPrompt.isEmpty {
+                                if chatSystemPromptDraft.isEmpty {
                                     Text("留空使用默认")
                                         .font(.callout)
                                         .foregroundStyle(.tertiary)
@@ -1028,15 +1106,42 @@ private struct AITab: View {
                                 }
                             }
                     }
-                    if store.aiConfig.chatSystemPrompt.isEmpty {
-                        Text("默认: 友好的 AI 助手")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Button("恢复默认") {
-                            store.aiConfig.chatSystemPrompt = ""
+
+                    HStack {
+                        if chatSystemPromptDraft.isEmpty {
+                            Text("默认: 友好的 AI 助手")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Button("恢复默认") {
+                                chatSystemPromptDraft = ""
+                            }
+                            .controlSize(.small)
                         }
+
+                        Spacer()
+
+                        if chatSystemPromptSaved {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                Text("已保存")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .font(.caption)
+                        }
+
+                        Button("保存") {
+                            store.aiConfig.chatSystemPrompt = chatSystemPromptDraft
+                            chatSystemPromptSaved = true
+                            Task {
+                                try? await Task.sleep(for: .seconds(2))
+                                chatSystemPromptSaved = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .disabled(chatSystemPromptDraft == store.aiConfig.chatSystemPrompt)
                     }
                 }
 
@@ -1049,11 +1154,16 @@ private struct AITab: View {
             }
         }
         .formStyle(.grouped)
+        .autoSaveIndicator(saveState)
         .onAppear {
             let stored = AIService.shared.loadAll()
             apiKeyInput = stored.apiKey
             baseURLInput = stored.baseURL.isEmpty ? store.aiConfig.baseURL : stored.baseURL
             modelInput = stored.model.isEmpty ? store.aiConfig.model : stored.model
+
+            // 初始化 draft 状态
+            customPromptDraft = store.aiConfig.customPrompt
+            chatSystemPromptDraft = store.aiConfig.chatSystemPrompt
         }
         .alert("确认清空所有 AI 配置？", isPresented: $showClearAlert) {
             Button("取消", role: .cancel) {}
