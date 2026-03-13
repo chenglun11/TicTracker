@@ -9,11 +9,11 @@ MACOS_DIR="${CONTENTS_DIR}/MacOS"
 ARM64_DIR=".build/arm64-apple-macosx/release"
 X86_DIR=".build/x86_64-apple-macosx/release"
 
-echo "==> Building ${APP_NAME} (release, arm64)..."
-swift build -c release --triple arm64-apple-macosx
+echo "==> Building ${APP_NAME} (release, arm64, macOS 10.15)..."
+MACOSX_DEPLOYMENT_TARGET=10.15 swift build -c release --triple arm64-apple-macosx
 
-echo "==> Building ${APP_NAME} (release, x86_64)..."
-swift build -c release --triple x86_64-apple-macosx
+echo "==> Building ${APP_NAME} (release, x86_64, macOS 10.15)..."
+MACOSX_DEPLOYMENT_TARGET=10.15 swift build -c release --triple x86_64-apple-macosx
 
 echo "==> Creating universal binary with lipo..."
 lipo -create \

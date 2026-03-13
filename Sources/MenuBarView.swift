@@ -97,6 +97,9 @@ final class MenuBarViewController: NSViewController {
     private var reportSection: NSStackView!
     private var reportTextView: NSTextField!
     private var weeklyButton: NSButton!
+    private var nextDayButton: NSButton?
+    private var trendCard: NSView!
+    private var noteCard: NSView!
 
     private var selectedKey: String {
         DataStore.dateKey(from: selectedDate)
@@ -139,8 +142,8 @@ final class MenuBarViewController: NSViewController {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         container.addSubview(stack)
@@ -154,55 +157,71 @@ final class MenuBarViewController: NSViewController {
         // 1. Date navigation row
         let dateRow = buildDateRow()
         stack.addArrangedSubview(dateRow)
-        dateRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        dateRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
-        // 2. Back to today button
-        backTodayButton = NSButton(title: "回到今天", target: self, action: #selector(backToToday))
-        backTodayButton.isBordered = false
-        backTodayButton.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        if #available(macOS 11.0, *) {
-            backTodayButton.contentTintColor = .controlAccentColor
-        }
-        stack.addArrangedSubview(backTodayButton)
-
-        // 3. Department counters
+        // 2. Department counters (wrapped in card)
         departmentRows = NSStackView()
         departmentRows.orientation = .vertical
         departmentRows.alignment = .leading
-        departmentRows.spacing = 4
-        stack.addArrangedSubview(departmentRows)
-        departmentRows.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        departmentRows.spacing = 6
 
-        // 4. Trend section
+        let deptCard = makeCardView()
+        deptCard.addSubview(departmentRows)
+        departmentRows.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            departmentRows.topAnchor.constraint(equalTo: deptCard.topAnchor, constant: 10),
+            departmentRows.leadingAnchor.constraint(equalTo: deptCard.leadingAnchor, constant: 10),
+            departmentRows.trailingAnchor.constraint(equalTo: deptCard.trailingAnchor, constant: -10),
+            departmentRows.bottomAnchor.constraint(equalTo: deptCard.bottomAnchor, constant: -10)
+        ])
+        stack.addArrangedSubview(deptCard)
+        deptCard.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
+
+        // 3. Trend section (wrapped in card)
         trendSection = buildTrendSection()
-        stack.addArrangedSubview(trendSection)
-        trendSection.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        trendCard = makeCardView()
+        trendCard.addSubview(trendSection)
+        trendSection.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            trendSection.topAnchor.constraint(equalTo: trendCard.topAnchor, constant: 10),
+            trendSection.leadingAnchor.constraint(equalTo: trendCard.leadingAnchor, constant: 10),
+            trendSection.trailingAnchor.constraint(equalTo: trendCard.trailingAnchor, constant: -10),
+            trendSection.bottomAnchor.constraint(equalTo: trendCard.bottomAnchor, constant: -10)
+        ])
+        stack.addArrangedSubview(trendCard)
+        trendCard.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
-        // 5. Divider
-        stack.addArrangedSubview(makeDivider())
-
-        // 6. Note section
+        // 4. Note section (wrapped in card)
         noteSection = buildNoteSection()
-        stack.addArrangedSubview(noteSection)
-        noteSection.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        noteCard = makeCardView()
+        noteCard.addSubview(noteSection)
+        noteSection.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            noteSection.topAnchor.constraint(equalTo: noteCard.topAnchor, constant: 10),
+            noteSection.leadingAnchor.constraint(equalTo: noteCard.leadingAnchor, constant: 10),
+            noteSection.trailingAnchor.constraint(equalTo: noteCard.trailingAnchor, constant: -10),
+            noteSection.bottomAnchor.constraint(equalTo: noteCard.bottomAnchor, constant: -10)
+        ])
+        stack.addArrangedSubview(noteCard)
+        noteCard.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
-        // 7. Report section (hidden by default)
+        // 5. Report section (hidden by default)
         reportSection = buildReportSection()
         reportSection.isHidden = true
         stack.addArrangedSubview(reportSection)
-        reportSection.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        reportSection.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
-        // 8. Spacer (flexible space)
+        // 6. Spacer (flexible space)
         let spacer = NSView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
         spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
         spacer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         stack.addArrangedSubview(spacer)
 
-        // 9. Bottom toolbar
+        // 7. Bottom toolbar
         let toolbar = buildToolbar()
         stack.addArrangedSubview(toolbar)
-        toolbar.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        toolbar.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
         // Subscribe to store changes
         store.$records
@@ -222,23 +241,28 @@ final class MenuBarViewController: NSViewController {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 4
+        row.spacing = 8
 
-        let prevBtn = NSButton(title: "◀", target: self, action: #selector(prevDay))
-        prevBtn.isBordered = false
-        prevBtn.font = NSFont.systemFont(ofSize: 13)
-        row.addArrangedSubview(prevBtn)
+        let prevView = makeRoundedButton(title: "◀", target: self, action: #selector(prevDay))
+        row.addArrangedSubview(prevView)
 
         dateLabel = makeLabel("", font: .systemFont(ofSize: 14, weight: .semibold))
         dateLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         dateLabel.alignment = .center
         row.addArrangedSubview(dateLabel)
 
-        let nextBtn = NSButton(title: "▶", target: self, action: #selector(nextDay))
-        nextBtn.isBordered = false
-        nextBtn.font = NSFont.systemFont(ofSize: 13)
-        nextBtn.tag = 1 // tag=1 to identify for disabling
-        row.addArrangedSubview(nextBtn)
+        let nextView = makeRoundedButton(title: "▶", target: self, action: #selector(nextDay))
+        row.addArrangedSubview(nextView)
+        nextDayButton = nextView.subviews.first as? NSButton
+
+        // Add "Back to today" button on the right
+        backTodayButton = NSButton(title: "回到今天", target: self, action: #selector(backToToday))
+        backTodayButton.isBordered = false
+        backTodayButton.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        if #available(macOS 11.0, *) {
+            backTodayButton.contentTintColor = .controlAccentColor
+        }
+        row.addArrangedSubview(backTodayButton)
 
         return row
     }
@@ -250,9 +274,6 @@ final class MenuBarViewController: NSViewController {
         section.orientation = .vertical
         section.alignment = .leading
         section.spacing = 4
-
-        // Divider above
-        section.addArrangedSubview(makeDivider())
 
         // Header row
         let headerRow = NSStackView()
@@ -352,9 +373,6 @@ final class MenuBarViewController: NSViewController {
         section.addArrangedSubview(borderView)
         borderView.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
 
-        // Divider below
-        section.addArrangedSubview(makeDivider())
-
         return section
     }
 
@@ -449,9 +467,7 @@ final class MenuBarViewController: NSViewController {
         backTodayButton.isHidden = isToday
 
         // Disable next button when showing today
-        if let nextBtn = view.viewWithTag(1) as? NSButton {
-            nextBtn.isEnabled = !isToday
-        }
+        nextDayButton?.isEnabled = !isToday
     }
 
     private func refreshDepartments() {
@@ -483,33 +499,50 @@ final class MenuBarViewController: NSViewController {
         row.alignment = .centerY
         row.spacing = 4
 
+        // Add colored dot indicator
+        let colorIndex = store.departments.firstIndex(of: dept) ?? 0
+        let dotColor = departmentNSColors[colorIndex % departmentNSColors.count]
+        let dot = NSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
+        dot.wantsLayer = true
+        dot.layer?.backgroundColor = dotColor.cgColor
+        dot.layer?.cornerRadius = 4
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.widthAnchor.constraint(equalToConstant: 8).isActive = true
+        dot.heightAnchor.constraint(equalToConstant: 8).isActive = true
+        row.addArrangedSubview(dot)
+
         let nameLabel = makeLabel(dept, font: .systemFont(ofSize: NSFont.systemFontSize))
-        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         row.addArrangedSubview(nameLabel)
 
         let countLabel = makeLabel("\(count)", font: .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular))
-        countLabel.alignment = .right
+        countLabel.alignment = .left
         countLabel.widthAnchor.constraint(equalToConstant: 30).isActive = true
         row.addArrangedSubview(countLabel)
 
-        let minusBtn = NSButton(title: "−", target: self, action: #selector(decrementDept(_:)))
-        minusBtn.isBordered = false
-        minusBtn.font = NSFont.systemFont(ofSize: 14)
-        minusBtn.identifier = NSUserInterfaceItemIdentifier(dept)
-        minusBtn.isEnabled = count > 0
-        row.addArrangedSubview(minusBtn)
+        // Spacer to push buttons to the right
+        let buttonSpacer = NSView()
+        buttonSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(buttonSpacer)
 
-        let plusBtn = NSButton(title: "+", target: self, action: #selector(incrementDept(_:)))
-        plusBtn.isBordered = false
-        plusBtn.font = NSFont.systemFont(ofSize: 14)
-        plusBtn.identifier = NSUserInterfaceItemIdentifier(dept)
-        row.addArrangedSubview(plusBtn)
+        let minusView = makeRoundedButton(title: "−", target: self, action: #selector(decrementDept(_:)))
+        if let minusBtn = minusView.subviews.first as? NSButton {
+            minusBtn.identifier = NSUserInterfaceItemIdentifier(dept)
+            minusBtn.isEnabled = count > 0
+        }
+        row.addArrangedSubview(minusView)
+
+        let plusView = makeRoundedButton(title: "+", target: self, action: #selector(incrementDept(_:)))
+        if let plusBtn = plusView.subviews.first as? NSButton {
+            plusBtn.identifier = NSUserInterfaceItemIdentifier(dept)
+        }
+        row.addArrangedSubview(plusView)
 
         return row
     }
 
     private func refreshTrend() {
-        trendSection.isHidden = !store.trendChartEnabled
+        trendCard.isHidden = !store.trendChartEnabled
         guard store.trendChartEnabled else { return }
 
         trendToggleButton.title = "\(trendExpanded ? "▼" : "▶") 本周趋势"
@@ -528,7 +561,7 @@ final class MenuBarViewController: NSViewController {
     }
 
     private func refreshNote() {
-        noteSection.isHidden = !store.dailyNoteEnabled
+        noteCard.isHidden = !store.dailyNoteEnabled
         guard store.dailyNoteEnabled else { return }
 
         // Update title label
@@ -653,6 +686,38 @@ final class MenuBarViewController: NSViewController {
         let divider = NSBox()
         divider.boxType = .separator
         return divider
+    }
+
+    private func makeRoundedButton(title: String, target: Any?, action: Selector,
+                                    identifier: NSUserInterfaceItemIdentifier? = nil) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor(calibratedWhite: 0.5, alpha: 0.15).cgColor
+        container.layer?.cornerRadius = 6
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        container.heightAnchor.constraint(equalToConstant: 22).isActive = true
+
+        let btn = NSButton(title: title, target: target, action: action)
+        btn.isBordered = false
+        btn.font = NSFont.systemFont(ofSize: 14)
+        btn.identifier = identifier
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(btn)
+        NSLayoutConstraint.activate([
+            btn.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            btn.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        return container
+    }
+
+    private func makeCardView() -> NSView {
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor(calibratedWhite: 0.5, alpha: 0.12).cgColor
+        card.layer?.cornerRadius = 8
+        card.translatesAutoresizingMaskIntoConstraints = false
+        return card
     }
 }
 
