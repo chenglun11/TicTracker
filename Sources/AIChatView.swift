@@ -1,11 +1,55 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - Constants
+private enum ChatConstants {
+    static let maxSessions = 20
+    static let maxMessagesPerSession = 100
+    static let maxAttachments = 5
+    static let maxImageSize = 5_000_000
+    static let maxTextFileSize = 50_000
+
+    static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    static let weekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE"
+        f.locale = Locale(identifier: "zh_CN")
+        return f
+    }()
+
+    static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd"
+        return f
+    }()
+}
+
+struct ChatSession: Identifiable, Codable {
+    let id: UUID
+    var title: String
+    var messages: [ChatMessage]
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(id: UUID = UUID(), title: String = "新对话", messages: [ChatMessage] = [], createdAt: Date = Date(), updatedAt: Date = Date()) {
+        self.id = id
+        self.title = title
+        self.messages = messages
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
 struct ChatAttachment: Identifiable, Codable {
     let id: UUID
     let fileName: String
     let fileType: String
-    let content: String // Base64 for images, plain text for text files
+    let content: String
     let mimeType: String
 
     init(id: UUID = UUID(), fileName: String, fileType: String, content: String, mimeType: String) {
@@ -43,41 +87,109 @@ struct ChatMessage: Identifiable, Codable {
 
 @MainActor
 final class AIChatViewModel: ObservableObject {
-    @Published var messages: [ChatMessage] = []
+    @Published var sessions: [ChatSession] = []
+    @Published var currentSessionId: UUID?
     @Published var inputText: String = ""
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
     @Published var attachments: [ChatAttachment] = []
+    @Published var scrollTrigger = UUID()
 
     private let store: DataStore
     private let aiService = AIService.shared
     private let log = DevLog.shared
+    private var saveTask: Task<Void, Never>?
+
+    var currentSession: ChatSession? {
+        sessions.first { $0.id == currentSessionId }
+    }
+
+    var messages: [ChatMessage] {
+        currentSession?.messages ?? []
+    }
 
     init(store: DataStore) {
         self.store = store
-        loadMessages()
+        loadSessions()
+        if sessions.isEmpty {
+            createNewSession()
+        } else {
+            currentSessionId = sessions.first?.id
+        }
+    }
+
+    deinit {
+        saveTask?.cancel()
+    }
+
+    func createNewSession() {
+        let session = ChatSession()
+        sessions.insert(session, at: 0)
+        currentSessionId = session.id
+        debouncedSave()
+    }
+
+    func switchSession(_ sessionId: UUID) {
+        currentSessionId = sessionId
+        attachments = []
+        errorMessage = nil
+    }
+
+    func deleteSession(_ session: ChatSession) {
+        sessions.removeAll { $0.id == session.id }
+        if currentSessionId == session.id {
+            currentSessionId = sessions.first?.id
+        }
+        if sessions.isEmpty {
+            createNewSession()
+        }
+        saveSessions()
+    }
+
+    func updateSessionTitle(_ session: ChatSession, title: String) {
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[index].title = title
+            debouncedSave()
+        }
+    }
+
+    private func debouncedSave() {
+        saveTask?.cancel()
+        saveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            saveSessions()
+        }
     }
 
     func sendMessage() {
+        guard let sessionId = currentSessionId else { return }
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
 
+        guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         let userMessage = ChatMessage(role: .user, content: trimmed, attachments: attachments)
-        messages.append(userMessage)
+        sessions[sessionIndex].messages.append(userMessage)
+        sessions[sessionIndex].updatedAt = Date()
+
+        if sessions[sessionIndex].messages.count == 1 {
+            sessions[sessionIndex].title = String(trimmed.prefix(30))
+        }
+
         inputText = ""
         let currentAttachments = attachments
         attachments = []
         errorMessage = nil
+        scrollTrigger = UUID()
 
         Task {
-            await generateResponse(for: trimmed, attachments: currentAttachments)
+            await generateResponse(for: trimmed, attachments: currentAttachments, sessionId: sessionId)
         }
     }
 
     func addAttachment(from url: URL) {
-        // 限制最多 5 个附件
-        guard attachments.count < 5 else {
-            errorMessage = "最多只能添加 5 个附件"
+        guard attachments.count < ChatConstants.maxAttachments else {
+            errorMessage = "最多只能添加 \(ChatConstants.maxAttachments) 个附件"
             return
         }
 
@@ -91,17 +203,13 @@ final class AIChatViewModel: ObservableObject {
             let fileType = url.pathExtension.lowercased()
             let fileName = url.lastPathComponent
 
-            // 支持的文件类型
             let supportedImageTypes = ["png", "jpg", "jpeg", "gif", "webp"]
             let supportedTextTypes = ["txt", "md", "json", "xml", "csv", "log", "swift", "py", "js", "ts", "html", "css"]
 
             if supportedImageTypes.contains(fileType) {
-                // 图片文件
                 let data = try Data(contentsOf: url)
-
-                // 限制图片大小为 5MB
-                guard data.count <= 5_000_000 else {
-                    errorMessage = "图片过大（最大 5MB）"
+                guard data.count <= ChatConstants.maxImageSize else {
+                    errorMessage = "图片过大（最大 \(ChatConstants.maxImageSize / 1_000_000)MB）"
                     return
                 }
 
@@ -118,11 +226,10 @@ final class AIChatViewModel: ObservableObject {
                 log.info("AIChat", "添加图片附件: \(fileName), 大小: \(data.count) bytes")
 
             } else if supportedTextTypes.contains(fileType) {
-                // 文本文件
                 let content = try String(contentsOf: url, encoding: .utf8)
                 let byteCount = content.utf8.count
-                guard byteCount <= 50_000 else {
-                    errorMessage = "文件过大（最大 50KB）"
+                guard byteCount <= ChatConstants.maxTextFileSize else {
+                    errorMessage = "文件过大（最大 \(ChatConstants.maxTextFileSize / 1000)KB）"
                     return
                 }
 
@@ -149,73 +256,140 @@ final class AIChatViewModel: ObservableObject {
         attachments.removeAll { $0.id == attachment.id }
     }
 
+    func copyMessage(_ message: ChatMessage) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.content, forType: .string)
+    }
+
+    func deleteMessage(_ message: ChatMessage) {
+        guard let sessionIndex = sessions.firstIndex(where: { $0.id == currentSessionId }) else { return }
+        sessions[sessionIndex].messages.removeAll { $0.id == message.id }
+        saveSessions()
+    }
+
+    func regenerateResponse(for message: ChatMessage) {
+        guard let sessionId = currentSessionId,
+              let sessionIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        guard message.role == .assistant,
+              let index = sessions[sessionIndex].messages.firstIndex(where: { $0.id == message.id }),
+              index > 0 else { return }
+
+        let userMessage = sessions[sessionIndex].messages[index - 1]
+        sessions[sessionIndex].messages.removeLast(sessions[sessionIndex].messages.count - index)
+
+        Task {
+            await generateResponse(for: userMessage.content, attachments: userMessage.attachments, sessionId: sessionId)
+        }
+    }
+
     var canSend: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasAttachments = !attachments.isEmpty
         return (hasText || hasAttachments) && !isLoading
     }
 
-    private func generateResponse(for userInput: String, attachments: [ChatAttachment]) async {
+    private func generateResponse(for userInput: String, attachments: [ChatAttachment], sessionId: UUID) async {
         isLoading = true
         defer { isLoading = false }
 
-        do {
-            // 获取历史记录（排除刚添加的用户消息，因为它会作为 message 参数传递）
-            let maxHistory = max(1, store.aiConfig.chatMaxHistory)
-            let historyMessages = messages.dropLast().suffix(maxHistory).map { msg -> (String, String) in
-                var content = msg.content
-                // 如果历史消息有附件，添加附件信息到内容中
-                if !msg.attachments.isEmpty {
-                    content += "\n[附件: \(msg.attachments.map { $0.fileName }.joined(separator: ", "))]"
-                }
-                return (msg.role.rawValue, content)
+        guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+
+        let maxHistory = max(1, store.aiConfig.chatMaxHistory)
+        let historyMessages = sessions[sessionIndex].messages.dropLast().suffix(maxHistory).map { msg -> (String, String) in
+            var content = msg.content
+            if !msg.attachments.isEmpty {
+                content += "\n[附件: \(msg.attachments.map { $0.fileName }.joined(separator: ", "))]"
             }
+            return (msg.role.rawValue, content)
+        }
 
-            // 转换附件格式
-            let attachmentTuples = attachments.map { (fileName: $0.fileName, content: $0.content, mimeType: $0.mimeType) }
+        let attachmentTuples = attachments.map { (fileName: $0.fileName, content: $0.content, mimeType: $0.mimeType) }
 
-            let response = try await aiService.chat(
+        // 先插入空的 assistant 消息，后续流式追加
+        let assistantMessage = ChatMessage(role: .assistant, content: "")
+        let messageId = assistantMessage.id
+        guard let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        sessions[idx].messages.append(assistantMessage)
+        sessions[idx].updatedAt = Date()
+        scrollTrigger = UUID()
+
+        do {
+            let stream = try aiService.chatStream(
                 message: userInput,
                 attachments: attachmentTuples,
                 history: historyMessages,
                 config: store.aiConfig
             )
 
-            let assistantMessage = ChatMessage(role: .assistant, content: response)
-            messages.append(assistantMessage)
-            saveMessages()
+            var charsSinceScroll = 0
+            for try await chunk in stream {
+                guard let si = sessions.firstIndex(where: { $0.id == sessionId }),
+                      let mi = sessions[si].messages.firstIndex(where: { $0.id == messageId }) else { break }
+                let current = sessions[si].messages[mi].content
+                sessions[si].messages[mi] = ChatMessage(
+                    id: messageId,
+                    role: .assistant,
+                    content: current + chunk,
+                    timestamp: sessions[si].messages[mi].timestamp
+                )
+                charsSinceScroll += chunk.count
+                if charsSinceScroll >= 50 {
+                    scrollTrigger = UUID()
+                    charsSinceScroll = 0
+                }
+            }
+            // 最终滚动一次
+            scrollTrigger = UUID()
+
+            // 流结束，保存
+            if let si = sessions.firstIndex(where: { $0.id == sessionId }) {
+                sessions[si].updatedAt = Date()
+            }
+            saveSessions()
 
         } catch {
             log.error("AIChat", "对话失败: \(error.localizedDescription)")
+            // 如果流式失败且消息为空，移除空消息
+            if let si = sessions.firstIndex(where: { $0.id == sessionId }),
+               let mi = sessions[si].messages.firstIndex(where: { $0.id == messageId }),
+               sessions[si].messages[mi].content.isEmpty {
+                sessions[si].messages.remove(at: mi)
+            }
             errorMessage = error.localizedDescription
         }
     }
 
     func clearHistory() {
-        messages.removeAll()
-        saveMessages()
+        guard let sessionIndex = sessions.firstIndex(where: { $0.id == currentSessionId }) else { return }
+        sessions[sessionIndex].messages.removeAll()
+        saveSessions()
         errorMessage = nil
     }
 
     func generateWeeklyReport() {
-        // 生成原始周报数据
+        guard let sessionId = currentSessionId,
+              let sessionIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        guard !isLoading else { return }
+
         let rawReport = WeeklyReport.generate(from: store)
-
-        // 添加用户消息
         let userMessage = ChatMessage(role: .user, content: "请根据以下数据生成周报：\n\n\(rawReport)", attachments: [])
-        messages.append(userMessage)
+        sessions[sessionIndex].messages.append(userMessage)
+        sessions[sessionIndex].updatedAt = Date()
         errorMessage = nil
+        scrollTrigger = UUID()
 
-        // 使用 AIService.generateWeeklyReport，应用用户配置的周报 Prompt
+        isLoading = true
         Task {
-            isLoading = true
             defer { isLoading = false }
 
             do {
                 let response = try await aiService.generateWeeklyReport(rawReport: rawReport, config: store.aiConfig)
+                guard let finalIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
                 let assistantMessage = ChatMessage(role: .assistant, content: response)
-                messages.append(assistantMessage)
-                saveMessages()
+                sessions[finalIndex].messages.append(assistantMessage)
+                sessions[finalIndex].updatedAt = Date()
+                scrollTrigger = UUID()
+                saveSessions()
             } catch {
                 log.error("AIChat", "周报生成失败: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
@@ -223,200 +397,53 @@ final class AIChatViewModel: ObservableObject {
         }
     }
 
-    private func saveMessages() {
-        // 只保存最近 100 条消息，避免 UserDefaults 过大
-        // 保存时清除附件的 content，只保留文件名元信息
-        let messagesToSave = messages.suffix(100).map { msg -> ChatMessage in
-            let lightAttachments = msg.attachments.map {
-                ChatAttachment(
-                    id: $0.id,
-                    fileName: $0.fileName,
-                    fileType: $0.fileType,
-                    content: "", // 不持久化附件内容
-                    mimeType: $0.mimeType
-                )
+    private func saveSessions() {
+        let sessionsToSave = sessions.prefix(ChatConstants.maxSessions).map { session -> ChatSession in
+            let lightMessages = session.messages.suffix(ChatConstants.maxMessagesPerSession).map { msg -> ChatMessage in
+                let lightAttachments = msg.attachments.map {
+                    ChatAttachment(id: $0.id, fileName: $0.fileName, fileType: $0.fileType, content: "", mimeType: $0.mimeType)
+                }
+                return ChatMessage(id: msg.id, role: msg.role, content: msg.content, timestamp: msg.timestamp, attachments: lightAttachments)
             }
-            return ChatMessage(
-                id: msg.id,
-                role: msg.role,
-                content: msg.content,
-                timestamp: msg.timestamp,
-                attachments: lightAttachments
-            )
+            return ChatSession(id: session.id, title: session.title, messages: lightMessages, createdAt: session.createdAt, updatedAt: session.updatedAt)
         }
-        if let data = try? JSONEncoder().encode(messagesToSave) {
-            UserDefaults.standard.set(data, forKey: "ai_chat_messages")
+        if let data = try? JSONEncoder().encode(sessionsToSave) {
+            UserDefaults.standard.set(data, forKey: "ai_chat_sessions")
         }
     }
 
-    private func loadMessages() {
-        guard let data = UserDefaults.standard.data(forKey: "ai_chat_messages"),
-              let loaded = try? JSONDecoder().decode([ChatMessage].self, from: data) else {
+    private func loadSessions() {
+        guard let data = UserDefaults.standard.data(forKey: "ai_chat_sessions"),
+              let loaded = try? JSONDecoder().decode([ChatSession].self, from: data) else {
             return
         }
-        messages = loaded
+        sessions = loaded
     }
 }
 
 struct AIChatView: View {
     @StateObject private var viewModel: AIChatViewModel
     @FocusState private var isInputFocused: Bool
+    @FocusState private var isTitleEditFocused: Bool
     @State private var showClearConfirmation = false
     @State private var showFilePicker = false
+    @State private var editingSessionId: UUID?
+    @State private var editingTitle: String = ""
 
     init(store: DataStore) {
         _viewModel = StateObject(wrappedValue: AIChatViewModel(store: store))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("AI 对话")
-                    .font(.headline)
-
-                Spacer()
-
-                // 生成周报按钮
-                Button(action: { viewModel.generateWeeklyReport() }) {
-                    Label("生成周报", systemImage: "doc.text")
-                }
-                .buttonStyle(.borderless)
-                .disabled(viewModel.isLoading)
-                .help("生成本周技术支持周报并由 AI 优化")
-
-                Button(action: { showClearConfirmation = true }) {
-                    Label("清空", systemImage: "trash")
-                }
-                .buttonStyle(.borderless)
-                .disabled(viewModel.messages.isEmpty)
-                .confirmationDialog("确定要清空所有对话记录吗？", isPresented: $showClearConfirmation) {
-                    Button("清空", role: .destructive) {
-                        viewModel.clearHistory()
-                    }
-                    Button("取消", role: .cancel) {}
-                }
-            }
-            .padding()
-            .background(Color(nsColor: .controlBackgroundColor))
-
-            Divider()
-
-            // Messages
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        if viewModel.messages.isEmpty {
-                            emptyStateView
-                        } else {
-                            ForEach(viewModel.messages) { message in
-                                MessageBubble(message: message)
-                                    .id(message.id)
-                            }
-                        }
-
-                        if viewModel.isLoading {
-                            HStack {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                                Text("思考中...")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, 12)
-                        }
-                    }
-                    .padding()
-                }
-                .onChange(of: viewModel.messages.count) { _, _ in
-                    if let lastMessage = viewModel.messages.last {
-                        withAnimation {
-                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                        }
-                    }
-                }
-            }
-
-            // Error message
-            if let error = viewModel.errorMessage {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.orange)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button("关闭") {
-                        viewModel.errorMessage = nil
-                    }
-                    .buttonStyle(.borderless)
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-                .background(Color.orange.opacity(0.1))
-            }
-
-            Divider()
-
-            // Attachments preview
-            if !viewModel.attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(viewModel.attachments) { attachment in
-                            AttachmentPreview(attachment: attachment) {
-                                viewModel.removeAttachment(attachment)
-                            }
-                        }
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                }
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-                Divider()
-            }
-
-            // Input area
-            VStack(spacing: 0) {
-                HStack(alignment: .bottom, spacing: 8) {
-                    Button(action: { showFilePicker = true }) {
-                        Image(systemName: "paperclip")
-                            .font(.title3)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(viewModel.isLoading)
-                    .help("添加文件")
-
-                    TextField("输入消息...", text: $viewModel.inputText, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .lineLimit(1...5)
-                        .focused($isInputFocused)
-                        .disabled(viewModel.isLoading)
-                        .onSubmit {
-                            if viewModel.canSend {
-                                viewModel.sendMessage()
-                            }
-                        }
-
-                    Button(action: { viewModel.sendMessage() }) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(viewModel.canSend ? .accentColor : .gray)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(!viewModel.canSend)
-                }
-                .padding()
-            }
-            .background(Color(nsColor: .controlBackgroundColor))
+        NavigationSplitView {
+            sessionSidebar
+        } detail: {
+            chatDetailView
         }
-        .onAppear {
-            isInputFocused = true
-        }
+        .navigationSplitViewStyle(.balanced)
+        .onAppear { isInputFocused = true }
         .onReceive(NotificationCenter.default.publisher(for: .generateWeeklyReport)) { _ in
-            if !viewModel.isLoading {
-                viewModel.generateWeeklyReport()
-            }
+            if !viewModel.isLoading { viewModel.generateWeeklyReport() }
         }
         .fileImporter(
             isPresented: $showFilePicker,
@@ -433,13 +460,251 @@ struct AIChatView: View {
         ) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first {
-                    viewModel.addAttachment(from: url)
-                }
+                if let url = urls.first { viewModel.addAttachment(from: url) }
             case .failure(let error):
                 viewModel.errorMessage = "选择文件失败: \(error.localizedDescription)"
             }
         }
+    }
+
+    private var sessionSidebar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("对话列表")
+                    .font(.headline)
+                Spacer()
+                Button(action: { viewModel.createNewSession() }) {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("新建对话")
+            }
+            .padding()
+
+            Divider()
+
+            List(viewModel.sessions, selection: $viewModel.currentSessionId) { session in
+                HStack {
+                    if editingSessionId == session.id {
+                        TextField("", text: $editingTitle)
+                            .textFieldStyle(.plain)
+                            .focused($isTitleEditFocused)
+                            .onSubmit {
+                                viewModel.updateSessionTitle(session, title: editingTitle)
+                                editingSessionId = nil
+                            }
+                            .onAppear {
+                                isTitleEditFocused = true
+                            }
+                    } else {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.title)
+                                .lineLimit(1)
+                            Text(formatDate(session.updatedAt))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .onTapGesture(count: 2) {
+                            editingSessionId = session.id
+                            editingTitle = session.title
+                        }
+                        .onTapGesture {
+                            viewModel.switchSession(session.id)
+                        }
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+                .contextMenu {
+                    Button("重命名") {
+                        editingSessionId = session.id
+                        editingTitle = session.title
+                    }
+                    Button("删除", role: .destructive) {
+                        viewModel.deleteSession(session)
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 200)
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        let calendar = Calendar.current
+
+        if calendar.isDateInToday(date) {
+            return ChatConstants.timeFormatter.string(from: date)
+        } else if calendar.isDateInYesterday(date) {
+            return "昨天"
+        } else if calendar.isDate(date, equalTo: Date(), toGranularity: .weekOfYear) {
+            return ChatConstants.weekdayFormatter.string(from: date)
+        } else {
+            return ChatConstants.dateFormatter.string(from: date)
+        }
+    }
+
+    private var chatDetailView: some View {
+        VStack(spacing: 0) {
+            headerView
+            Divider()
+            messagesView
+            if viewModel.errorMessage != nil { errorBanner }
+            Divider()
+            if !viewModel.attachments.isEmpty { attachmentsPreview }
+            inputArea
+        }
+    }
+
+    private var headerView: some View {
+        HStack {
+            if let session = viewModel.currentSession {
+                Text(session.title)
+                    .font(.headline)
+                    .lineLimit(1)
+            } else {
+                Text("AI 对话")
+                    .font(.headline)
+            }
+            Spacer()
+            Button(action: { viewModel.generateWeeklyReport() }) {
+                Label("生成周报", systemImage: "doc.text")
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewModel.isLoading)
+            .help("生成本周技术支持周报并由 AI 优化")
+
+            Button(action: { showClearConfirmation = true }) {
+                Label("清空", systemImage: "trash")
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewModel.messages.isEmpty)
+            .confirmationDialog("确定要清空当前对话的所有消息吗？", isPresented: $showClearConfirmation) {
+                Button("清空消息", role: .destructive) { viewModel.clearHistory() }
+                if viewModel.sessions.count > 1, let session = viewModel.currentSession {
+                    Button("删除整个对话", role: .destructive) { viewModel.deleteSession(session) }
+                }
+                Button("取消", role: .cancel) {}
+            }
+        }
+        .padding()
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var messagesView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    if viewModel.messages.isEmpty {
+                        emptyStateView
+                    } else {
+                        ForEach(viewModel.messages) { message in
+                            MessageRow(
+                                message: message,
+                                onCopy: { viewModel.copyMessage(message) },
+                                onDelete: { viewModel.deleteMessage(message) },
+                                onRegenerate: { viewModel.regenerateResponse(for: message) }
+                            )
+                            .id(message.id)
+                        }
+                    }
+
+                    if viewModel.isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().scaleEffect(0.7)
+                            Text("思考中...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 52)
+                    }
+                }
+                .padding()
+            }
+            .onChange(of: viewModel.scrollTrigger) { _, _ in
+                if let lastMessage = viewModel.messages.last {
+                    withAnimation {
+                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: viewModel.currentSessionId) { _, newId in
+                guard newId != nil else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    if let lastMessage = viewModel.messages.last {
+                        withAnimation {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var errorBanner: some View {
+        HStack {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+            Text(viewModel.errorMessage ?? "")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+            Button("关闭") { viewModel.errorMessage = nil }
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.1))
+    }
+
+    private var attachmentsPreview: some View {
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(viewModel.attachments) { attachment in
+                        AttachmentPreview(attachment: attachment) {
+                            viewModel.removeAttachment(attachment)
+                        }
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+            }
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            Divider()
+        }
+    }
+
+    private var inputArea: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Button(action: { showFilePicker = true }) {
+                Image(systemName: "paperclip")
+                    .font(.title3)
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewModel.isLoading)
+            .help("添加文件")
+
+            TextField("输入消息...", text: $viewModel.inputText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...5)
+                .focused($isInputFocused)
+                .disabled(viewModel.isLoading)
+                .onSubmit {
+                    if viewModel.canSend { viewModel.sendMessage() }
+                }
+
+            Button(action: { viewModel.sendMessage() }) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(viewModel.canSend ? .accentColor : .gray)
+            }
+            .buttonStyle(.borderless)
+            .disabled(!viewModel.canSend)
+        }
+        .padding()
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 
     private var emptyStateView: some View {
@@ -447,91 +712,319 @@ struct AIChatView: View {
             Image(systemName: "bubble.left.and.bubble.right")
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
-
             Text("开始对话")
                 .font(.title2)
                 .fontWeight(.medium)
-
             Text("输入消息与 AI 助手交流")
                 .font(.caption)
                 .foregroundColor(.secondary)
-
-            // 快捷操作按钮
             Button(action: { viewModel.generateWeeklyReport() }) {
                 Label("生成周报", systemImage: "doc.text.fill")
             }
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.isLoading)
-            .help("自动生成本周技术支持周报并由 AI 优化")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-struct MessageBubble: View {
+struct MessageRow: View {
     let message: ChatMessage
+    let onCopy: () -> Void
+    let onDelete: () -> Void
+    let onRegenerate: () -> Void
+
+    @State private var isHovered = false
+    @State private var showRegenerateConfirm = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if message.role == .user {
-                Spacer()
-            }
+        HStack(alignment: .top, spacing: 12) {
+            avatarView
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(message.role == .user ? "你" : "AI 助手")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text(message.timestamp, style: .time)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    if isHovered { actionButtons }
+                }
 
-            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
-                // Attachments
                 if !message.attachments.isEmpty {
                     ForEach(message.attachments) { attachment in
-                        AttachmentBubble(attachment: attachment)
+                        AttachmentDisplay(attachment: attachment)
                     }
                 }
 
-                // Text content
                 if !message.content.isEmpty {
-                    Text(message.content)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(backgroundColor)
-                        .foregroundColor(textColor)
-                        .cornerRadius(12)
+                    MarkdownText(content: message.content)
                         .textSelection(.enabled)
                 }
-
-                Text(message.timestamp, style: .time)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
             }
-            .frame(maxWidth: 500, alignment: message.role == .user ? .trailing : .leading)
-
-            if message.role == .assistant {
-                Spacer()
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(isHovered ? Color(nsColor: .controlBackgroundColor).opacity(0.5) : Color.clear)
+        .cornerRadius(8)
+        .onHover { isHovered = $0 }
+        .confirmationDialog("重新生成将删除此消息之后的所有对话", isPresented: $showRegenerateConfirm) {
+            Button("重新生成", role: .destructive) { onRegenerate() }
+            Button("取消", role: .cancel) {}
         }
     }
 
-    private var backgroundColor: Color {
-        message.role == .user ? Color.accentColor : Color(nsColor: .controlBackgroundColor)
+    private var avatarView: some View {
+        Image(systemName: message.role == .user ? "person.circle.fill" : "sparkles")
+            .font(.title2)
+            .foregroundColor(message.role == .user ? .blue : .purple)
+            .frame(width: 32, height: 32)
     }
 
-    private var textColor: Color {
-        message.role == .user ? .white : .primary
+    private var actionButtons: some View {
+        HStack(spacing: 4) {
+            Button(action: onCopy) {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .help("复制")
+
+            if message.role == .assistant {
+                Button(action: { showRegenerateConfirm = true }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("重新生成")
+            }
+
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+            .buttonStyle(.borderless)
+            .help("删除")
+        }
     }
 }
 
-struct AttachmentBubble: View {
+struct MarkdownText: View {
+    let content: String
+    @State private var parsedBlocks: [ContentBlock] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(parsedBlocks) { block in
+                switch block.kind {
+                case .code(let language):
+                    CodeBlock(code: block.text, language: language)
+                case .paragraph:
+                    if let attributed = try? AttributedString(markdown: block.text) {
+                        Text(attributed).font(.body)
+                    } else {
+                        Text(block.text).font(.body)
+                    }
+                case .blank:
+                    Spacer().frame(height: 4)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: content) {
+            parsedBlocks = parseContent()
+        }
+    }
+
+    private func parseContent() -> [ContentBlock] {
+        var blocks: [ContentBlock] = []
+        let pattern = "```(\\w*)\\n([\\s\\S]*?)```"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return splitParagraphs(content)
+        }
+
+        let nsString = content as NSString
+        let matches = regex.matches(in: content, range: NSRange(location: 0, length: nsString.length))
+
+        var lastIndex = 0
+        for match in matches {
+            if match.range.location > lastIndex {
+                let textRange = NSRange(location: lastIndex, length: match.range.location - lastIndex)
+                let text = nsString.substring(with: textRange)
+                blocks.append(contentsOf: splitParagraphs(text))
+            }
+
+            let languageRange = match.range(at: 1)
+            let codeRange = match.range(at: 2)
+            let language = languageRange.location != NSNotFound ? nsString.substring(with: languageRange) : ""
+            let code = nsString.substring(with: codeRange)
+            blocks.append(ContentBlock(text: code, kind: .code(language: language)))
+
+            lastIndex = match.range.location + match.range.length
+        }
+
+        if lastIndex < nsString.length {
+            let text = nsString.substring(from: lastIndex)
+            blocks.append(contentsOf: splitParagraphs(text))
+        }
+
+        return blocks.isEmpty ? splitParagraphs(content) : blocks
+    }
+
+    private func splitParagraphs(_ text: String) -> [ContentBlock] {
+        var blocks: [ContentBlock] = []
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                blocks.append(ContentBlock(text: "", kind: .blank))
+            } else {
+                blocks.append(ContentBlock(text: trimmed, kind: .paragraph))
+            }
+        }
+        return blocks
+    }
+
+    enum BlockKind: Hashable {
+        case paragraph
+        case code(language: String)
+        case blank
+    }
+
+    struct ContentBlock: Identifiable {
+        let id = UUID()
+        let text: String
+        let kind: BlockKind
+    }
+}
+
+struct CodeBlock: View {
+    let code: String
+    let language: String
+    @State private var copied = false
+    @State private var highlightedText: AttributedString?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(language.isEmpty ? "code" : language)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button(action: copyCode) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("复制代码")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(highlightedText ?? AttributedString(code))
+                    .font(.system(.body, design: .monospaced))
+                    .padding(12)
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+        }
+        .cornerRadius(8)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
+        .task(id: code) {
+            highlightedText = highlightCode()
+        }
+    }
+
+    private func copyCode() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(code, forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            copied = false
+        }
+    }
+
+    private func highlightCode() -> AttributedString {
+        var attributed = AttributedString(code)
+
+        let keywords = ["func", "let", "var", "if", "else", "for", "while", "return", "class", "struct", "enum", "import", "const", "async", "await", "def", "public", "private"]
+        let keywordColor = Color.purple
+        let stringColor = Color.red
+        let commentColor = Color.green.opacity(0.8)
+
+        for keyword in keywords {
+            let pattern = "\\b\(keyword)\\b"
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                let nsString = code as NSString
+                let matches = regex.matches(in: code, range: NSRange(location: 0, length: nsString.length))
+                for match in matches {
+                    if let stringRange = Range(match.range, in: code),
+                       let attrRange = Range(stringRange, in: attributed) {
+                        attributed[attrRange].foregroundColor = keywordColor
+                    }
+                }
+            }
+        }
+
+        if let stringRegex = try? NSRegularExpression(pattern: "\"[^\"]*\"|'[^']*'") {
+            let nsString = code as NSString
+            let matches = stringRegex.matches(in: code, range: NSRange(location: 0, length: nsString.length))
+            for match in matches {
+                if let stringRange = Range(match.range, in: code),
+                   let attrRange = Range(stringRange, in: attributed) {
+                    attributed[attrRange].foregroundColor = stringColor
+                }
+            }
+        }
+
+        if let commentRegex = try? NSRegularExpression(pattern: "//.*|/\\*[\\s\\S]*?\\*/|#.*") {
+            let nsString = code as NSString
+            let matches = commentRegex.matches(in: code, range: NSRange(location: 0, length: nsString.length))
+            for match in matches {
+                if let stringRange = Range(match.range, in: code),
+                   let attrRange = Range(stringRange, in: attributed) {
+                    attributed[attrRange].foregroundColor = commentColor
+                }
+            }
+        }
+
+        return attributed
+    }
+}
+
+struct AttachmentDisplay: View {
     let attachment: ChatAttachment
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: attachment.iconName)
-                .foregroundColor(.secondary)
-            Text(attachment.fileName)
-                .font(.caption)
-                .lineLimit(1)
+        if attachment.isImage, !attachment.content.isEmpty,
+           let data = Data(base64Encoded: attachment.content),
+           let nsImage = NSImage(data: data) {
+            VStack(alignment: .leading, spacing: 4) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 300, maxHeight: 300)
+                    .cornerRadius(8)
+                Text(attachment.fileName)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: attachment.iconName)
+                    .foregroundColor(.secondary)
+                Text(attachment.fileName)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(8)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .cornerRadius(8)
     }
 }
 
@@ -544,11 +1037,9 @@ struct AttachmentPreview: View {
             Image(systemName: attachment.iconName)
                 .font(.caption)
                 .foregroundColor(.secondary)
-
             Text(attachment.fileName)
                 .font(.caption)
                 .lineLimit(1)
-
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.caption)
