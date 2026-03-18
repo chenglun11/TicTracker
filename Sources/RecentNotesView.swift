@@ -108,7 +108,7 @@ struct RecentNotesView: View {
             let jiraCounts = store.jiraIssueCounts[key] ?? [:]
             let jiraTotal = jiraCounts.values.reduce(0, +)
             let bugs = store.bugsForKey(key)
-            let issues = store.issuesVisibleForKey(key)
+            let issues = store.issuesVisibleForKey(key).filter { $0.status == .pending }
             guard total > 0 || !note.isEmpty || jiraTotal > 0 || !bugs.isEmpty || !issues.isEmpty else { return nil }
             guard let date = Self.dateFmt.date(from: key) else { return nil }
             let timestamps = store.tapTimestamps[key] ?? [:]

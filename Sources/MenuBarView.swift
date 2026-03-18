@@ -524,9 +524,10 @@ struct MenuBarView: View {
                     .disabled(newIssueTitle.isEmpty || newIssueDept == nil)
                 }
 
-                // Issue list
-                if !issues.isEmpty {
-                    ForEach(issues) { issue in
+                // Issue list (only unresolved)
+                let pending = issues.filter { $0.status == .pending }
+                if !pending.isEmpty {
+                    ForEach(pending) { issue in
                         issueRow(issue)
                     }
                 }
