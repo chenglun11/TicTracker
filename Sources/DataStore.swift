@@ -33,6 +33,9 @@ final class DataStore {
     var jiraIssues: [JiraIssue] {
         didSet { saveJiraIssues() }
     }
+    var reportedJiraIssues: [JiraIssue] {
+        didSet { saveReportedJiraIssues() }
+    }
     var jiraIssueCounts: [String: [String: Int]] {  // dateKey → issueKey → count
         didSet { saveJiraIssueCounts() }
     }
@@ -56,6 +59,21 @@ final class DataStore {
 
     var todoTasks: [TodoTask] {
         didSet { saveTodoTasks() }
+    }
+
+    // MARK: - Bug Entries
+
+    var bugEntries: [BugEntry] {
+        didSet { saveBugEntries() }
+    }
+    var bugTeamMembers: [String] {
+        didSet { saveBugTeamMembers() }
+    }
+
+    // MARK: - Project Issues
+
+    var projectIssues: [ProjectIssue] {
+        didSet { saveProjectIssues() }
     }
 
     // MARK: - Tap Timestamps
@@ -87,6 +105,12 @@ final class DataStore {
     }
     var todoEnabled: Bool {
         didSet { UserDefaults.standard.set(todoEnabled, forKey: "todoEnabled") }
+    }
+    var bugModeEnabled: Bool {
+        didSet { UserDefaults.standard.set(bugModeEnabled, forKey: "bugModeEnabled") }
+    }
+    var projectIssueEnabled: Bool {
+        didSet { UserDefaults.standard.set(projectIssueEnabled, forKey: "projectIssueEnabled") }
     }
     var rssEnabled: Bool {
         didSet {
@@ -177,6 +201,12 @@ final class DataStore {
         } else {
             jiraIssues = []
         }
+        if let data = UserDefaults.standard.data(forKey: "reportedJiraIssues"),
+           let decoded = try? JSONDecoder().decode([JiraIssue].self, from: data) {
+            reportedJiraIssues = decoded
+        } else {
+            reportedJiraIssues = []
+        }
         if let data = UserDefaults.standard.data(forKey: "jiraIssueCounts"),
            let decoded = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
             jiraIssueCounts = decoded
@@ -213,6 +243,27 @@ final class DataStore {
             todoTasks = []
         }
 
+        // Bug entries
+        if let data = UserDefaults.standard.data(forKey: "bugEntries"),
+           let decoded = try? JSONDecoder().decode([BugEntry].self, from: data) {
+            bugEntries = decoded
+        } else {
+            bugEntries = []
+        }
+        if let data = UserDefaults.standard.array(forKey: "bugTeamMembers") as? [String] {
+            bugTeamMembers = data
+        } else {
+            bugTeamMembers = []
+        }
+
+        // Project issues
+        if let data = UserDefaults.standard.data(forKey: "projectIssues"),
+           let decoded = try? JSONDecoder().decode([ProjectIssue].self, from: data) {
+            projectIssues = decoded
+        } else {
+            projectIssues = []
+        }
+
         // Tap timestamps
         if let data = UserDefaults.standard.data(forKey: "tapTimestamps"),
            let decoded = try? JSONDecoder().decode([String: [String: [String]]].self, from: data) {
@@ -228,6 +279,8 @@ final class DataStore {
         hotkeyEnabled = UserDefaults.standard.object(forKey: "hotkeyEnabled") as? Bool ?? true
         rssEnabled = UserDefaults.standard.object(forKey: "rssEnabled") as? Bool ?? true
         todoEnabled = UserDefaults.standard.object(forKey: "todoEnabled") as? Bool ?? true
+        bugModeEnabled = UserDefaults.standard.object(forKey: "bugModeEnabled") as? Bool ?? true
+        projectIssueEnabled = UserDefaults.standard.object(forKey: "projectIssueEnabled") as? Bool ?? true
 
         // AI
         if let data = UserDefaults.standard.data(forKey: "aiConfig"),
@@ -493,6 +546,8 @@ final class DataStore {
         records.removeValue(forKey: todayKey)
         dailyNotes.removeValue(forKey: todayKey)
         tapTimestamps.removeValue(forKey: todayKey)
+        bugEntries.removeAll { $0.dateKey == todayKey }
+        projectIssues.removeAll { $0.dateKey == todayKey }
     }
 
     func clearAllHistory() {
@@ -500,10 +555,12 @@ final class DataStore {
         dailyNotes = [:]
         tapTimestamps = [:]
         jiraTransitionLog = [:]
+        bugEntries = []
+        projectIssues = []
     }
 
     var totalDaysTracked: Int {
-        Set(records.keys).union(dailyNotes.keys).count
+        Set(records.keys).union(dailyNotes.keys).union(Set(bugEntries.map(\.dateKey))).union(Set(projectIssues.map(\.dateKey))).count
     }
 
     var totalSupportCount: Int {
@@ -518,6 +575,19 @@ final class DataStore {
         ]
         if !tapTimestamps.isEmpty {
             payload["tapTimestamps"] = tapTimestamps
+        }
+        if !bugEntries.isEmpty,
+           let bugData = try? JSONEncoder().encode(bugEntries),
+           let bugArray = try? JSONSerialization.jsonObject(with: bugData) {
+            payload["bugEntries"] = bugArray
+        }
+        if !bugTeamMembers.isEmpty {
+            payload["bugTeamMembers"] = bugTeamMembers
+        }
+        if !projectIssues.isEmpty,
+           let issueData = try? JSONEncoder().encode(projectIssues),
+           let issueArray = try? JSONSerialization.jsonObject(with: issueData) {
+            payload["projectIssues"] = issueArray
         }
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
         return String(data: data, encoding: .utf8)
@@ -561,6 +631,19 @@ final class DataStore {
         if let taps = obj["tapTimestamps"] as? [String: [String: [String]]] {
             tapTimestamps = taps
         }
+        if let bugArray = obj["bugEntries"],
+           let bugData = try? JSONSerialization.data(withJSONObject: bugArray),
+           let decoded = try? JSONDecoder().decode([BugEntry].self, from: bugData) {
+            bugEntries = decoded
+        }
+        if let members = obj["bugTeamMembers"] as? [String] {
+            bugTeamMembers = members
+        }
+        if let issueArray = obj["projectIssues"],
+           let issueData = try? JSONSerialization.data(withJSONObject: issueArray),
+           let decoded = try? JSONDecoder().decode([ProjectIssue].self, from: issueData) {
+            projectIssues = decoded
+        }
         return true
     }
 
@@ -597,6 +680,12 @@ final class DataStore {
     private func saveJiraIssues() {
         if let data = try? JSONEncoder().encode(jiraIssues) {
             UserDefaults.standard.set(data, forKey: "jiraIssues")
+        }
+    }
+
+    private func saveReportedJiraIssues() {
+        if let data = try? JSONEncoder().encode(reportedJiraIssues) {
+            UserDefaults.standard.set(data, forKey: "reportedJiraIssues")
         }
     }
 
@@ -642,6 +731,22 @@ final class DataStore {
         }
     }
 
+    private func saveBugEntries() {
+        if let data = try? JSONEncoder().encode(bugEntries) {
+            UserDefaults.standard.set(data, forKey: "bugEntries")
+        }
+    }
+
+    private func saveBugTeamMembers() {
+        UserDefaults.standard.set(bugTeamMembers, forKey: "bugTeamMembers")
+    }
+
+    private func saveProjectIssues() {
+        if let data = try? JSONEncoder().encode(projectIssues) {
+            UserDefaults.standard.set(data, forKey: "projectIssues")
+        }
+    }
+
     // MARK: - Todo Task Helpers
 
     func tasksForKey(_ key: String) -> [TodoTask] {
@@ -680,5 +785,97 @@ final class DataStore {
 
     var incompleteTodayTasksCount: Int {
         todayTasks.filter { !$0.isCompleted }.count
+    }
+
+    // MARK: - Bug Entry Helpers
+
+    func bugsForKey(_ key: String) -> [BugEntry] {
+        bugEntries.filter { $0.dateKey == key }
+    }
+
+    /// 当天创建的 bug + 更早创建但仍未解决的 bug（不重复）
+    func bugsVisibleForKey(_ key: String) -> [BugEntry] {
+        let todayCreated = Set(bugsForKey(key).map(\.id))
+        let carryOver = bugEntries.filter { $0.dateKey < key && !$0.status.isResolved && !todayCreated.contains($0.id) }
+        return bugsForKey(key) + carryOver
+    }
+
+    var todayBugs: [BugEntry] {
+        bugsForKey(todayKey)
+    }
+
+    var unresolvedTodayBugsCount: Int {
+        bugsVisibleForKey(todayKey).filter { !$0.status.isResolved }.count
+    }
+
+    func addBug(_ title: String, forKey key: String, assignee: String? = nil, jiraKey: String? = nil) {
+        var entry = BugEntry(title: title)
+        entry.dateKey = key
+        entry.assignee = assignee
+        entry.jiraKey = jiraKey
+        bugEntries.append(entry)
+    }
+
+    func updateBugStatus(id: UUID, status: BugStatus) {
+        guard let idx = bugEntries.firstIndex(where: { $0.id == id }) else { return }
+        bugEntries[idx].status = status
+        bugEntries[idx].fixedAt = status.isResolved ? Date() : nil
+    }
+
+    func updateBugAssignee(id: UUID, assignee: String?) {
+        guard let idx = bugEntries.firstIndex(where: { $0.id == id }) else { return }
+        bugEntries[idx].assignee = assignee
+    }
+
+    func updateBugNote(id: UUID, note: String?) {
+        guard let idx = bugEntries.firstIndex(where: { $0.id == id }) else { return }
+        bugEntries[idx].note = note
+    }
+
+    func updateBugJiraKey(id: UUID, jiraKey: String?) {
+        guard let idx = bugEntries.firstIndex(where: { $0.id == id }) else { return }
+        bugEntries[idx].jiraKey = jiraKey
+    }
+
+    func deleteBug(id: UUID) {
+        bugEntries.removeAll { $0.id == id }
+    }
+
+    // MARK: - Project Issue Helpers
+
+    func issuesForKey(_ key: String) -> [ProjectIssue] {
+        projectIssues.filter { $0.dateKey == key }
+    }
+
+    func issuesVisibleForKey(_ key: String) -> [ProjectIssue] {
+        let todayCreated = Set(issuesForKey(key).map(\.id))
+        let carryOver = projectIssues.filter { $0.dateKey < key && $0.status == .pending && !todayCreated.contains($0.id) }
+        return issuesForKey(key) + carryOver
+    }
+
+    var unresolvedIssuesCount: Int {
+        issuesVisibleForKey(todayKey).filter { $0.status == .pending }.count
+    }
+
+    func addProjectIssue(_ title: String, department: String, forKey key: String, note: String? = nil) {
+        var issue = ProjectIssue(title: title, department: department)
+        issue.dateKey = key
+        issue.note = note
+        projectIssues.append(issue)
+    }
+
+    func updateIssueStatus(id: UUID, status: ProjectIssueStatus) {
+        guard let idx = projectIssues.firstIndex(where: { $0.id == id }) else { return }
+        projectIssues[idx].status = status
+        projectIssues[idx].resolvedAt = status == .resolved ? Date() : nil
+    }
+
+    func updateIssueNote(id: UUID, note: String?) {
+        guard let idx = projectIssues.firstIndex(where: { $0.id == id }) else { return }
+        projectIssues[idx].note = note
+    }
+
+    func deleteIssue(id: UUID) {
+        projectIssues.removeAll { $0.id == id }
     }
 }

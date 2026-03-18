@@ -86,6 +86,41 @@ final class JiraService {
         }
     }
 
+    func fetchReportedIssues() async -> String? {
+        guard let store else { return "未初始化" }
+        let config = store.jiraConfig
+        guard !config.serverURL.isEmpty else { return "请先配置服务器地址" }
+        if config.authMode == .password, config.username.isEmpty { return "请先配置用户名" }
+        guard let token = loadToken(), !token.isEmpty else { return "密码 / Token 未设置" }
+
+        let base = config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard var components = URLComponents(string: "\(base)/rest/api/2/search") else { return "URL 无效" }
+        let jql = "reporter=currentUser() AND resolution=Unresolved ORDER BY updated DESC"
+        components.queryItems = [
+            URLQueryItem(name: "jql", value: jql),
+            URLQueryItem(name: "fields", value: "summary,status,priority,issuetype"),
+            URLQueryItem(name: "maxResults", value: "50"),
+        ]
+        guard let url = components.url else { return "URL 无效" }
+
+        var request = URLRequest(url: url)
+        applyAuth(&request, username: config.username, token: token)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return "无响应" }
+            guard http.statusCode == 200 else {
+                return http.statusCode == 401 ? "认证失败" : "HTTP \(http.statusCode)"
+            }
+            let issues = parseIssues(data)
+            store.reportedJiraIssues = issues
+            return nil
+        } catch {
+            DevLog.shared.error("Jira", "fetchReportedIssues failed: \(error.localizedDescription)")
+            return error.localizedDescription
+        }
+    }
+
     func fetchTransitions(issueKey: String) async -> [JiraTransition] {
         guard let store else { return [] }
         let config = store.jiraConfig

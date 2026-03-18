@@ -6,6 +6,9 @@ struct MenuBarView: View {
     @State private var noteText = ""
     @State private var selectedDate = Date()
     @State private var trendExpanded = true
+    @State private var issuesExpanded = true
+    @State private var newIssueTitle = ""
+    @State private var newIssueDept: String?
     @State private var jiraRefreshing = false
     @State private var animatingDept: String?
     @State private var saveState = AutoSaveState()
@@ -102,6 +105,18 @@ struct MenuBarView: View {
             if store.jiraConfig.showInMenuBar {
                 Divider()
                 jiraSection
+            }
+
+            // Bug mode section
+            if store.bugModeEnabled {
+                Divider()
+                bugSection
+            }
+
+            // Project issues section
+            if store.projectIssueEnabled {
+                Divider()
+                projectIssuesSection
             }
 
             // Mini weekly trend chart
@@ -304,6 +319,20 @@ struct MenuBarView: View {
                     Spacer()
                 }
 
+                if store.bugModeEnabled {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "bug-tracker")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "ladybug.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Bug 追踪")
+
+                    Spacer()
+                }
+
                 Button {
                     NSApp.setActivationPolicy(.regular)
                     openWindow(id: "dev-log")
@@ -401,6 +430,163 @@ struct MenuBarView: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.blue)
         }
+    }
+
+    // MARK: - Bug Section
+
+    @ViewBuilder
+    private var bugSection: some View {
+        let bugs = store.bugsVisibleForKey(selectedKey)
+        let unresolved = bugs.filter { !$0.status.isResolved }.count
+        HStack {
+            HStack(spacing: 4) {
+                Image(systemName: "ladybug.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                Text("Bug")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if !bugs.isEmpty {
+                    Text("\(unresolved > 0 ? "\(unresolved) 未解决" : "全部已解决")")
+                        .font(.caption)
+                        .foregroundStyle(unresolved > 0 ? .red : .green)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "bug-tracker")
+                NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                Text("打开")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.blue)
+        }
+    }
+
+    // MARK: - Project Issues Section
+
+    @ViewBuilder
+    private var projectIssuesSection: some View {
+        let issues = store.issuesVisibleForKey(selectedKey)
+        let unresolved = issues.filter { $0.status == .pending }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button {
+                    withAnimation { issuesExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: issuesExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .frame(width: 10)
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                        Text("项目问题")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        if !unresolved.isEmpty {
+                            Text("\(unresolved.count)")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+            }
+
+            if issuesExpanded {
+                // Add new issue
+                HStack(spacing: 6) {
+                    Picker("", selection: $newIssueDept) {
+                        Text("选择项目").tag(String?.none)
+                        ForEach(store.departments, id: \.self) { dept in
+                            Text(dept).tag(String?.some(dept))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 90)
+                    TextField("问题描述", text: $newIssueTitle)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .onSubmit { addIssue() }
+                    Button {
+                        addIssue()
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(newIssueTitle.isEmpty || newIssueDept == nil)
+                }
+
+                // Issue list
+                if !issues.isEmpty {
+                    ForEach(issues) { issue in
+                        issueRow(issue)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func issueRow(_ issue: ProjectIssue) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Button {
+                    store.updateIssueStatus(id: issue.id, status: issue.status == .pending ? .resolved : .pending)
+                } label: {
+                    Image(systemName: issue.status.icon)
+                        .font(.caption)
+                        .foregroundStyle(issue.status == .pending ? .orange : .green)
+                }
+                .buttonStyle(.borderless)
+
+                Text(issue.department)
+                    .font(.caption2)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.blue.opacity(0.15))
+                    .clipShape(Capsule())
+
+                Text(issue.title)
+                    .font(.caption)
+                    .strikethrough(issue.status == .resolved)
+                    .foregroundStyle(issue.status == .resolved ? .secondary : .primary)
+
+                Spacer()
+
+                Button {
+                    store.deleteIssue(id: issue.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption2)
+                        .foregroundStyle(.red.opacity(0.7))
+                }
+                .buttonStyle(.borderless)
+            }
+
+            TextField("备注", text: Binding(
+                get: { issue.note ?? "" },
+                set: { store.updateIssueNote(id: issue.id, note: $0.isEmpty ? nil : $0) }
+            ))
+            .font(.caption2)
+            .textFieldStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func addIssue() {
+        guard let dept = newIssueDept, !newIssueTitle.isEmpty else { return }
+        store.addProjectIssue(newIssueTitle, department: dept, forKey: selectedKey)
+        newIssueTitle = ""
+        newIssueDept = nil
     }
 
     private func shiftDate(_ days: Int) {

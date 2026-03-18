@@ -8,11 +8,18 @@ struct JiraView: View {
     @State private var transitions: [JiraTransition] = []
     @State private var transitioning = false
     @State private var errorMessage: String?
+    @State private var selectedTab: JiraTab = .assigned
+
+    private enum JiraTab: String, CaseIterable {
+        case assigned = "分配给我"
+        case reported = "我提交的"
+    }
 
     private var filteredIssues: [JiraIssue] {
-        if searchText.isEmpty { return store.jiraIssues }
+        let source = selectedTab == .assigned ? store.jiraIssues : store.reportedJiraIssues
+        if searchText.isEmpty { return source }
         let q = searchText.lowercased()
-        return store.jiraIssues.filter {
+        return source.filter {
             $0.key.lowercased().contains(q) || $0.summary.lowercased().contains(q)
         }
     }
@@ -28,14 +35,18 @@ struct JiraView: View {
         VStack(spacing: 0) {
             // Toolbar
             HStack(spacing: 12) {
+                Picker("", selection: $selectedTab) {
+                    ForEach(JiraTab.allCases, id: \.self) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+
                 Button {
                     refresh()
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: refreshing ? "arrow.clockwise" : "arrow.clockwise")
-                        Text("刷新")
-                            .font(.caption)
-                    }
+                    Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -275,7 +286,11 @@ struct JiraView: View {
         refreshing = true
         errorMessage = nil
         Task {
-            if let err = await JiraService.shared.fetchMyIssues() {
+            async let assigned = JiraService.shared.fetchMyIssues()
+            async let reported = JiraService.shared.fetchReportedIssues()
+            let err1 = await assigned
+            let err2 = await reported
+            if let err = err1 ?? err2 {
                 errorMessage = "刷新失败：\(err)"
             }
             refreshing = false

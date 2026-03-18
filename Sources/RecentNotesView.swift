@@ -62,6 +62,8 @@ struct RecentNotesView: View {
         let jiraCounts: [String: Int]
         let jiraTotal: Int
         let timestamps: [String: [String]]  // dept → ["HH:mm:ss", ...]
+        let bugs: [BugEntry]
+        let issues: [ProjectIssue]
     }
 
     private struct WeekGroup: Identifiable {
@@ -91,9 +93,13 @@ struct RecentNotesView: View {
     }()
 
     private var allEntries: [DayEntry] {
+        let bugDateKeys = Set(store.bugEntries.map(\.dateKey))
+        let issueDateKeys = Set(store.projectIssues.map(\.dateKey))
         let allKeys = Set(store.records.keys)
             .union(store.dailyNotes.keys)
             .union(store.jiraIssueCounts.keys)
+            .union(bugDateKeys)
+            .union(issueDateKeys)
             .sorted().reversed()
         return allKeys.compactMap { key in
             let records = store.records[key] ?? [:]
@@ -101,10 +107,12 @@ struct RecentNotesView: View {
             let note = store.dailyNotes[key] ?? ""
             let jiraCounts = store.jiraIssueCounts[key] ?? [:]
             let jiraTotal = jiraCounts.values.reduce(0, +)
-            guard total > 0 || !note.isEmpty || jiraTotal > 0 else { return nil }
+            let bugs = store.bugsForKey(key)
+            let issues = store.issuesVisibleForKey(key)
+            guard total > 0 || !note.isEmpty || jiraTotal > 0 || !bugs.isEmpty || !issues.isEmpty else { return nil }
             guard let date = Self.dateFmt.date(from: key) else { return nil }
             let timestamps = store.tapTimestamps[key] ?? [:]
-            return DayEntry(id: key, date: date, display: Self.displayFmt.string(from: date), records: records, total: total, note: note, jiraCounts: jiraCounts, jiraTotal: jiraTotal, timestamps: timestamps)
+            return DayEntry(id: key, date: date, display: Self.displayFmt.string(from: date), records: records, total: total, note: note, jiraCounts: jiraCounts, jiraTotal: jiraTotal, timestamps: timestamps, bugs: bugs, issues: issues)
         }
     }
 
@@ -114,7 +122,9 @@ struct RecentNotesView: View {
         return allEntries.filter {
             $0.note.lowercased().contains(query) ||
             $0.display.contains(query) ||
-            $0.records.keys.contains(where: { $0.lowercased().contains(query) })
+            $0.records.keys.contains(where: { $0.lowercased().contains(query) }) ||
+            $0.bugs.contains(where: { $0.title.lowercased().contains(query) || ($0.assignee?.lowercased().contains(query) ?? false) || ($0.jiraKey?.lowercased().contains(query) ?? false) || ($0.note?.lowercased().contains(query) ?? false) }) ||
+            $0.issues.contains(where: { $0.title.lowercased().contains(query) || $0.department.lowercased().contains(query) || ($0.note?.lowercased().contains(query) ?? false) })
         }
     }
 
@@ -248,6 +258,26 @@ struct RecentNotesView: View {
                                     }
                                     .foregroundStyle(.orange)
                                 }
+                                let weekBugs = week.entries.reduce(0) { $0 + $1.bugs.count }
+                                if weekBugs > 0 {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "ladybug.fill")
+                                            .font(.caption2)
+                                        Text("\(weekBugs)")
+                                            .font(.caption.bold())
+                                    }
+                                    .foregroundStyle(.red)
+                                }
+                                let weekIssues = week.entries.reduce(0) { $0 + $1.issues.count }
+                                if weekIssues > 0 {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .font(.caption2)
+                                        Text("\(weekIssues)")
+                                            .font(.caption.bold())
+                                    }
+                                    .foregroundStyle(.orange)
+                                }
                             }
                             .padding(.vertical, 4)
                         }
@@ -284,6 +314,24 @@ struct RecentNotesView: View {
                         Image(systemName: "ticket.fill")
                             .font(.caption2)
                         Text("\(item.jiraTotal)")
+                            .font(.caption.bold())
+                    }
+                    .foregroundStyle(.orange)
+                }
+                if !item.bugs.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "ladybug.fill")
+                            .font(.caption2)
+                        Text("\(item.bugs.count)")
+                            .font(.caption.bold())
+                    }
+                    .foregroundStyle(.red)
+                }
+                if !item.issues.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                        Text("\(item.issues.count)")
                             .font(.caption.bold())
                     }
                     .foregroundStyle(.orange)
@@ -334,6 +382,24 @@ struct RecentNotesView: View {
                 }
             }
 
+            // Bug tags
+            if !item.bugs.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(item.bugs) { bug in
+                        bugTag(bug)
+                    }
+                }
+            }
+
+            // Project issue tags
+            if !item.issues.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(item.issues) { issue in
+                        issueTag(issue)
+                    }
+                }
+            }
+
             // Note content
             if !item.note.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -347,6 +413,95 @@ struct RecentNotesView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+    }
+
+    private func bugTagLabel(_ bug: BugEntry) -> String {
+        var parts = [bug.title]
+        if let jira = bug.jiraKey { parts.append(jira) }
+        if let assignee = bug.assignee { parts.append(assignee) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func bugTag(_ bug: BugEntry) -> some View {
+        let isUnresolved = !bug.status.isResolved
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Image(systemName: bug.status.icon)
+                    .font(.system(size: 9))
+                    .fontWeight(isUnresolved ? .bold : .regular)
+                Text(bugTagLabel(bug))
+                    .lineLimit(1)
+                    .fontWeight(isUnresolved ? .semibold : .regular)
+            }
+            .font(.caption)
+            if let note = bug.note, !note.isEmpty {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(bugTagColor(bug.status).opacity(isUnresolved ? 0.25 : 0.15))
+        .overlay(alignment: .leading) {
+            if isUnresolved {
+                Rectangle()
+                    .fill(bugTagColor(bug.status))
+                    .frame(width: 3)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .help(bug.status.rawValue)
+    }
+
+    private func bugTagColor(_ status: BugStatus) -> Color {
+        switch status {
+        case .pending: return .red
+        case .inProgress: return .orange
+        case .fixed: return .green
+        case .ignored: return .secondary
+        }
+    }
+
+    private func issueTag(_ issue: ProjectIssue) -> some View {
+        let isUnresolved = issue.status == .pending
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Image(systemName: issue.status.icon)
+                    .font(.system(size: 9))
+                    .fontWeight(isUnresolved ? .bold : .regular)
+                Text("\(issue.department) · \(issue.title)")
+                    .lineLimit(1)
+                    .fontWeight(isUnresolved ? .semibold : .regular)
+            }
+            .font(.caption)
+            if let note = issue.note, !note.isEmpty {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(issueTagColor(issue.status).opacity(isUnresolved ? 0.25 : 0.15))
+        .overlay(alignment: .leading) {
+            if isUnresolved {
+                Rectangle()
+                    .fill(issueTagColor(issue.status))
+                    .frame(width: 3)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .help(issue.status.rawValue)
+    }
+
+    private func issueTagColor(_ status: ProjectIssueStatus) -> Color {
+        switch status {
+        case .pending: return .orange
+        case .resolved: return .green
+        }
     }
 
 }

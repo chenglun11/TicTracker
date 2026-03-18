@@ -70,6 +70,8 @@ struct SettingsView: View {
                 .tabItem { Label("通用", systemImage: "gearshape") }
             RSSTab(store: store)
                 .tabItem { Label("RSS", systemImage: "dot.radiowaves.up.forward") }
+            BugTab(store: store)
+                .tabItem { Label("Bug", systemImage: "ladybug.fill") }
             JiraTab(store: store)
                 .tabItem { Label("Jira", systemImage: "server.rack") }
             AITab(store: store)
@@ -296,6 +298,15 @@ private struct GeneralTab: View {
                     }
                 }
                 .onChange(of: store.todoEnabled) { _, _ in saveState.triggerSave() }
+                Toggle(isOn: Bindable(store).projectIssueEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("项目问题追踪")
+                        Text("关闭后隐藏菜单栏中的项目问题记录入口")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: store.projectIssueEnabled) { _, _ in saveState.triggerSave() }
                 Toggle(isOn: Bindable(store).trendChartEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("本周趋势图")
@@ -440,6 +451,88 @@ private struct GeneralTab: View {
         UserDefaults.standard.set(reminderHour, forKey: "reminderHour")
         UserDefaults.standard.set(reminderMinute, forKey: "reminderMinute")
         NotificationManager.shared.scheduleReminder(hour: reminderHour, minute: reminderMinute)
+    }
+}
+
+// MARK: - Bug Tab
+
+private struct BugTab: View {
+    @Bindable var store: DataStore
+    @State private var newMember = ""
+    @State private var saveState = AutoSaveState()
+
+    var body: some View {
+        Form {
+            Section("Bug 追踪") {
+                Toggle(isOn: Bindable(store).bugModeEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用 Bug 追踪")
+                        Text("记录不需要上 Jira 的 hotfix 类型 bug")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: store.bugModeEnabled) { _, _ in saveState.triggerSave() }
+            }
+
+            if store.bugModeEnabled {
+                Section("团队成员") {
+                    ForEach(store.bugTeamMembers, id: \.self) { member in
+                        HStack {
+                            Image(systemName: "person.fill")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 20)
+                            Text(member)
+                            Spacer()
+                            Button {
+                                store.bugTeamMembers.removeAll { $0 == member }
+                                saveState.triggerSave()
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    HStack {
+                        TextField("添加成员…", text: $newMember)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { addMember() }
+                        Button("添加") { addMember() }
+                            .disabled(newMember.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+
+                Section("统计") {
+                    let total = store.bugEntries.count
+                    let unresolved = store.bugEntries.filter { !$0.status.isResolved }.count
+                    HStack {
+                        Text("Bug 总数")
+                        Spacer()
+                        Text("\(total)")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("未解决")
+                        Spacer()
+                        Text("\(unresolved)")
+                            .monospacedDigit()
+                            .foregroundStyle(unresolved > 0 ? .red : .green)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .autoSaveIndicator(saveState)
+    }
+
+    private func addMember() {
+        let name = newMember.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !store.bugTeamMembers.contains(name) else { return }
+        store.bugTeamMembers.append(name)
+        newMember = ""
+        saveState.triggerSave()
     }
 }
 
