@@ -271,12 +271,12 @@ struct RecentNotesView: View {
                                 let weekIssues = week.entries.reduce(0) { $0 + $1.issues.count }
                                 if weekIssues > 0 {
                                     HStack(spacing: 4) {
-                                        Image(systemName: "exclamationmark.triangle.fill")
+                                        Image(systemName: "ant.fill")
                                             .font(.caption2)
                                         Text("\(weekIssues)")
                                             .font(.caption.bold())
                                     }
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(.purple)
                                 }
                             }
                             .padding(.vertical, 4)
@@ -329,12 +329,12 @@ struct RecentNotesView: View {
                 }
                 if !item.issues.isEmpty {
                     HStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle.fill")
+                        Image(systemName: "ant.fill")
                             .font(.caption2)
                         Text("\(item.issues.count)")
                             .font(.caption.bold())
                     }
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.purple)
                 }
             }
 
@@ -384,18 +384,50 @@ struct RecentNotesView: View {
 
             // Bug tags
             if !item.bugs.isEmpty {
-                FlowLayout(spacing: 6) {
-                    ForEach(item.bugs) { bug in
-                        bugTag(bug)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "ladybug.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                        Text("Bug")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        let unresolvedCount = item.bugs.filter({ !$0.status.isResolved }).count
+                        if unresolvedCount > 0 {
+                            Text("\(unresolvedCount)个待处理")
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    FlowLayout(spacing: 6) {
+                        ForEach(item.bugs) { bug in
+                            bugTag(bug)
+                        }
                     }
                 }
             }
 
-            // Project issue tags
+            // Project issue tags (Bug体系)
             if !item.issues.isEmpty {
-                FlowLayout(spacing: 6) {
-                    ForEach(item.issues) { issue in
-                        issueTag(issue)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "ant.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.purple)
+                        Text("项目Bug")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        let pendingCount = item.issues.filter({ $0.status == .pending }).count
+                        if pendingCount > 0 {
+                            Text("\(pendingCount)个待处理")
+                                .font(.caption2)
+                                .foregroundStyle(.purple)
+                        }
+                    }
+                    FlowLayout(spacing: 6) {
+                        ForEach(item.issues) { issue in
+                            issueTag(issue)
+                        }
                     }
                 }
             }
@@ -499,7 +531,7 @@ struct RecentNotesView: View {
 
     private func issueTagColor(_ status: ProjectIssueStatus) -> Color {
         switch status {
-        case .pending: return .orange
+        case .pending: return .purple
         case .resolved: return .green
         }
     }

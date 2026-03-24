@@ -117,15 +117,15 @@ struct WeeklyReport {
             let resolved = sortedIssues.filter { $0.status == .resolved }.count
             let pending = sortedIssues.count - resolved
             lines.append("")
-            lines.append("--- 项目问题 ---")
+            lines.append("--- 项目Bug ---")
             for issue in sortedIssues {
                 lines.append("[\(issue.status.rawValue)] \(issue.department) - \(issue.title)")
                 if let note = issue.note, !note.isEmpty {
                     lines.append("  备注: \(note)")
                 }
             }
-            var summary = "问题合计: \(weekIssues.count) 个（已解决 \(resolved)"
-            if pending > 0 { summary += "，未解决 \(pending)" }
+            var summary = "项目Bug合计: \(weekIssues.count) 个（已修复 \(resolved)"
+            if pending > 0 { summary += "，待处理 \(pending)" }
             summary += "）"
             lines.append(summary)
         }

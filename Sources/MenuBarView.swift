@@ -468,7 +468,7 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Project Issues Section
+    // MARK: - Project Issues Section (Bug体系)
 
     @ViewBuilder
     private var projectIssuesSection: some View {
@@ -483,16 +483,16 @@ struct MenuBarView: View {
                         Image(systemName: issuesExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption2)
                             .frame(width: 10)
-                        Image(systemName: "exclamationmark.triangle.fill")
+                        Image(systemName: "ant.fill")
                             .font(.caption2)
-                            .foregroundStyle(.orange)
-                        Text("项目问题")
+                            .foregroundStyle(.purple)
+                        Text("项目Bug")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         if !unresolved.isEmpty {
                             Text("\(unresolved.count)")
                                 .font(.caption)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.purple)
                         }
                     }
                 }
@@ -511,7 +511,7 @@ struct MenuBarView: View {
                     }
                     .labelsHidden()
                     .frame(width: 90)
-                    TextField("问题描述", text: $newIssueTitle)
+                    TextField("Bug描述", text: $newIssueTitle)
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
                         .onSubmit { addIssue() }
@@ -544,21 +544,33 @@ struct MenuBarView: View {
                 } label: {
                     Image(systemName: issue.status.icon)
                         .font(.caption)
-                        .foregroundStyle(issue.status == .pending ? .orange : .green)
+                        .foregroundStyle(issue.status == .pending ? .purple : .green)
                 }
                 .buttonStyle(.borderless)
 
-                Text(issue.department)
-                    .font(.caption2)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.blue.opacity(0.15))
-                    .clipShape(Capsule())
+                Menu {
+                    ForEach(store.departments, id: \.self) { dept in
+                        Button(dept) {
+                            store.updateIssueDepartment(id: issue.id, department: dept)
+                        }
+                    }
+                } label: {
+                    Text(issue.department)
+                        .font(.caption2)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.blue.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
 
-                Text(issue.title)
-                    .font(.caption)
-                    .strikethrough(issue.status == .resolved)
-                    .foregroundStyle(issue.status == .resolved ? .secondary : .primary)
+                TextField("Bug描述", text: Binding(
+                    get: { issue.title },
+                    set: { store.updateIssueTitle(id: issue.id, title: $0) }
+                ))
+                .font(.caption)
+                .textFieldStyle(.plain)
 
                 Spacer()
 

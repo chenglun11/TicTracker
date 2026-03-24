@@ -1,12 +1,12 @@
 import Foundation
 
 enum ProjectIssueStatus: String, Codable, Sendable, CaseIterable {
-    case pending = "未解决"
-    case resolved = "已解决"
+    case pending = "待处理"
+    case resolved = "已修复"
 
     var icon: String {
         switch self {
-        case .pending: return "exclamationmark.circle"
+        case .pending: return "ant.circle"
         case .resolved: return "checkmark.circle.fill"
         }
     }

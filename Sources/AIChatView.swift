@@ -815,28 +815,62 @@ struct MessageRow: View {
 struct MarkdownText: View {
     let content: String
     @State private var parsedBlocks: [ContentBlock] = []
+    @State private var groupedBlocks: [GroupedBlock] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(parsedBlocks) { block in
-                switch block.kind {
+            ForEach(groupedBlocks) { group in
+                switch group.kind {
                 case .code(let language):
-                    CodeBlock(code: block.text, language: language)
-                case .paragraph:
-                    if let attributed = try? AttributedString(markdown: block.text) {
-                        Text(attributed).font(.body)
-                    } else {
-                        Text(block.text).font(.body)
-                    }
-                case .blank:
-                    Spacer().frame(height: 4)
+                    CodeBlock(code: group.text, language: language)
+                case .text:
+                    Text(group.attributed).font(.body)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: content) {
             parsedBlocks = parseContent()
+            groupedBlocks = buildGroupedBlocks()
         }
+    }
+
+    private func buildGroupedBlocks() -> [GroupedBlock] {
+        var result: [GroupedBlock] = []
+        var pendingParagraphs: [ContentBlock] = []
+
+        func flushParagraphs() {
+            guard !pendingParagraphs.isEmpty else { return }
+            var combined = AttributedString()
+            for (i, block) in pendingParagraphs.enumerated() {
+                if block.kind == .blank {
+                    combined.append(AttributedString("\n"))
+                } else {
+                    if let attr = try? AttributedString(markdown: block.text) {
+                        combined.append(attr)
+                    } else {
+                        combined.append(AttributedString(block.text))
+                    }
+                }
+                if i < pendingParagraphs.count - 1 && pendingParagraphs[i].kind != .blank {
+                    combined.append(AttributedString("\n"))
+                }
+            }
+            result.append(GroupedBlock(kind: .text, text: "", attributed: combined))
+            pendingParagraphs = []
+        }
+
+        for block in parsedBlocks {
+            switch block.kind {
+            case .code(let language):
+                flushParagraphs()
+                result.append(GroupedBlock(kind: .code(language: language), text: block.text, attributed: AttributedString()))
+            case .paragraph, .blank:
+                pendingParagraphs.append(block)
+            }
+        }
+        flushParagraphs()
+        return result
     }
 
     private func parseContent() -> [ContentBlock] {
@@ -897,6 +931,18 @@ struct MarkdownText: View {
         let id = UUID()
         let text: String
         let kind: BlockKind
+    }
+
+    enum GroupedBlockKind {
+        case text
+        case code(language: String)
+    }
+
+    struct GroupedBlock: Identifiable {
+        let id = UUID()
+        let kind: GroupedBlockKind
+        let text: String
+        let attributed: AttributedString
     }
 }
 

@@ -875,6 +875,16 @@ final class DataStore {
         projectIssues[idx].note = note
     }
 
+    func updateIssueTitle(id: UUID, title: String) {
+        guard !title.isEmpty, let idx = projectIssues.firstIndex(where: { $0.id == id }) else { return }
+        projectIssues[idx].title = title
+    }
+
+    func updateIssueDepartment(id: UUID, department: String) {
+        guard let idx = projectIssues.firstIndex(where: { $0.id == id }) else { return }
+        projectIssues[idx].department = department
+    }
+
     func deleteIssue(id: UUID) {
         projectIssues.removeAll { $0.id == id }
     }

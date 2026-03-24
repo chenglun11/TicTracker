@@ -300,8 +300,8 @@ private struct GeneralTab: View {
                 .onChange(of: store.todoEnabled) { _, _ in saveState.triggerSave() }
                 Toggle(isOn: Bindable(store).projectIssueEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("项目问题追踪")
-                        Text("关闭后隐藏菜单栏中的项目问题记录入口")
+                        Text("项目Bug追踪")
+                        Text("关闭后隐藏菜单栏中的项目Bug记录入口")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
