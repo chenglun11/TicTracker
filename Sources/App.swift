@@ -177,9 +177,9 @@ struct TicTrackerApp: App {
         }
         .defaultSize(width: 650, height: 550)
 
-        Window("Bug 追踪", id: "bug-tracker") {
-            BugView(store: store)
+        Window("问题追踪", id: "issue-tracker") {
+            IssueTrackerView(store: store)
         }
-        .defaultSize(width: 600, height: 500)
+        .defaultSize(width: 650, height: 500)
     }
 }

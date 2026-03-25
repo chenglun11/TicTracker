@@ -70,8 +70,8 @@ struct SettingsView: View {
                 .tabItem { Label("通用", systemImage: "gearshape") }
             RSSTab(store: store)
                 .tabItem { Label("RSS", systemImage: "dot.radiowaves.up.forward") }
-            BugTab(store: store)
-                .tabItem { Label("Bug", systemImage: "ladybug.fill") }
+            IssueTrackerTab(store: store)
+                .tabItem { Label("问题追踪", systemImage: "ladybug.fill") }
             JiraTab(store: store)
                 .tabItem { Label("Jira", systemImage: "server.rack") }
             AITab(store: store)
@@ -298,15 +298,6 @@ private struct GeneralTab: View {
                     }
                 }
                 .onChange(of: store.todoEnabled) { _, _ in saveState.triggerSave() }
-                Toggle(isOn: Bindable(store).projectIssueEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("项目Bug追踪")
-                        Text("关闭后隐藏菜单栏中的项目Bug记录入口")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .onChange(of: store.projectIssueEnabled) { _, _ in saveState.triggerSave() }
                 Toggle(isOn: Bindable(store).trendChartEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("本周趋势图")
@@ -454,28 +445,37 @@ private struct GeneralTab: View {
     }
 }
 
-// MARK: - Bug Tab
+// MARK: - Issue Tracker Tab
 
-private struct BugTab: View {
+private struct IssueTrackerTab: View {
     @Bindable var store: DataStore
     @State private var newMember = ""
     @State private var saveState = AutoSaveState()
 
     var body: some View {
         Form {
-            Section("Bug 追踪") {
-                Toggle(isOn: Bindable(store).bugModeEnabled) {
+            Section("问题追踪") {
+                Toggle(isOn: Bindable(store).issueTrackerEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("启用 Bug 追踪")
-                        Text("记录不需要上 Jira 的 hotfix 类型 bug")
+                        Text("启用问题追踪")
+                        Text("统一管理 Bug、Feat 和项目问题")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                .onChange(of: store.bugModeEnabled) { _, _ in saveState.triggerSave() }
+                .onChange(of: store.issueTrackerEnabled) { _, _ in saveState.triggerSave() }
+
+                if store.jiraConfig.enabled {
+                    Picker("Jira 工单来源", selection: Bindable(store).jiraSourceMode) {
+                        Text("指派给我").tag(0)
+                        Text("我提交的").tag(1)
+                        Text("全部").tag(2)
+                    }
+                    .onChange(of: store.jiraSourceMode) { _, _ in saveState.triggerSave() }
+                }
             }
 
-            if store.bugModeEnabled {
+            if store.issueTrackerEnabled {
                 Section("团队成员") {
                     ForEach(store.bugTeamMembers, id: \.self) { member in
                         HStack {
@@ -504,10 +504,10 @@ private struct BugTab: View {
                 }
 
                 Section("统计") {
-                    let total = store.bugEntries.count
-                    let unresolved = store.bugEntries.filter { !$0.status.isResolved }.count
+                    let total = store.trackedIssues.count
+                    let unresolved = store.trackedIssues.filter { !$0.status.isResolved }.count
                     HStack {
-                        Text("Bug 总数")
+                        Text("总数")
                         Spacer()
                         Text("\(total)")
                             .monospacedDigit()
@@ -519,6 +519,21 @@ private struct BugTab: View {
                         Text("\(unresolved)")
                             .monospacedDigit()
                             .foregroundStyle(unresolved > 0 ? .red : .green)
+                    }
+                    ForEach(IssueType.allCases, id: \.self) { type in
+                        let count = store.trackedIssues.filter { $0.type == type }.count
+                        if count > 0 {
+                            HStack {
+                                Image(systemName: type.icon)
+                                    .foregroundStyle(type.color)
+                                    .frame(width: 20)
+                                Text(type.rawValue)
+                                Spacer()
+                                Text("\(count)")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
             }

@@ -6,12 +6,14 @@ struct MenuBarView: View {
     @State private var noteText = ""
     @State private var selectedDate = Date()
     @State private var trendExpanded = true
-    @State private var issuesExpanded = true
+    @State private var issuesExpanded = false
     @State private var newIssueTitle = ""
+    @State private var newIssueType: IssueType = .bug
     @State private var newIssueDept: String?
     @State private var jiraRefreshing = false
     @State private var animatingDept: String?
     @State private var saveState = AutoSaveState()
+    @State private var commentTexts: [UUID: String] = [:]
 
     private var selectedKey: String {
         DataStore.dateKey(from: selectedDate)
@@ -107,16 +109,10 @@ struct MenuBarView: View {
                 jiraSection
             }
 
-            // Bug mode section
-            if store.bugModeEnabled {
+            // Unified issue tracker section
+            if store.issueTrackerEnabled {
                 Divider()
-                bugSection
-            }
-
-            // Project issues section
-            if store.projectIssueEnabled {
-                Divider()
-                projectIssuesSection
+                issueTrackerSection
             }
 
             // Mini weekly trend chart
@@ -319,16 +315,16 @@ struct MenuBarView: View {
                     Spacer()
                 }
 
-                if store.bugModeEnabled {
+                if store.issueTrackerEnabled {
                     Button {
                         NSApp.setActivationPolicy(.regular)
-                        openWindow(id: "bug-tracker")
+                        openWindow(id: "issue-tracker")
                         NSApp.activate(ignoringOtherApps: true)
                     } label: {
                         Image(systemName: "ladybug.fill")
                     }
                     .buttonStyle(.borderless)
-                    .help("Bug 追踪")
+                    .help("问题追踪")
 
                     Spacer()
                 }
@@ -432,48 +428,12 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Bug Section
+    // MARK: - Unified Issue Tracker Section
 
     @ViewBuilder
-    private var bugSection: some View {
-        let bugs = store.bugsVisibleForKey(selectedKey)
-        let unresolved = bugs.filter { !$0.status.isResolved }.count
-        HStack {
-            HStack(spacing: 4) {
-                Image(systemName: "ladybug.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                Text("Bug")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                if !bugs.isEmpty {
-                    Text("\(unresolved > 0 ? "\(unresolved) 未解决" : "全部已解决")")
-                        .font(.caption)
-                        .foregroundStyle(unresolved > 0 ? .red : .green)
-                }
-            }
-
-            Spacer()
-
-            Button {
-                NSApp.setActivationPolicy(.regular)
-                openWindow(id: "bug-tracker")
-                NSApp.activate(ignoringOtherApps: true)
-            } label: {
-                Text("打开")
-                    .font(.caption)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.blue)
-        }
-    }
-
-    // MARK: - Project Issues Section (Bug体系)
-
-    @ViewBuilder
-    private var projectIssuesSection: some View {
+    private var issueTrackerSection: some View {
         let issues = store.issuesVisibleForKey(selectedKey)
-        let unresolved = issues.filter { $0.status == .pending }
+        let unresolved = issues.filter { !$0.status.isResolved }
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Button {
@@ -483,35 +443,60 @@ struct MenuBarView: View {
                         Image(systemName: issuesExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption2)
                             .frame(width: 10)
-                        Image(systemName: "ant.fill")
+                        Image(systemName: "ladybug.fill")
                             .font(.caption2)
-                            .foregroundStyle(.purple)
-                        Text("项目Bug")
+                            .foregroundStyle(.orange)
+                        Text("问题追踪")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         if !unresolved.isEmpty {
-                            Text("\(unresolved.count)")
+                            Text("\(unresolved.count) 未解决")
                                 .font(.caption)
-                                .foregroundStyle(.purple)
+                                .foregroundStyle(.orange)
+                        } else if !issues.isEmpty {
+                            Text("全部已解决")
+                                .font(.caption)
+                                .foregroundStyle(.green)
                         }
                     }
                 }
                 .buttonStyle(.borderless)
                 Spacer()
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "issue-tracker")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Text("打开")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.blue)
             }
 
             if issuesExpanded {
                 // Add new issue
                 HStack(spacing: 6) {
-                    Picker("", selection: $newIssueDept) {
-                        Text("选择项目").tag(String?.none)
-                        ForEach(store.departments, id: \.self) { dept in
-                            Text(dept).tag(String?.some(dept))
+                    Picker("", selection: $newIssueType) {
+                        ForEach(IssueType.allCases, id: \.self) { type in
+                            Label(type.rawValue, systemImage: type.icon).tag(type)
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 90)
-                    TextField("Bug描述", text: $newIssueTitle)
+                    .frame(width: 85)
+
+                    if newIssueType == .issue {
+                        Picker("", selection: $newIssueDept) {
+                            Text("项目").tag(String?.none)
+                            ForEach(store.departments, id: \.self) { dept in
+                                Text(dept).tag(String?.some(dept))
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 70)
+                    }
+
+                    TextField("描述…", text: $newIssueTitle)
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
                         .onSubmit { addIssue() }
@@ -521,13 +506,12 @@ struct MenuBarView: View {
                         Image(systemName: "plus.circle.fill")
                     }
                     .buttonStyle(.borderless)
-                    .disabled(newIssueTitle.isEmpty || newIssueDept == nil)
+                    .disabled(newIssueTitle.isEmpty)
                 }
 
                 // Issue list (only unresolved)
-                let pending = issues.filter { $0.status == .pending }
-                if !pending.isEmpty {
-                    ForEach(pending) { issue in
+                if !unresolved.isEmpty {
+                    ForEach(unresolved) { issue in
                         issueRow(issue)
                     }
                 }
@@ -536,36 +520,43 @@ struct MenuBarView: View {
     }
 
     @ViewBuilder
-    private func issueRow(_ issue: ProjectIssue) -> some View {
+    private func issueRow(_ issue: TrackedIssue) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Button {
-                    store.updateIssueStatus(id: issue.id, status: issue.status == .pending ? .resolved : .pending)
+                // Type icon
+                Image(systemName: issue.type.icon)
+                    .font(.caption2)
+                    .foregroundStyle(issue.type.color)
+
+                // Status menu (选择解决情况)
+                Menu {
+                    ForEach(IssueStatus.allCases, id: \.self) { status in
+                        Button {
+                            store.updateIssueStatus(id: issue.id, status: status)
+                        } label: {
+                            Label(status.rawValue, systemImage: status.icon)
+                        }
+                        .disabled(issue.status == status)
+                    }
                 } label: {
                     Image(systemName: issue.status.icon)
                         .font(.caption)
-                        .foregroundStyle(issue.status == .pending ? .purple : .green)
+                        .foregroundStyle(issue.status.isResolved ? .green : .orange)
                 }
-                .buttonStyle(.borderless)
+                .menuIndicator(.hidden)
+                .fixedSize()
 
-                Menu {
-                    ForEach(store.departments, id: \.self) { dept in
-                        Button(dept) {
-                            store.updateIssueDepartment(id: issue.id, department: dept)
-                        }
-                    }
-                } label: {
-                    Text(issue.department)
+                // Department badge (if present)
+                if let dept = issue.department, !dept.isEmpty {
+                    Text(dept)
                         .font(.caption2)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
-                        .background(Color.blue.opacity(0.15))
+                        .background(Color.purple.opacity(0.15))
                         .clipShape(Capsule())
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
 
-                TextField("Bug描述", text: Binding(
+                TextField("描述", text: Binding(
                     get: { issue.title },
                     set: { store.updateIssueTitle(id: issue.id, title: $0) }
                 ))
@@ -574,30 +565,82 @@ struct MenuBarView: View {
 
                 Spacer()
 
+                // Assignee
+                if !store.bugTeamMembers.isEmpty {
+                    Menu {
+                        Button("未指派") {
+                            store.updateIssueAssignee(id: issue.id, assignee: nil)
+                        }
+                        Divider()
+                        ForEach(store.bugTeamMembers, id: \.self) { member in
+                            Button(member) {
+                                store.updateIssueAssignee(id: issue.id, assignee: member)
+                            }
+                        }
+                    } label: {
+                        if let assignee = issue.assignee {
+                            Text(assignee)
+                                .font(.caption2)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.blue.opacity(0.15))
+                                .clipShape(Capsule())
+                        } else {
+                            Image(systemName: "person.badge.plus")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                } else if let assignee = issue.assignee {
+                    Text(assignee)
+                        .font(.caption2)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.blue.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+
                 Button {
                     store.deleteIssue(id: issue.id)
                 } label: {
                     Image(systemName: "trash")
                         .font(.caption2)
-                        .foregroundStyle(.red.opacity(0.7))
+                        .foregroundStyle(.secondary.opacity(0.7))
                 }
                 .buttonStyle(.borderless)
             }
 
-            TextField("备注", text: Binding(
-                get: { issue.note ?? "" },
-                set: { store.updateIssueNote(id: issue.id, note: $0.isEmpty ? nil : $0) }
+            // Latest comment + add
+            if let latest = issue.comments.last {
+                Text(latest.text)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            TextField("添加备注…", text: Binding(
+                get: { commentTexts[issue.id] ?? "" },
+                set: { commentTexts[issue.id] = $0 }
             ))
             .font(.caption2)
             .textFieldStyle(.plain)
             .foregroundStyle(.secondary)
+            .onSubmit {
+                let text = (commentTexts[issue.id] ?? "").trimmingCharacters(in: .whitespaces)
+                if !text.isEmpty {
+                    store.addIssueComment(id: issue.id, text: text)
+                    commentTexts[issue.id] = ""
+                }
+            }
         }
         .padding(.vertical, 2)
     }
 
     private func addIssue() {
-        guard let dept = newIssueDept, !newIssueTitle.isEmpty else { return }
-        store.addProjectIssue(newIssueTitle, department: dept, forKey: selectedKey)
+        guard !newIssueTitle.isEmpty else { return }
+        store.addIssue(newIssueTitle, type: newIssueType, forKey: selectedKey,
+                       department: newIssueDept)
         newIssueTitle = ""
         newIssueDept = nil
     }

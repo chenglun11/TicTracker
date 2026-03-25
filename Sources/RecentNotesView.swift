@@ -51,6 +51,8 @@ struct RecentNotesView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var searchText = ""
     @State private var copied = false
+    @State private var expandedIssueDays: Set<String> = []
+    @State private var selectedDayID: String?
 
     private struct DayEntry: Identifiable {
         let id: String // date key
@@ -62,8 +64,7 @@ struct RecentNotesView: View {
         let jiraCounts: [String: Int]
         let jiraTotal: Int
         let timestamps: [String: [String]]  // dept → ["HH:mm:ss", ...]
-        let bugs: [BugEntry]
-        let issues: [ProjectIssue]
+        let issues: [TrackedIssue]  // unified
     }
 
     private struct WeekGroup: Identifiable {
@@ -93,13 +94,18 @@ struct RecentNotesView: View {
     }()
 
     private var allEntries: [DayEntry] {
-        let bugDateKeys = Set(store.bugEntries.map(\.dateKey))
-        let issueDateKeys = Set(store.projectIssues.map(\.dateKey))
+        // Collect all dateKeys that have any issue activity (created or commented)
+        var issueActivityKeys = Set<String>()
+        for issue in store.trackedIssues {
+            issueActivityKeys.insert(issue.dateKey)
+            for comment in issue.comments {
+                issueActivityKeys.insert(DataStore.dateKey(from: comment.createdAt))
+            }
+        }
         let allKeys = Set(store.records.keys)
             .union(store.dailyNotes.keys)
             .union(store.jiraIssueCounts.keys)
-            .union(bugDateKeys)
-            .union(issueDateKeys)
+            .union(issueActivityKeys)
             .sorted().reversed()
         return allKeys.compactMap { key in
             let records = store.records[key] ?? [:]
@@ -107,12 +113,11 @@ struct RecentNotesView: View {
             let note = store.dailyNotes[key] ?? ""
             let jiraCounts = store.jiraIssueCounts[key] ?? [:]
             let jiraTotal = jiraCounts.values.reduce(0, +)
-            let bugs = store.bugsForKey(key)
-            let issues = store.issuesVisibleForKey(key).filter { $0.status == .pending }
-            guard total > 0 || !note.isEmpty || jiraTotal > 0 || !bugs.isEmpty || !issues.isEmpty else { return nil }
+            let issues = store.issuesActiveForKey(key)
+            guard total > 0 || !note.isEmpty || jiraTotal > 0 || !issues.isEmpty else { return nil }
             guard let date = Self.dateFmt.date(from: key) else { return nil }
             let timestamps = store.tapTimestamps[key] ?? [:]
-            return DayEntry(id: key, date: date, display: Self.displayFmt.string(from: date), records: records, total: total, note: note, jiraCounts: jiraCounts, jiraTotal: jiraTotal, timestamps: timestamps, bugs: bugs, issues: issues)
+            return DayEntry(id: key, date: date, display: Self.displayFmt.string(from: date), records: records, total: total, note: note, jiraCounts: jiraCounts, jiraTotal: jiraTotal, timestamps: timestamps, issues: issues)
         }
     }
 
@@ -123,8 +128,13 @@ struct RecentNotesView: View {
             $0.note.lowercased().contains(query) ||
             $0.display.contains(query) ||
             $0.records.keys.contains(where: { $0.lowercased().contains(query) }) ||
-            $0.bugs.contains(where: { $0.title.lowercased().contains(query) || ($0.assignee?.lowercased().contains(query) ?? false) || ($0.jiraKey?.lowercased().contains(query) ?? false) || ($0.note?.lowercased().contains(query) ?? false) }) ||
-            $0.issues.contains(where: { $0.title.lowercased().contains(query) || $0.department.lowercased().contains(query) || ($0.note?.lowercased().contains(query) ?? false) })
+            $0.issues.contains(where: {
+                $0.title.lowercased().contains(query) ||
+                ($0.assignee?.lowercased().contains(query) ?? false) ||
+                ($0.jiraKey?.lowercased().contains(query) ?? false) ||
+                ($0.department?.lowercased().contains(query) ?? false) ||
+                $0.comments.contains(where: { $0.text.lowercased().contains(query) })
+            })
         }
     }
 
@@ -163,377 +173,383 @@ struct RecentNotesView: View {
         return calendar.startOfDay(for: calendar.date(byAdding: .day, value: -daysFromMonday, to: date)!)
     }
 
+    private var selectedEntry: DayEntry? {
+        guard let id = selectedDayID else { return nil }
+        return filteredEntries.first { $0.id == id }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Toolbar
-            HStack(spacing: 12) {
-                Text("最近日记")
-                    .font(.title3.bold())
-                Spacer()
-                if store.aiEnabled {
+        HSplitView {
+            // Left sidebar
+            VStack(spacing: 0) {
+                // Toolbar
+                HStack(spacing: 12) {
+                    Text("最近日记")
+                        .font(.title3.bold())
+                    Spacer()
+                    if store.aiEnabled {
+                        Button {
+                            NSApp.setActivationPolicy(.regular)
+                            openWindow(id: "ai-chat")
+                            NSApp.activate(ignoringOtherApps: true)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                NotificationCenter.default.post(name: .generateWeeklyReport, object: nil)
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkles")
+                                Text("AI 周报")
+                                    .font(.caption)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                     Button {
-                        NSApp.setActivationPolicy(.regular)
-                        openWindow(id: "ai-chat")
-                        NSApp.activate(ignoringOtherApps: true)
-                        // 延迟发送通知，确保窗口已打开
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            NotificationCenter.default.post(name: .generateWeeklyReport, object: nil)
+                        WeeklyReport.copyToClipboard(from: store)
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            copied = false
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: "sparkles")
-                            Text("AI 周报")
+                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            Text(copied ? "已复制" : "复制周报")
                                 .font(.caption)
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                 }
-                Button {
-                    WeeklyReport.copyToClipboard(from: store)
-                    copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        copied = false
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        Text(copied ? "已复制" : "复制周报")
-                            .font(.caption)
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(nsColor: .controlBackgroundColor))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
 
-            Divider()
+                Divider()
 
-            if allEntries.isEmpty {
-                ContentUnavailableView {
-                    Label("暂无记录", systemImage: "book.closed")
-                } description: {
-                    Text("开始记录你的日常工作吧")
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(weekGroups) { week in
-                        Section {
-                            ForEach(week.entries) { item in
-                                dayRow(item)
-                            }
-                        } header: {
-                            HStack(spacing: 8) {
-                                Text(week.label)
-                                    .font(.headline)
-                                if week.isCurrentWeek {
-                                    Text("本周")
-                                        .font(.caption.bold())
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(Color.accentColor, in: Capsule())
-                                        .foregroundStyle(.white)
+                if allEntries.isEmpty {
+                    ContentUnavailableView {
+                        Label("暂无记录", systemImage: "book.closed")
+                    } description: {
+                        Text("开始记录你的日常工作吧")
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(selection: $selectedDayID) {
+                        ForEach(weekGroups) { week in
+                            Section {
+                                ForEach(week.entries) { item in
+                                    sidebarRow(item)
+                                        .tag(item.id)
                                 }
-                                Spacer()
-                                let weekTotal = week.entries.reduce(0) { $0 + $1.total }
-                                let weekJira = week.entries.reduce(0) { $0 + $1.jiraTotal }
-                                if weekTotal > 0 {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "folder.fill")
-                                            .font(.caption2)
-                                        Text("\(weekTotal)")
-                                            .font(.caption.bold())
+                            } header: {
+                                HStack(spacing: 6) {
+                                    Text(week.label)
+                                        .font(.subheadline.bold())
+                                    if week.isCurrentWeek {
+                                        Text("本周")
+                                            .font(.caption2.bold())
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.primary.opacity(0.12), in: Capsule())
                                     }
-                                    .foregroundStyle(.blue)
-                                }
-                                if weekJira > 0 {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "ticket.fill")
-                                            .font(.caption2)
-                                        Text("\(weekJira)")
-                                            .font(.caption.bold())
+                                    Spacer()
+                                    let weekTotal = week.entries.reduce(0) { $0 + $1.total }
+                                    let weekJira = week.entries.reduce(0) { $0 + $1.jiraTotal }
+                                    if weekTotal > 0 {
+                                        HStack(spacing: 2) {
+                                            Image(systemName: "folder")
+                                                .font(.system(size: 8))
+                                            Text("\(weekTotal)")
+                                                .font(.caption2.bold())
+                                        }
+                                        .foregroundStyle(.blue.opacity(0.6))
                                     }
-                                    .foregroundStyle(.orange)
-                                }
-                                let weekBugs = week.entries.reduce(0) { $0 + $1.bugs.count }
-                                if weekBugs > 0 {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "ladybug.fill")
-                                            .font(.caption2)
-                                        Text("\(weekBugs)")
-                                            .font(.caption.bold())
+                                    if weekJira > 0 {
+                                        HStack(spacing: 2) {
+                                            Image(systemName: "ticket")
+                                                .font(.system(size: 8))
+                                            Text("\(weekJira)")
+                                                .font(.caption2.bold())
+                                        }
+                                        .foregroundStyle(.orange.opacity(0.6))
                                     }
-                                    .foregroundStyle(.red)
-                                }
-                                let weekIssues = week.entries.reduce(0) { $0 + $1.issues.count }
-                                if weekIssues > 0 {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "ant.fill")
-                                            .font(.caption2)
-                                        Text("\(weekIssues)")
-                                            .font(.caption.bold())
+                                    let weekIssues = week.entries.reduce(0) { $0 + $1.issues.count }
+                                    if weekIssues > 0 {
+                                        HStack(spacing: 2) {
+                                            Image(systemName: "ladybug")
+                                                .font(.system(size: 8))
+                                            Text("\(weekIssues)")
+                                                .font(.caption2.bold())
+                                        }
+                                        .foregroundStyle(.secondary)
                                     }
-                                    .foregroundStyle(.purple)
                                 }
                             }
-                            .padding(.vertical, 4)
                         }
                     }
+                    .listStyle(.sidebar)
                 }
-                .listStyle(.inset)
+            }
+            .frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
+            .searchable(text: $searchText, prompt: "搜索记录")
+
+            // Right detail
+            if let item = selectedEntry {
+                dayDetail(item)
+            } else {
+                ContentUnavailableView {
+                    Label("选择一天查看详情", systemImage: "calendar")
+                } description: {
+                    Text("在左侧列表中选择日期")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .searchable(text: $searchText, prompt: "搜索记录")
+        .onAppear {
+            if selectedDayID == nil, let first = filteredEntries.first {
+                selectedDayID = first.id
+            }
+        }
+        .onChange(of: searchText) {
+            if let id = selectedDayID, !filteredEntries.contains(where: { $0.id == id }) {
+                selectedDayID = filteredEntries.first?.id
+            }
+        }
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
     }
 
+    // MARK: - Sidebar Row
+
     @ViewBuilder
-    private func dayRow(_ item: DayEntry) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Date header
-            HStack(spacing: 8) {
-                Text(item.display)
-                    .font(.subheadline.bold())
-                Spacer()
-                if item.total > 0 {
-                    HStack(spacing: 4) {
-                        Image(systemName: "folder.fill")
-                            .font(.caption2)
-                        Text("\(item.total)")
-                            .font(.caption.bold())
-                    }
-                    .foregroundStyle(.blue)
-                }
-                if item.jiraTotal > 0 {
-                    HStack(spacing: 4) {
-                        Image(systemName: "ticket.fill")
-                            .font(.caption2)
-                        Text("\(item.jiraTotal)")
-                            .font(.caption.bold())
-                    }
-                    .foregroundStyle(.orange)
-                }
-                if !item.bugs.isEmpty {
-                    HStack(spacing: 4) {
-                        Image(systemName: "ladybug.fill")
-                            .font(.caption2)
-                        Text("\(item.bugs.count)")
-                            .font(.caption.bold())
-                    }
-                    .foregroundStyle(.red)
-                }
-                if !item.issues.isEmpty {
-                    HStack(spacing: 4) {
-                        Image(systemName: "ant.fill")
-                            .font(.caption2)
-                        Text("\(item.issues.count)")
-                            .font(.caption.bold())
-                    }
-                    .foregroundStyle(.purple)
-                }
-            }
-
-            // Project tags
+    private func sidebarRow(_ item: DayEntry) -> some View {
+        HStack(spacing: 6) {
+            Text(item.display)
+                .font(.callout)
+            Spacer()
             if item.total > 0 {
-                let sorted = store.departments.filter { item.records[$0, default: 0] > 0 }
-                    + item.records.keys.filter { !store.departments.contains($0) && item.records[$0, default: 0] > 0 }.sorted()
-                FlowLayout(spacing: 6) {
-                    ForEach(sorted, id: \.self) { dept in
-                        let times = item.timestamps[dept] ?? []
-                        HStack(spacing: 4) {
-                            Text(dept)
-                            Text("\(item.records[dept]!)")
-                                .fontWeight(.bold)
-                        }
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.accentColor.opacity(0.15))
-                        .clipShape(Capsule())
-                        .help(times.isEmpty ? "" : times.map { String($0.prefix(5)) }.joined(separator: "  "))
-                    }
+                HStack(spacing: 2) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 8))
+                    Text("\(item.total)")
+                        .font(.caption2.bold())
                 }
+                .foregroundStyle(.blue.opacity(0.6))
             }
-
-            // Jira tags
             if item.jiraTotal > 0 {
-                let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
-                let sortedJira = item.jiraCounts.sorted { $0.value > $1.value }
-                FlowLayout(spacing: 6) {
-                    ForEach(sortedJira, id: \.key) { issueKey, count in
-                        let label = issueMap[issueKey].map { "\(issueKey) \($0)" } ?? issueKey
-                        HStack(spacing: 4) {
-                            Text(label)
-                                .lineLimit(1)
-                            Text("×\(count)")
-                                .fontWeight(.bold)
-                        }
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.orange.opacity(0.15))
-                        .clipShape(Capsule())
-                    }
+                HStack(spacing: 2) {
+                    Image(systemName: "ticket")
+                        .font(.system(size: 8))
+                    Text("\(item.jiraTotal)")
+                        .font(.caption2.bold())
                 }
+                .foregroundStyle(.orange.opacity(0.6))
             }
-
-            // Bug tags
-            if !item.bugs.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "ladybug.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                        Text("Bug")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                        let unresolvedCount = item.bugs.filter({ !$0.status.isResolved }).count
-                        if unresolvedCount > 0 {
-                            Text("\(unresolvedCount)个待处理")
-                                .font(.caption2)
-                                .foregroundStyle(.red)
-                        }
-                    }
-                    FlowLayout(spacing: 6) {
-                        ForEach(item.bugs) { bug in
-                            bugTag(bug)
-                        }
-                    }
-                }
-            }
-
-            // Project issue tags (Bug体系)
             if !item.issues.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "ant.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.purple)
-                        Text("项目Bug")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                        let pendingCount = item.issues.filter({ $0.status == .pending }).count
-                        if pendingCount > 0 {
-                            Text("\(pendingCount)个待处理")
+                HStack(spacing: 2) {
+                    Image(systemName: "ladybug")
+                        .font(.system(size: 8))
+                    Text("\(item.issues.count)")
+                        .font(.caption2.bold())
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Day Detail
+
+    @ViewBuilder
+    private func dayDetail(_ item: DayEntry) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Date header
+                HStack(spacing: 8) {
+                    Text(item.display)
+                        .font(.title2.bold())
+                    Spacer()
+                    if item.total > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "folder")
                                 .font(.caption2)
-                                .foregroundStyle(.purple)
+                            Text("\(item.total)")
+                                .font(.caption.bold())
                         }
+                        .foregroundStyle(.blue.opacity(0.6))
                     }
+                    if item.jiraTotal > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "ticket")
+                                .font(.caption2)
+                            Text("\(item.jiraTotal)")
+                                .font(.caption.bold())
+                        }
+                        .foregroundStyle(.orange.opacity(0.6))
+                    }
+                    if !item.issues.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "ladybug")
+                                .font(.caption2)
+                            Text("\(item.issues.count)")
+                                .font(.caption.bold())
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
+                // Project tags
+                if item.total > 0 {
+                    let sorted = store.departments.filter { item.records[$0, default: 0] > 0 }
+                        + item.records.keys.filter { !store.departments.contains($0) && item.records[$0, default: 0] > 0 }.sorted()
                     FlowLayout(spacing: 6) {
-                        ForEach(item.issues) { issue in
-                            issueTag(issue)
+                        ForEach(sorted, id: \.self) { dept in
+                            let times = item.timestamps[dept] ?? []
+                            HStack(spacing: 4) {
+                                Text(dept)
+                                Text("\(item.records[dept]!)")
+                                    .fontWeight(.bold)
+                            }
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.blue.opacity(0.08))
+                            .clipShape(Capsule())
+                            .help(times.isEmpty ? "" : times.map { String($0.prefix(5)) }.joined(separator: "  "))
                         }
                     }
                 }
-            }
 
-            // Note content
-            if !item.note.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                // Jira tags
+                if item.jiraTotal > 0 {
+                    let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
+                    let sortedJira = item.jiraCounts.sorted { $0.value > $1.value }
+                    FlowLayout(spacing: 6) {
+                        ForEach(sortedJira, id: \.key) { issueKey, count in
+                            let label = issueMap[issueKey].map { "\(issueKey) \($0)" } ?? issueKey
+                            HStack(spacing: 4) {
+                                Text(label)
+                                    .lineLimit(1)
+                                Text("×\(count)")
+                                    .fontWeight(.bold)
+                            }
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.orange.opacity(0.08))
+                            .clipShape(Capsule())
+                        }
+                    }
+                }
+
+                // Tracked issues by type
+                if !item.issues.isEmpty {
+                    let grouped = Dictionary(grouping: item.issues, by: \.type)
+                    ForEach(IssueType.allCases, id: \.self) { type in
+                        if let issues = grouped[type], !issues.isEmpty {
+                            issueTypeSection(type: type, issues: issues, dayID: item.id)
+                        }
+                    }
+                }
+
+                // Note content
+                if !item.note.isEmpty {
                     Divider()
                     MarkdownContentView(text: item.note)
-                        .padding(.top, 2)
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    @ViewBuilder
+    private func issueTypeSection(type: IssueType, issues: [TrackedIssue], dayID: String) -> some View {
+        let sectionKey = "\(dayID)-\(type.rawValue)"
+        let unresolvedCount = issues.filter { !$0.status.isResolved }.count
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if expandedIssueDays.contains(sectionKey) {
+                        expandedIssueDays.remove(sectionKey)
+                    } else {
+                        expandedIssueDays.insert(sectionKey)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: expandedIssueDays.contains(sectionKey) ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                    Image(systemName: type.icon)
+                        .font(.caption2)
+                        .foregroundStyle(type.color.opacity(0.7))
+                    Text(type.rawValue)
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    Text("\(issues.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    if unresolvedCount > 0 {
+                        Text("\(unresolvedCount)个待处理")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            if expandedIssueDays.contains(sectionKey) {
+                FlowLayout(spacing: 6) {
+                    ForEach(issues) { issue in
+                        issueTag(issue)
+                    }
                 }
             }
         }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
     }
 
-    private func bugTagLabel(_ bug: BugEntry) -> String {
-        var parts = [bug.title]
-        if let jira = bug.jiraKey { parts.append(jira) }
-        if let assignee = bug.assignee { parts.append(assignee) }
+    private func issueTagLabel(_ issue: TrackedIssue) -> String {
+        var parts = [issue.title]
+        if let dept = issue.department, !dept.isEmpty { parts.insert(dept, at: 0) }
+        if let jira = issue.jiraKey { parts.append(jira) }
+        if let assignee = issue.assignee { parts.append(assignee) }
         return parts.joined(separator: " · ")
     }
 
-    private func bugTag(_ bug: BugEntry) -> some View {
-        let isUnresolved = !bug.status.isResolved
+    private func issueTag(_ issue: TrackedIssue) -> some View {
+        let isUnresolved = !issue.status.isResolved
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Image(systemName: bug.status.icon)
+                Image(systemName: issue.type.icon)
                     .font(.system(size: 9))
-                    .fontWeight(isUnresolved ? .bold : .regular)
-                Text(bugTagLabel(bug))
-                    .lineLimit(1)
-                    .fontWeight(isUnresolved ? .semibold : .regular)
-            }
-            .font(.caption)
-            if let note = bug.note, !note.isEmpty {
-                Text(note)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(bugTagColor(bug.status).opacity(isUnresolved ? 0.25 : 0.15))
-        .overlay(alignment: .leading) {
-            if isUnresolved {
-                Rectangle()
-                    .fill(bugTagColor(bug.status))
-                    .frame(width: 3)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .help(bug.status.rawValue)
-    }
-
-    private func bugTagColor(_ status: BugStatus) -> Color {
-        switch status {
-        case .pending: return .red
-        case .inProgress: return .orange
-        case .fixed: return .green
-        case .ignored: return .secondary
-        }
-    }
-
-    private func issueTag(_ issue: ProjectIssue) -> some View {
-        let isUnresolved = issue.status == .pending
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
+                    .foregroundStyle(issue.type.color.opacity(0.7))
                 Image(systemName: issue.status.icon)
                     .font(.system(size: 9))
                     .fontWeight(isUnresolved ? .bold : .regular)
-                Text("\(issue.department) · \(issue.title)")
+                Text(issueTagLabel(issue))
                     .lineLimit(1)
                     .fontWeight(isUnresolved ? .semibold : .regular)
             }
             .font(.caption)
-            if let note = issue.note, !note.isEmpty {
-                Text(note)
+            if let latest = issue.comments.last {
+                Text(latest.text)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
                     .lineLimit(2)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(issueTagColor(issue.status).opacity(isUnresolved ? 0.25 : 0.15))
+        .background(issue.type.color.opacity(isUnresolved ? 0.10 : 0.05))
         .overlay(alignment: .leading) {
             if isUnresolved {
                 Rectangle()
-                    .fill(issueTagColor(issue.status))
+                    .fill(issue.type.color.opacity(0.4))
                     .frame(width: 3)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .help(issue.status.rawValue)
-    }
-
-    private func issueTagColor(_ status: ProjectIssueStatus) -> Color {
-        switch status {
-        case .pending: return .purple
-        case .resolved: return .green
-        }
+        .help("\(issue.type.rawValue) · \(issue.status.rawValue)")
     }
 
 }

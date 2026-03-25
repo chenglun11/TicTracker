@@ -28,6 +28,7 @@ final class JiraService {
             while !Task.isCancelled {
                 if isInPollingWindow(config: store.jiraConfig) {
                     _ = await fetchMyIssues()
+                    await syncTrackedIssues()
                 }
                 let minutes = store.jiraConfig.pollingInterval
                 try? await Task.sleep(for: .seconds(minutes * 60))
@@ -186,6 +187,47 @@ final class JiraService {
             }
         } catch {
             return .networkError(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Sync Tracked Issues with Jira Status
+
+    /// Syncs local TrackedIssues that have a jiraKey with the latest Jira status.
+    /// When a Jira issue's status category changes, updates local status and adds a timeline comment.
+    func syncTrackedIssues() async {
+        guard let store else { return }
+        let jiraMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0) })
+
+        for issue in store.trackedIssues {
+            guard let jiraKey = issue.jiraKey, !jiraKey.isEmpty else { continue }
+            guard let jiraIssue = jiraMap[jiraKey] else {
+                DevLog.shared.info("JiraSync", "\(jiraKey) not in fetch results, skipped")
+                continue
+            }
+
+            // Map Jira statusCategoryKey to local IssueStatus
+            let newStatus = mapJiraStatus(jiraIssue.statusCategoryKey)
+
+            if newStatus != issue.status {
+                let oldLabel = issue.status.rawValue
+                let newLabel = newStatus.rawValue
+                let commentText = "[Jira] 状态变更: \(oldLabel) → \(newLabel)（\(jiraIssue.status)）"
+                // Prevent duplicate comment if sync runs multiple times in quick succession
+                let alreadyLogged = issue.comments.contains { $0.text == commentText }
+                guard !alreadyLogged else { continue }
+                store.updateIssueStatus(id: issue.id, status: newStatus)
+                store.addIssueComment(id: issue.id, text: commentText)
+                DevLog.shared.info("JiraSync", "\(jiraKey): \(oldLabel) → \(newLabel)")
+            }
+        }
+    }
+
+    private func mapJiraStatus(_ categoryKey: String) -> IssueStatus {
+        switch categoryKey {
+        case "new": return .pending
+        case "indeterminate": return .inProgress
+        case "done": return .fixed
+        default: return .pending
         }
     }
 

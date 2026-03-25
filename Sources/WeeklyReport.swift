@@ -3,6 +3,12 @@ import Foundation
 
 @MainActor
 struct WeeklyReport {
+    private static let commentFmt: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d HH:mm"
+        return fmt
+    }()
+
     static func generate(from store: DataStore) -> String {
         let calendar = Calendar.current
         let today = Date()
@@ -78,56 +84,40 @@ struct WeeklyReport {
             lines.append("Jira 合计: \(jiraGrand) 次")
         }
 
-        // Bug entries for the week
-        let weekBugs = store.bugEntries.filter { (entry: BugEntry) -> Bool in
+        // Tracked issues for the week (unified)
+        let weekTracked = store.trackedIssues.filter { (entry: TrackedIssue) -> Bool in
             guard let entryDate = fmt.date(from: entry.dateKey) else { return false }
             return entryDate >= monday && entryDate <= today
         }
-        if !weekBugs.isEmpty {
-            let sortedBugs = weekBugs.sorted { $0.dateKey < $1.dateKey }
-            let fixed = sortedBugs.filter { $0.status == .fixed }.count
-            let ignored = sortedBugs.filter { $0.status == .ignored }.count
-            let unresolved = sortedBugs.count - fixed - ignored
+        if !weekTracked.isEmpty {
+            let sorted = weekTracked.sorted { $0.dateKey < $1.dateKey }
             lines.append("")
-            lines.append("--- Bug Hotfix ---")
-            for bug in sortedBugs {
-                var detail = [String]()
-                if let jira = bug.jiraKey { detail.append(jira) }
-                if let assignee = bug.assignee { detail.append(assignee) }
-                let suffix = detail.isEmpty ? "" : " (\(detail.joined(separator: " · ")))"
-                lines.append("[\(bug.status.rawValue)] \(bug.title)\(suffix)")
-                if let note = bug.note, !note.isEmpty {
-                    lines.append("  备注: \(note)")
+            lines.append("--- 问题追踪 ---")
+            for issue in sorted {
+                var detail = [issue.type.rawValue]
+                if let dept = issue.department, !dept.isEmpty { detail.append(dept) }
+                if let jira = issue.jiraKey { detail.append(jira) }
+                if let assignee = issue.assignee { detail.append(assignee) }
+                let suffix = " (\(detail.joined(separator: " · ")))"
+                lines.append("[\(issue.status.rawValue)] \(issue.title)\(suffix)")
+                for comment in issue.comments {
+                    let time = Self.commentFmt.string(from: comment.createdAt)
+                    lines.append("  [\(time)] \(comment.text)")
                 }
             }
-            var summary = "Bug 合计: \(weekBugs.count) 个（已修复 \(fixed)"
-            if ignored > 0 { summary += "，已忽略 \(ignored)" }
-            if unresolved > 0 { summary += "，未解决 \(unresolved)" }
-            summary += "）"
-            lines.append(summary)
-        }
-
-        // Project issues for the week
-        let weekIssues = store.projectIssues.filter { (issue: ProjectIssue) -> Bool in
-            guard let issueDate = fmt.date(from: issue.dateKey) else { return false }
-            return issueDate >= monday && issueDate <= today
-        }
-        if !weekIssues.isEmpty {
-            let sortedIssues = weekIssues.sorted { $0.dateKey < $1.dateKey }
-            let resolved = sortedIssues.filter { $0.status == .resolved }.count
-            let pending = sortedIssues.count - resolved
-            lines.append("")
-            lines.append("--- 项目Bug ---")
-            for issue in sortedIssues {
-                lines.append("[\(issue.status.rawValue)] \(issue.department) - \(issue.title)")
-                if let note = issue.note, !note.isEmpty {
-                    lines.append("  备注: \(note)")
-                }
+            // Summary by type
+            let byType = Dictionary(grouping: weekTracked, by: \.type)
+            for type in IssueType.allCases {
+                guard let items = byType[type] else { continue }
+                let fixed = items.filter { $0.status == .fixed }.count
+                let ignored = items.filter { $0.status == .ignored }.count
+                let unresolved = items.count - fixed - ignored
+                var summary = "\(type.rawValue): \(items.count) 个（已修复 \(fixed)"
+                if ignored > 0 { summary += "，已忽略 \(ignored)" }
+                if unresolved > 0 { summary += "，未解决 \(unresolved)" }
+                summary += "）"
+                lines.append(summary)
             }
-            var summary = "项目Bug合计: \(weekIssues.count) 个（已修复 \(resolved)"
-            if pending > 0 { summary += "，待处理 \(pending)" }
-            summary += "）"
-            lines.append(summary)
         }
 
         // Daily breakdown
