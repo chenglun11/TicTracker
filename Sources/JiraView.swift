@@ -7,16 +7,10 @@ struct JiraView: View {
     @State private var transitions: [JiraTransition] = []
     @State private var transitioning = false
     @State private var errorMessage: String?
-    @State private var selectedTab: JiraTab = .assigned
     @State private var selectedIssueKey: String?
 
-    private enum JiraTab: String, CaseIterable {
-        case assigned = "分配给我"
-        case reported = "我提交的"
-    }
-
     private var filteredIssues: [JiraIssue] {
-        let source = selectedTab == .assigned ? store.jiraIssues : store.reportedJiraIssues
+        let source = store.filteredJiraIssues
         if searchText.isEmpty { return source }
         let q = searchText.lowercased()
         return source.filter {
@@ -42,14 +36,6 @@ struct JiraView: View {
             VStack(spacing: 0) {
                 // Toolbar
                 HStack(spacing: 12) {
-                    Picker("", selection: $selectedTab) {
-                        ForEach(JiraTab.allCases, id: \.self) { tab in
-                            Text(tab.rawValue).tag(tab)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 160)
-
                     Button {
                         refresh()
                     } label: {
