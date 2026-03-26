@@ -8,6 +8,8 @@ struct IssueTrackerView: View {
     @State private var selectedIssueID: UUID?
     @State private var jiraSyncing = false
     @State private var newCommentText = ""
+    @State private var editingTitle = ""
+    @State private var isEditingTitle = false
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -251,13 +253,40 @@ struct IssueTrackerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Title
-                TextField("标题", text: Binding(
-                    get: { issue.title },
-                    set: { store.updateIssueTitle(id: issue.id, title: $0) }
-                ), axis: .vertical)
-                .font(.title2.bold())
-                .textFieldStyle(.plain)
-                .lineLimit(1...5)
+                VStack(alignment: .leading, spacing: 8) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        if isEditingTitle {
+                            TextField("标题", text: $editingTitle, axis: .vertical)
+                                .font(.title2.bold())
+                                .textFieldStyle(.plain)
+                        } else {
+                            Text(issue.title)
+                                .font(.title2.bold())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .onTapGesture {
+                                    editingTitle = issue.title
+                                    isEditingTitle = true
+                                }
+                        }
+                    }
+                    .frame(maxHeight: 100)
+
+                    if isEditingTitle {
+                        HStack {
+                            Button("保存") {
+                                store.updateIssueTitle(id: issue.id, title: editingTitle)
+                                isEditingTitle = false
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            Button("取消") {
+                                isEditingTitle = false
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                }
 
                 // Type, Status, Assignee, Department
                 HStack(spacing: 12) {
