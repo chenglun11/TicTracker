@@ -5,16 +5,9 @@ struct IssueTrackerView: View {
     @State private var searchText = ""
     @State private var statusFilter: StatusFilter = .unresolved
     @State private var typeFilter: TypeFilter = .all
-    @State private var newTitle = ""
-    @State private var newType: IssueType = .bug
-    @State private var newAssignee: String?
-    @State private var newJiraKey = ""
-    @State private var newDepartment: String?
-    @State private var showJiraPanel = false
-    @State private var jiraRefreshing = false
+    @State private var selectedIssueID: UUID?
     @State private var jiraSyncing = false
-    @State private var commentTexts: [UUID: String] = [:]
-    @State private var expandedTimelines: Set<UUID> = []
+    @State private var newCommentText = ""
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -71,42 +64,53 @@ struct IssueTrackerView: View {
         store.trackedIssues.filter { !$0.status.isResolved }.count
     }
 
-    private var unlinkedJiraIssues: [JiraIssue] {
-        let linkedKeys = Set(store.trackedIssues.compactMap(\.jiraKey))
-        return store.filteredJiraIssues.filter { !linkedKeys.contains($0.key) }
+    private var selectedIssue: TrackedIssue? {
+        guard let id = selectedIssueID else { return nil }
+        return store.trackedIssues.first { $0.id == id }
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            mainPanel
-
-            if store.jiraConfig.enabled && showJiraPanel {
-                Divider()
-                jiraPanel
-                    .frame(width: 260)
-            }
-        }
-        .frame(minWidth: store.jiraConfig.enabled && showJiraPanel ? 820 : 600, minHeight: 400)
-        .onDisappear {
-            NSApp.setActivationPolicy(.accessory)
-        }
-    }
-
-    // MARK: - Main Panel
-
-    @ViewBuilder
-    private var mainPanel: some View {
-        VStack(spacing: 0) {
-            // Header
-            VStack(spacing: 12) {
-                // Stat cards
+        HSplitView {
+            // Left sidebar
+            VStack(spacing: 0) {
+                // Toolbar
                 HStack(spacing: 12) {
-                    statCard(title: "总计", value: "\(store.trackedIssues.count)", color: .blue)
-                    statCard(title: "未解决", value: "\(unresolvedCount)", color: unresolvedCount > 0 ? .orange : .green)
-                    statCard(title: "已修复", value: "\(store.trackedIssues.filter { $0.status == .fixed }.count)", color: .green)
-                    statCard(title: "已忽略", value: "\(store.trackedIssues.filter { $0.status == .ignored }.count)", color: .secondary)
+                    // Stats
+                    HStack(spacing: 8) {
+                        statBadge(title: "总计", value: store.trackedIssues.count, color: .blue)
+                        statBadge(title: "未解决", value: unresolvedCount, color: unresolvedCount > 0 ? .orange : .green)
+                    }
+                    Spacer()
+                    if store.jiraConfig.enabled {
+                        Button {
+                            jiraSyncing = true
+                            Task {
+                                async let myResult = JiraService.shared.fetchMyIssues()
+                                async let reportedResult = JiraService.shared.fetchReportedIssues()
+                                _ = await (myResult, reportedResult)
+                                await JiraService.shared.syncTrackedIssues()
+                                jiraSyncing = false
+                            }
+                        } label: {
+                            Image(systemName: jiraSyncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath")
+                                .rotationEffect(jiraSyncing ? .degrees(360) : .zero)
+                                .animation(jiraSyncing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: jiraSyncing)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(jiraSyncing)
+                    }
+                    Button {
+                        addNewIssue()
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+
+                Divider()
 
                 // Type filter
                 HStack(spacing: 6) {
@@ -122,8 +126,8 @@ struct IssueTrackerView: View {
                                 Text(filter.rawValue)
                             }
                             .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
                             .background(
                                 typeFilter == filter
                                     ? (filter.issueType?.color ?? Color.accentColor)
@@ -136,18 +140,19 @@ struct IssueTrackerView: View {
                     }
                     Spacer()
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
 
-                // Status filter + Search + Jira toggle
-                HStack(spacing: 8) {
+                // Status filter
+                HStack(spacing: 6) {
                     ForEach(StatusFilter.allCases, id: \.self) { filter in
                         Button(filter.rawValue) {
                             statusFilter = filter
                         }
                         .buttonStyle(.plain)
                         .font(.caption)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
                         .background(
                             statusFilter == filter ? Color.accentColor : Color.secondary.opacity(0.12),
                             in: Capsule()
@@ -155,62 +160,110 @@ struct IssueTrackerView: View {
                         .foregroundStyle(statusFilter == filter ? .white : .primary)
                     }
                     Spacer()
-                    if store.jiraConfig.enabled {
-                        Button {
-                            jiraSyncing = true
-                            Task {
-                                async let myResult = JiraService.shared.fetchMyIssues()
-                                async let reportedResult = JiraService.shared.fetchReportedIssues()
-                                _ = await (myResult, reportedResult)
-                                await JiraService.shared.syncTrackedIssues()
-                                jiraSyncing = false
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: jiraSyncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath")
-                                    .rotationEffect(jiraSyncing ? .degrees(360) : .zero)
-                                    .animation(jiraSyncing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: jiraSyncing)
-                                Text("同步Jira")
-                            }
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(jiraSyncing)
-
-                        Button {
-                            withAnimation { showJiraPanel.toggle() }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "server.rack")
-                                Text("Jira")
-                            }
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(showJiraPanel ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    HStack(spacing: 4) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                        TextField("搜索…", text: $searchText)
-                            .textFieldStyle(.plain)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-                    .frame(width: 160)
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
 
-                // Add new issue
-                HStack(spacing: 8) {
-                    // Type picker
-                    Picker("", selection: $newType) {
+                Divider()
+
+                // List
+                if filteredIssues.isEmpty {
+                    ContentUnavailableView {
+                        Label("无记录", systemImage: "tray")
+                    } description: {
+                        Text(searchText.isEmpty ? "点击 + 添加新问题" : "没有匹配的结果")
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(selection: $selectedIssueID) {
+                        ForEach(filteredIssues) { issue in
+                            listRow(issue)
+                                .tag(issue.id)
+                        }
+                    }
+                    .listStyle(.sidebar)
+                }
+            }
+            .frame(minWidth: 200, idealWidth: 260, maxWidth: 320)
+            .searchable(text: $searchText, prompt: "搜索问题")
+
+            // Right detail
+            if let issue = selectedIssue {
+                issueDetail(issue)
+            } else {
+                ContentUnavailableView {
+                    Label("选择问题查看详情", systemImage: "ladybug")
+                } description: {
+                    Text("在左侧列表中选择问题")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .onAppear {
+            if selectedIssueID == nil, let first = filteredIssues.first {
+                selectedIssueID = first.id
+            }
+        }
+        .onChange(of: searchText) {
+            if let id = selectedIssueID, !filteredIssues.contains(where: { $0.id == id }) {
+                selectedIssueID = filteredIssues.first?.id
+            }
+        }
+        .onDisappear {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    // MARK: - List Row
+
+    @ViewBuilder
+    private func listRow(_ issue: TrackedIssue) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: issue.type.icon)
+                .font(.system(size: 10))
+                .foregroundStyle(issue.type.color)
+            Image(systemName: issue.status.icon)
+                .font(.system(size: 10))
+                .foregroundStyle(statusColor(issue.status))
+            Text(issue.title)
+                .font(.callout)
+                .lineLimit(1)
+            Spacer()
+            if let assignee = issue.assignee {
+                Text(assignee)
+                    .font(.caption2)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.blue.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+            Text(issue.dateKey)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Issue Detail
+
+    @ViewBuilder
+    private func issueDetail(_ issue: TrackedIssue) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Title
+                TextField("标题", text: Binding(
+                    get: { issue.title },
+                    set: { store.updateIssueTitle(id: issue.id, title: $0) }
+                ))
+                .font(.title2.bold())
+                .textFieldStyle(.plain)
+
+                // Type, Status, Assignee, Department
+                HStack(spacing: 12) {
+                    Picker("类型", selection: Binding(
+                        get: { issue.type },
+                        set: { store.updateIssueType(id: issue.id, type: $0) }
+                    )) {
                         ForEach(IssueType.allCases, id: \.self) { type in
                             Label(type.rawValue, systemImage: type.icon).tag(type)
                         }
@@ -218,254 +271,74 @@ struct IssueTrackerView: View {
                     .labelsHidden()
                     .frame(width: 100)
 
-                    TextField("描述…", text: $newTitle)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { addIssue() }
+                    Menu {
+                        ForEach(IssueStatus.allCases, id: \.self) { status in
+                            Button {
+                                store.updateIssueStatus(id: issue.id, status: status)
+                            } label: {
+                                Label(status.rawValue, systemImage: status.icon)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: issue.status.icon)
+                            Text(issue.status.rawValue)
+                        }
+                        .font(.callout)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                    }
 
                     if !store.bugTeamMembers.isEmpty {
-                        Picker("", selection: $newAssignee) {
-                            Text("未指派").tag(String?.none)
+                        Menu {
+                            Button("未指派") {
+                                store.updateIssueAssignee(id: issue.id, assignee: nil)
+                            }
+                            Divider()
                             ForEach(store.bugTeamMembers, id: \.self) { member in
-                                Text(member).tag(String?.some(member))
+                                Button(member) {
+                                    store.updateIssueAssignee(id: issue.id, assignee: member)
+                                }
                             }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "person")
+                                Text(issue.assignee ?? "未指派")
+                            }
+                            .font(.callout)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                         }
-                        .labelsHidden()
-                        .frame(width: 90)
                     }
 
-                    if store.jiraConfig.enabled && !store.filteredJiraIssues.isEmpty {
-                        Picker("", selection: $newJiraKey) {
-                            Text("无关联").tag("")
-                            ForEach(store.filteredJiraIssues) { issue in
-                                Text("\(issue.key) \(issue.summary)").tag(issue.key)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 160)
-                    } else {
-                        TextField("Jira 单号", text: $newJiraKey)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 90)
-                    }
-
-                    if newType == .issue {
-                        Picker("", selection: $newDepartment) {
+                    if issue.type == .issue {
+                        Picker("项目", selection: Binding(
+                            get: { issue.department },
+                            set: { store.updateIssueDepartment(id: issue.id, department: $0) }
+                        )) {
                             Text("选择项目").tag(String?.none)
                             ForEach(store.departments, id: \.self) { dept in
                                 Text(dept).tag(String?.some(dept))
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 100)
-                    }
-
-                    Button("添加") { addIssue() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(newTitle.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                .padding(.horizontal)
-            }
-            .padding(.top, 16)
-            .padding(.bottom, 12)
-            .background(Color(nsColor: .controlBackgroundColor))
-
-            Divider()
-
-            // Issue list
-            if filteredIssues.isEmpty {
-                ContentUnavailableView {
-                    Label("无记录", systemImage: "tray")
-                } description: {
-                    Text(searchText.isEmpty ? "点击上方添加新的问题" : "没有匹配的结果")
-                }
-                .frame(maxHeight: .infinity)
-            } else {
-                List(filteredIssues) { issue in
-                    issueRow(issue)
-                }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
-            }
-        }
-    }
-
-    // MARK: - Jira Panel
-
-    @ViewBuilder
-    private var jiraPanel: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Jira 工单")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    jiraRefreshing = true
-                    Task {
-                        _ = await JiraService.shared.fetchByMode()
-                        jiraRefreshing = false
-                    }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .disabled(jiraRefreshing)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color(nsColor: .controlBackgroundColor))
-
-            Divider()
-
-            if store.filteredJiraIssues.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "tray")
-                        .font(.title2)
-                        .foregroundStyle(.tertiary)
-                    Text("暂无工单")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    if !unlinkedJiraIssues.isEmpty {
-                        Section("未关联 (\(unlinkedJiraIssues.count))") {
-                            ForEach(unlinkedJiraIssues) { issue in
-                                jiraIssueRow(issue)
-                            }
-                        }
-                    }
-                    let linked = store.filteredJiraIssues.filter { jiraIssue in
-                        store.trackedIssues.contains { $0.jiraKey == jiraIssue.key }
-                    }
-                    if !linked.isEmpty {
-                        Section("已关联 (\(linked.count))") {
-                            ForEach(linked) { issue in
-                                jiraIssueRow(issue, linked: true)
-                            }
-                        }
+                        .frame(width: 120)
                     }
                 }
-                .listStyle(.inset)
-            }
-        }
-    }
 
-    @ViewBuilder
-    private func jiraIssueRow(_ issue: JiraIssue, linked: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(issue.key)
-                    .font(.caption.monospaced().bold())
-                    .foregroundStyle(.blue)
-                if let type = issue.issueType {
-                    Text(type)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(issue.status)
-                    .font(.caption2)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(jiraStatusColor(issue.statusCategoryKey).opacity(0.15))
-                    .clipShape(Capsule())
-            }
-            Text(issue.summary)
-                .font(.caption)
-                .lineLimit(2)
-                .foregroundStyle(.primary)
-            if !linked {
-                Button {
-                    createFromJira(issue)
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus.circle.fill")
-                        Text("创建 Bug")
-                    }
-                    .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.orange)
-            }
-        }
-        .padding(.vertical, 2)
-    }
+                // Jira
+                if store.jiraConfig.enabled {
+                    HStack(spacing: 8) {
+                        TextField("Jira Key", text: Binding(
+                            get: { issue.jiraKey ?? "" },
+                            set: { store.updateIssueJiraKey(id: issue.id, jiraKey: $0.isEmpty ? nil : $0) }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
 
-    private func jiraStatusColor(_ categoryKey: String) -> Color {
-        switch categoryKey {
-        case "new": return .blue
-        case "indeterminate": return .yellow
-        case "done": return .green
-        default: return .gray
-        }
-    }
-
-    // MARK: - Issue Row
-
-    @ViewBuilder
-    private func issueRow(_ issue: TrackedIssue) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                // Type icon
-                Menu {
-                    ForEach(IssueType.allCases, id: \.self) { type in
-                        Button {
-                            store.updateIssueType(id: issue.id, type: type)
-                        } label: {
-                            Label(type.rawValue, systemImage: type.icon)
-                        }
-                        .disabled(issue.type == type)
-                    }
-                } label: {
-                    Image(systemName: issue.type.icon)
-                        .foregroundStyle(issue.type.color)
-                        .frame(width: 18)
-                }
-                .menuIndicator(.hidden)
-                .fixedSize()
-
-                // Status menu
-                Menu {
-                    ForEach(IssueStatus.allCases, id: \.self) { status in
-                        Button {
-                            store.updateIssueStatus(id: issue.id, status: status)
-                        } label: {
-                            Label(status.rawValue, systemImage: status.icon)
-                        }
-                        .disabled(issue.status == status)
-                    }
-                } label: {
-                    Image(systemName: issue.status.icon)
-                        .foregroundStyle(statusColor(issue.status))
-                        .frame(width: 18)
-                }
-                .menuIndicator(.hidden)
-                .fixedSize()
-
-                // Title + metadata
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(issue.title)
-                        .strikethrough(issue.status.isResolved)
-                        .foregroundStyle(issue.status.isResolved ? .secondary : .primary)
-                    HStack(spacing: 6) {
-                        Text(issue.dateKey)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-
-                        // Department badge
-                        if let dept = issue.department, !dept.isEmpty {
-                            Text(dept)
-                                .font(.caption2)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.purple.opacity(0.15))
-                                .clipShape(Capsule())
-                        }
-
-                        // Jira key
-                        if store.jiraConfig.enabled && !store.filteredJiraIssues.isEmpty {
+                        if !store.filteredJiraIssues.isEmpty {
                             Menu {
                                 Button("无关联") {
                                     store.updateIssueJiraKey(id: issue.id, jiraKey: nil)
@@ -477,160 +350,144 @@ struct IssueTrackerView: View {
                                     }
                                 }
                             } label: {
-                                if let jira = issue.jiraKey {
-                                    Text(jira)
-                                        .font(.caption2)
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 1)
-                                        .background(Color.green.opacity(0.15))
-                                        .clipShape(Capsule())
-                                } else {
-                                    Image(systemName: "link.badge.plus")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                HStack(spacing: 4) {
+                                    Image(systemName: "link")
+                                    Text("关联工单")
                                 }
+                                .font(.caption)
                             }
-                            .menuIndicator(.hidden)
-                        } else if let jira = issue.jiraKey {
-                            Text(jira)
-                                .font(.caption2)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.green.opacity(0.15))
-                                .clipShape(Capsule())
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
                     }
                 }
 
-                Spacer()
+                Divider()
 
-                // Assignee
-                if !store.bugTeamMembers.isEmpty {
-                    Menu {
-                        Button("未指派") {
-                            store.updateIssueAssignee(id: issue.id, assignee: nil)
-                        }
-                        Divider()
-                        ForEach(store.bugTeamMembers, id: \.self) { member in
-                            Button(member) {
-                                store.updateIssueAssignee(id: issue.id, assignee: member)
-                            }
-                        }
-                    } label: {
-                        if let assignee = issue.assignee {
-                            Text(assignee)
-                                .font(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.15))
-                                .clipShape(Capsule())
-                        } else {
-                            Image(systemName: "person.badge.plus")
+                // Timestamps
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("创建时间")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(Self.timeFmt.string(from: issue.createdAt))
+                            .font(.callout)
+                    }
+                    if let updated = issue.updatedAt {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("更新时间")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            Text(Self.timeFmt.string(from: updated))
+                                .font(.callout)
                         }
                     }
-                    .menuIndicator(.hidden)
-                    .frame(width: 80, alignment: .trailing)
-                } else if let assignee = issue.assignee {
-                    Text(assignee)
-                        .font(.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.15))
-                        .clipShape(Capsule())
                 }
 
-                // Delete
+                Divider()
+
+                // Comments timeline
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("备注时间线")
+                        .font(.headline)
+
+                    if issue.comments.isEmpty {
+                        Text("暂无备注")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(issue.comments.sorted { $0.createdAt > $1.createdAt }) { comment in
+                            HStack(alignment: .top, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(Self.timeFmt.string(from: comment.createdAt))
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                    Text(comment.text)
+                                        .font(.callout)
+                                }
+                                Spacer()
+                                Button {
+                                    store.deleteIssueComment(issueID: issue.id, commentID: comment.id)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                            .padding(8)
+                            .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }
+
+                // Add comment
+                HStack(spacing: 8) {
+                    TextField("添加备注…", text: $newCommentText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            let text = newCommentText.trimmingCharacters(in: .whitespaces)
+                            if !text.isEmpty {
+                                store.addIssueComment(id: issue.id, text: text)
+                                newCommentText = ""
+                            }
+                        }
+                    Button("提交") {
+                        let text = newCommentText.trimmingCharacters(in: .whitespaces)
+                        if !text.isEmpty {
+                            store.addIssueComment(id: issue.id, text: text)
+                            newCommentText = ""
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(newCommentText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
+                Divider()
+
+                // Delete button
                 Button {
                     store.deleteIssue(id: issue.id)
+                    selectedIssueID = filteredIssues.first?.id
                 } label: {
-                    Image(systemName: "trash")
-                        .font(.caption)
-                        .foregroundStyle(.secondary.opacity(0.7))
-                }
-                .buttonStyle(.borderless)
-            }
-
-            // Timeline comments
-            if !issue.comments.isEmpty {
-                let sorted = issue.comments.sorted { $0.createdAt > $1.createdAt }
-                let isExpanded = expandedTimelines.contains(issue.id)
-                let visible = isExpanded ? sorted : Array(sorted.prefix(2))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(visible) { comment in
-                        HStack(alignment: .top, spacing: 6) {
-                            Text(Self.commentTimeFmt.string(from: comment.createdAt))
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 80, alignment: .leading)
-                            Text(comment.text)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(isExpanded ? nil : 1)
-                            Spacer()
-                            Button {
-                                store.deleteIssueComment(issueID: issue.id, commentID: comment.id)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .buttonStyle(.borderless)
-                        }
+                    HStack {
+                        Image(systemName: "trash")
+                        Text("删除问题")
                     }
-                    if sorted.count > 2 && !isExpanded {
-                        Button("展开全部 \(sorted.count) 条") {
-                            expandedTimelines.insert(issue.id)
-                        }
-                        .font(.caption2)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.blue)
-                    } else if isExpanded && sorted.count > 2 {
-                        Button("收起") {
-                            expandedTimelines.remove(issue.id)
-                        }
-                        .font(.caption2)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.blue)
-                    }
+                    .foregroundStyle(.red)
                 }
-                .padding(.leading, 46)
+                .buttonStyle(.bordered)
             }
-
-            // Add comment
-            HStack(spacing: 6) {
-                Image(systemName: "text.bubble")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                TextField("添加备注…", text: Binding(
-                    get: { commentTexts[issue.id] ?? "" },
-                    set: { commentTexts[issue.id] = $0 }
-                ))
-                .font(.caption)
-                .textFieldStyle(.plain)
-                .foregroundStyle(.secondary)
-                .onSubmit {
-                    let text = (commentTexts[issue.id] ?? "").trimmingCharacters(in: .whitespaces)
-                    if !text.isEmpty {
-                        store.addIssueComment(id: issue.id, text: text)
-                        commentTexts[issue.id] = ""
-                    }
-                }
-            }
-            .padding(.leading, 46)
+            .padding(20)
         }
-        .padding(.vertical, 4)
     }
 
     // MARK: - Helpers
 
-    private static let commentTimeFmt: DateFormatter = {
+    private static let timeFmt: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "M/d HH:mm"
         return fmt
     }()
+
+    @ViewBuilder
+    private func statBadge(title: String, value: Int, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("\(value)")
+                .font(.caption.bold())
+                .foregroundStyle(color)
+        }
+    }
+
+    private func addNewIssue() {
+        store.addIssue("新问题", type: .bug, forKey: store.todayKey)
+        if let newIssue = store.trackedIssues.last {
+            selectedIssueID = newIssue.id
+        }
+    }
 
     private func statusColor(_ status: IssueStatus) -> Color {
         switch status {
@@ -641,37 +498,4 @@ struct IssueTrackerView: View {
         }
     }
 
-    @ViewBuilder
-    private func statCard(title: String, value: String, color: Color) -> some View {
-        VStack(spacing: 4) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title2.bold())
-                .foregroundStyle(color)
-                .monospacedDigit()
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func addIssue() {
-        let title = newTitle.trimmingCharacters(in: .whitespaces)
-        guard !title.isEmpty else { return }
-        let jira = newJiraKey.trimmingCharacters(in: .whitespaces)
-        store.addIssue(title, type: newType, forKey: store.todayKey,
-                       assignee: newAssignee,
-                       jiraKey: jira.isEmpty ? nil : jira,
-                       department: newDepartment)
-        newTitle = ""
-        newJiraKey = ""
-        newDepartment = nil
-        newAssignee = nil
-    }
-
-    private func createFromJira(_ issue: JiraIssue) {
-        store.addIssue(issue.summary, type: .bug, forKey: store.todayKey, jiraKey: issue.key)
-    }
 }

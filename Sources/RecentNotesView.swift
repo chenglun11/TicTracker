@@ -535,12 +535,12 @@ struct RecentNotesView: View {
         let isUnresolved = !issue.status.isResolved
         let isNewToday = issue.dateKey == dayKey
         let isUpdated = issue.updatedAt != nil && !isNewToday
-        let accentColor: Color = isNewToday ? .orange : (isUpdated ? .blue : issue.type.color)
+        let typeColor = issue.type.color
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 Image(systemName: issue.type.icon)
                     .font(.system(size: 9))
-                    .foregroundStyle(issue.type.color.opacity(0.7))
+                    .foregroundStyle(typeColor.opacity(0.7))
                 Image(systemName: issue.status.icon)
                     .font(.system(size: 9))
                     .fontWeight(isUnresolved ? .bold : .regular)
@@ -550,14 +550,14 @@ struct RecentNotesView: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
-                        .background(Color.orange, in: Capsule())
+                        .background(typeColor, in: Capsule())
                 } else if isUpdated {
                     Text("UPD")
                         .font(.system(size: 8, weight: .heavy))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
-                        .background(Color.blue, in: Capsule())
+                        .background(typeColor, in: Capsule())
                 }
                 Text(issueTagLabel(issue))
                     .lineLimit(1)
@@ -581,15 +581,15 @@ struct RecentNotesView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(accentColor.opacity(isNewToday || isUpdated ? 0.12 : (isUnresolved ? 0.10 : 0.05)))
+        .background(typeColor.opacity(isNewToday || isUpdated ? 0.12 : (isUnresolved ? 0.10 : 0.05)))
         .overlay(alignment: .leading) {
             if isNewToday || isUpdated {
                 Rectangle()
-                    .fill(accentColor.opacity(0.8))
+                    .fill(typeColor.opacity(0.8))
                     .frame(width: 3)
             } else if isUnresolved {
                 Rectangle()
-                    .fill(issue.type.color.opacity(0.4))
+                    .fill(typeColor.opacity(0.4))
                     .frame(width: 3)
             }
         }
