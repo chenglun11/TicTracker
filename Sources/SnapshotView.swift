@@ -5,6 +5,7 @@ struct SnapshotView: View {
     @State private var showingRestore = false
     @State private var selectedSnapshot: SnapshotEntry?
     @State private var manualDescription = ""
+    @State private var manager = SnapshotManager.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,17 +32,17 @@ struct SnapshotView: View {
             .padding(.horizontal)
 
             List {
-                ForEach(SnapshotManager.shared.entries) { entry in
+                ForEach(manager.entries) { entry in
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(entry.description)
                                 .font(.body)
-                            Text(entry.timestamp, style: .date)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text(entry.timestamp, style: .time)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                            HStack(spacing: 4) {
+                                Text(entry.timestamp, style: .date)
+                                Text(entry.timestamp, style: .time)
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                         }
                         Spacer()
                         Button("恢复") {
@@ -52,7 +53,7 @@ struct SnapshotView: View {
                     }
                     .contextMenu {
                         Button("删除", role: .destructive) {
-                            SnapshotManager.shared.deleteSnapshot(id: entry.id)
+                            manager.deleteSnapshot(id: entry.id)
                         }
                     }
                 }
@@ -62,7 +63,7 @@ struct SnapshotView: View {
             Button("取消", role: .cancel) { }
             Button("恢复", role: .destructive) {
                 if let snapshot = selectedSnapshot {
-                    _ = SnapshotManager.shared.restoreSnapshot(id: snapshot.id, to: store)
+                    _ = manager.restoreSnapshot(id: snapshot.id, to: store)
                 }
             }
         } message: {

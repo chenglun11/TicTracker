@@ -3,6 +3,7 @@ import SwiftUI
 struct OperationLogView: View {
     @Environment(DataStore.self) private var store
     @State private var searchText = ""
+    @State private var showingClearAlert = false
 
     private var filteredLog: [OperationLogEntry] {
         if searchText.isEmpty {
@@ -23,7 +24,7 @@ struct OperationLogView: View {
                     .font(.headline)
                 Spacer()
                 Button("清空") {
-                    store.clearOperationLog()
+                    showingClearAlert = true
                 }
                 .buttonStyle(.borderless)
             }
@@ -62,6 +63,14 @@ struct OperationLogView: View {
                     }
                 }
             }
+        }
+        .alert("确认清空", isPresented: $showingClearAlert) {
+            Button("取消", role: .cancel) {}
+            Button("清空", role: .destructive) {
+                store.clearOperationLog()
+            }
+        } message: {
+            Text("将清空所有操作日志记录")
         }
     }
 }

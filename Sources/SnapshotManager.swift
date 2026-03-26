@@ -16,6 +16,7 @@ struct SnapshotEntry: Identifiable, Codable {
 }
 
 @MainActor
+@Observable
 final class SnapshotManager {
     static let shared = SnapshotManager()
 
@@ -31,7 +32,7 @@ final class SnapshotManager {
         snapshotDir.appendingPathComponent("index.json")
     }
 
-    private(set) var entries: [SnapshotEntry] = []
+    var entries: [SnapshotEntry] = []
     private(set) var lastSnapshotDate: Date?
 
     private init() {
