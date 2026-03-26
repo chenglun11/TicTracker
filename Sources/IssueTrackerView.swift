@@ -254,23 +254,24 @@ struct IssueTrackerView: View {
             VStack(alignment: .leading, spacing: 16) {
                 // Title
                 VStack(alignment: .leading, spacing: 8) {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        if isEditingTitle {
-                            TextField("标题", text: $editingTitle, axis: .vertical)
-                                .font(.title2.bold())
-                                .textFieldStyle(.plain)
-                        } else {
+                    if isEditingTitle {
+                        TextEditor(text: $editingTitle)
+                            .font(.title2.bold())
+                            .frame(height: 100)
+                            .border(Color.gray.opacity(0.3))
+                    } else {
+                        ScrollView(.vertical, showsIndicators: true) {
                             Text(issue.title)
                                 .font(.title2.bold())
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .onTapGesture {
-                                    editingTitle = issue.title
-                                    isEditingTitle = true
-                                }
+                        }
+                        .frame(maxHeight: 100)
+                        .onTapGesture {
+                            editingTitle = issue.title
+                            isEditingTitle = true
                         }
                     }
-                    .frame(maxHeight: 100)
 
                     if isEditingTitle {
                         HStack {
