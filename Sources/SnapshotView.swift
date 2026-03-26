@@ -15,20 +15,20 @@ struct SnapshotView: View {
                 Text("数据快照")
                     .font(.headline)
                 Spacer()
-                Button("手动快照") {
-                    if !manualDescription.isEmpty {
-                        SnapshotManager.shared.saveSnapshot(from: store, description: manualDescription)
-                        manualDescription = ""
-                    }
-                }
-                .buttonStyle(.borderless)
-                .disabled(manualDescription.isEmpty)
             }
             .padding()
 
             HStack {
                 TextField("快照描述", text: $manualDescription)
                     .textFieldStyle(.roundedBorder)
+                Button("保存快照") {
+                    if !manualDescription.isEmpty {
+                        SnapshotManager.shared.saveSnapshot(from: store, description: manualDescription)
+                        manualDescription = ""
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(manualDescription.isEmpty)
             }
             .padding(.horizontal)
 

@@ -52,12 +52,13 @@ struct OperationLogView: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
-                        ScrollView(.horizontal, showsIndicators: true) {
+                        ScrollView(.vertical, showsIndicators: true) {
                             Text(entry.detail)
                                 .font(.caption)
                                 .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxHeight: 60)
+                        .frame(maxHeight: 80)
                     }
                     .padding(.vertical, 2)
                     .contextMenu {
