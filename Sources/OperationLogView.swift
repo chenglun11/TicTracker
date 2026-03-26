@@ -54,6 +54,7 @@ struct OperationLogView: View {
                         }
                         Text(entry.detail)
                             .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(.vertical, 2)
                     .contextMenu {
