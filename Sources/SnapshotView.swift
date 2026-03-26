@@ -6,6 +6,7 @@ struct SnapshotView: View {
     @State private var selectedSnapshot: SnapshotEntry?
     @State private var manualDescription = ""
     @State private var manager = SnapshotManager.shared
+    @State private var errorMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,11 +64,24 @@ struct SnapshotView: View {
             Button("取消", role: .cancel) { }
             Button("恢复", role: .destructive) {
                 if let snapshot = selectedSnapshot {
-                    _ = manager.restoreSnapshot(id: snapshot.id, to: store)
+                    let success = manager.restoreSnapshot(id: snapshot.id, to: store)
+                    if !success {
+                        errorMessage = "恢复失败，快照文件可能已损坏"
+                    }
                 }
             }
         } message: {
             Text("恢复快照将覆盖当前数据，当前数据会自动备份")
+        }
+        .alert("错误", isPresented: .init(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("确定", role: .cancel) { errorMessage = nil }
+        } message: {
+            if let msg = errorMessage {
+                Text(msg)
+            }
         }
     }
 }

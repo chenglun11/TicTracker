@@ -87,7 +87,7 @@ final class DataStore {
 
     // MARK: - Operation Log
 
-    var operationLog: [OperationLogEntry] {
+    var operationLog: [OperationLogEntry] = [] {
         didSet { saveOperationLog() }
     }
 
