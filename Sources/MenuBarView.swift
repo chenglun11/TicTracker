@@ -7,13 +7,13 @@ struct MenuBarView: View {
     @State private var selectedDate = Date()
     @State private var trendExpanded = true
     @State private var issuesExpanded = false
+    @State private var addIssueFormExpanded = false
     @State private var newIssueTitle = ""
     @State private var newIssueType: IssueType = .bug
     @State private var newIssueDept: String?
     @State private var jiraRefreshing = false
     @State private var animatingDept: String?
     @State private var saveState = AutoSaveState()
-    @State private var commentTexts: [UUID: String] = [:]
 
     private var selectedKey: String {
         DataStore.dateKey(from: selectedDate)
@@ -363,7 +363,7 @@ struct MenuBarView: View {
             }
         }
         .padding()
-        .frame(width: 300)
+        .frame(width: 380)
         .autoSaveIndicator(saveState)
         .onAppear {
             selectedDate = Date()
@@ -404,7 +404,7 @@ struct MenuBarView: View {
                 Button {
                     jiraRefreshing = true
                     Task {
-                        _ = await JiraService.shared.fetchMyIssues()
+                        _ = await JiraService.shared.fetchByMode()
                         jiraRefreshing = false
                     }
                 } label: {
@@ -434,6 +434,8 @@ struct MenuBarView: View {
     private var issueTrackerSection: some View {
         let issues = store.issuesVisibleForKey(selectedKey)
         let unresolved = issues.filter { !$0.status.isResolved }
+        let grouped = Dictionary(grouping: unresolved, by: \.type)
+
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Button {
@@ -443,20 +445,16 @@ struct MenuBarView: View {
                         Image(systemName: issuesExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption2)
                             .frame(width: 10)
-                        Image(systemName: "ladybug.fill")
+                        Image(systemName: "ladybug")
                             .font(.caption2)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.secondary)
                         Text("问题追踪")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         if !unresolved.isEmpty {
-                            Text("\(unresolved.count) 未解决")
+                            Text("\(unresolved.count)")
                                 .font(.caption)
-                                .foregroundStyle(.orange)
-                        } else if !issues.isEmpty {
-                            Text("全部已解决")
-                                .font(.caption)
-                                .foregroundStyle(.green)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -475,166 +473,144 @@ struct MenuBarView: View {
             }
 
             if issuesExpanded {
-                // Add new issue
-                HStack(spacing: 6) {
-                    Picker("", selection: $newIssueType) {
-                        ForEach(IssueType.allCases, id: \.self) { type in
-                            Label(type.rawValue, systemImage: type.icon).tag(type)
-                        }
+                // Add new issue button
+                Button {
+                    withAnimation { addIssueFormExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus.circle")
+                            .font(.caption)
+                        Text("新建")
+                            .font(.caption)
                     }
-                    .labelsHidden()
-                    .frame(width: 85)
+                }
+                .buttonStyle(.borderless)
 
-                    if newIssueType == .issue {
-                        Picker("", selection: $newIssueDept) {
-                            Text("项目").tag(String?.none)
-                            ForEach(store.departments, id: \.self) { dept in
-                                Text(dept).tag(String?.some(dept))
+                if addIssueFormExpanded {
+                    HStack(spacing: 6) {
+                        Picker("", selection: $newIssueType) {
+                            ForEach(IssueType.allCases, id: \.self) { type in
+                                Label(type.rawValue, systemImage: type.icon).tag(type)
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 70)
-                    }
+                        .frame(width: 85)
 
-                    TextField("描述…", text: $newIssueTitle)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.caption)
-                        .onSubmit { addIssue() }
-                    Button {
-                        addIssue()
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
+                        if newIssueType == .issue {
+                            Picker("", selection: $newIssueDept) {
+                                Text("项目").tag(String?.none)
+                                ForEach(store.departments, id: \.self) { dept in
+                                    Text(dept).tag(String?.some(dept))
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 70)
+                        }
+
+                        TextField("描述…", text: $newIssueTitle)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.caption)
+                            .onSubmit { addIssue() }
+                        Button {
+                            addIssue()
+                        } label: {
+                            Image(systemName: "checkmark.circle.fill")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(newIssueTitle.isEmpty)
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(newIssueTitle.isEmpty)
                 }
 
-                // Issue list (only unresolved)
-                if !unresolved.isEmpty {
-                    ForEach(unresolved) { issue in
-                        issueRow(issue)
+                // Issue list by type
+                ForEach(IssueType.allCases, id: \.self) { type in
+                    if let typeIssues = grouped[type], !typeIssues.isEmpty {
+                        issueTypeGroup(type: type, issues: typeIssues)
                     }
                 }
             }
         }
     }
 
+    // MARK: - Issue Type Group
+
     @ViewBuilder
-    private func issueRow(_ issue: TrackedIssue) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                // Type icon
-                Image(systemName: issue.type.icon)
+    private func issueTypeGroup(type: IssueType, issues: [TrackedIssue]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Image(systemName: type.icon)
                     .font(.caption2)
-                    .foregroundStyle(issue.type.color)
-
-                // Status menu (选择解决情况)
-                Menu {
-                    ForEach(IssueStatus.allCases, id: \.self) { status in
-                        Button {
-                            store.updateIssueStatus(id: issue.id, status: status)
-                        } label: {
-                            Label(status.rawValue, systemImage: status.icon)
-                        }
-                        .disabled(issue.status == status)
-                    }
-                } label: {
-                    Image(systemName: issue.status.icon)
-                        .font(.caption)
-                        .foregroundStyle(issue.status.isResolved ? .green : .orange)
-                }
-                .menuIndicator(.hidden)
-                .fixedSize()
-
-                // Department badge (if present)
-                if let dept = issue.department, !dept.isEmpty {
-                    Text(dept)
-                        .font(.caption2)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.purple.opacity(0.15))
-                        .clipShape(Capsule())
-                }
-
-                TextField("描述", text: Binding(
-                    get: { issue.title },
-                    set: { store.updateIssueTitle(id: issue.id, title: $0) }
-                ))
-                .font(.caption)
-                .textFieldStyle(.plain)
-
-                Spacer()
-
-                // Assignee
-                if !store.bugTeamMembers.isEmpty {
-                    Menu {
-                        Button("未指派") {
-                            store.updateIssueAssignee(id: issue.id, assignee: nil)
-                        }
-                        Divider()
-                        ForEach(store.bugTeamMembers, id: \.self) { member in
-                            Button(member) {
-                                store.updateIssueAssignee(id: issue.id, assignee: member)
-                            }
-                        }
-                    } label: {
-                        if let assignee = issue.assignee {
-                            Text(assignee)
-                                .font(.caption2)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.blue.opacity(0.15))
-                                .clipShape(Capsule())
-                        } else {
-                            Image(systemName: "person.badge.plus")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                } else if let assignee = issue.assignee {
-                    Text(assignee)
-                        .font(.caption2)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.blue.opacity(0.15))
-                        .clipShape(Capsule())
-                }
-
-                Button {
-                    store.deleteIssue(id: issue.id)
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary.opacity(0.7))
-                }
-                .buttonStyle(.borderless)
-            }
-
-            // Latest comment + add
-            if let latest = issue.comments.last {
-                Text(latest.text)
+                    .foregroundStyle(type.color.opacity(0.7))
+                Text(type.rawValue)
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+                Text("\(issues.count)")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
-            TextField("添加备注…", text: Binding(
-                get: { commentTexts[issue.id] ?? "" },
-                set: { commentTexts[issue.id] = $0 }
-            ))
-            .font(.caption2)
-            .textFieldStyle(.plain)
-            .foregroundStyle(.secondary)
-            .onSubmit {
-                let text = (commentTexts[issue.id] ?? "").trimmingCharacters(in: .whitespaces)
-                if !text.isEmpty {
-                    store.addIssueComment(id: issue.id, text: text)
-                    commentTexts[issue.id] = ""
-                }
+            .padding(.top, 4)
+
+            ForEach(issues) { issue in
+                compactIssueRow(issue)
             }
         }
-        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func compactIssueRow(_ issue: TrackedIssue) -> some View {
+        HStack(spacing: 5) {
+            // Status toggle
+            Menu {
+                ForEach(IssueStatus.allCases, id: \.self) { status in
+                    Button {
+                        store.updateIssueStatus(id: issue.id, status: status)
+                    } label: {
+                        Label(status.rawValue, systemImage: status.icon)
+                    }
+                    .disabled(issue.status == status)
+                }
+            } label: {
+                Image(systemName: issue.status.icon)
+                    .font(.caption)
+                    .foregroundStyle(issue.status.isResolved ? .green.opacity(0.7) : .orange.opacity(0.7))
+            }
+            .menuIndicator(.hidden)
+            .fixedSize()
+
+            // Department badge
+            if let dept = issue.department, !dept.isEmpty {
+                Text(dept)
+                    .font(.caption2)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(Color.purple.opacity(0.1))
+                    .clipShape(Capsule())
+            }
+
+            // Title
+            Text(issue.title)
+                .font(.caption)
+                .lineLimit(1)
+
+            Spacer()
+
+            // Jira badge
+            if let jiraKey = issue.jiraKey {
+                Text(jiraKey)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Assignee badge
+            if let assignee = issue.assignee {
+                Text(assignee)
+                    .font(.caption2)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(Color.blue.opacity(0.1))
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(.vertical, 1)
     }
 
     private func addIssue() {

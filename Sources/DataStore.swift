@@ -118,6 +118,9 @@ final class DataStore {
     var issueTrackerEnabled: Bool {
         didSet { UserDefaults.standard.set(issueTrackerEnabled, forKey: "issueTrackerEnabled") }
     }
+    var diaryShowAllPending: Bool {
+        didSet { UserDefaults.standard.set(diaryShowAllPending, forKey: "diaryShowAllPending") }
+    }
     var jiraSourceMode: Int {
         didSet { UserDefaults.standard.set(jiraSourceMode, forKey: "jiraSourceMode") }
     }  // 0=assigned, 1=reported, 2=all
@@ -296,6 +299,7 @@ final class DataStore {
         hotkeyEnabled = UserDefaults.standard.object(forKey: "hotkeyEnabled") as? Bool ?? true
         rssEnabled = UserDefaults.standard.object(forKey: "rssEnabled") as? Bool ?? true
         todoEnabled = UserDefaults.standard.object(forKey: "todoEnabled") as? Bool ?? true
+        diaryShowAllPending = UserDefaults.standard.object(forKey: "diaryShowAllPending") as? Bool ?? true
         // Migrate: if either old toggle was on, enable unified tracker
         if let existing = UserDefaults.standard.object(forKey: "issueTrackerEnabled") as? Bool {
             issueTrackerEnabled = existing
@@ -853,41 +857,49 @@ final class DataStore {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].status = status
         trackedIssues[idx].resolvedAt = status.isResolved ? Date() : nil
+        trackedIssues[idx].updatedAt = Date()
     }
 
     func updateIssueAssignee(id: UUID, assignee: String?) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].assignee = assignee
+        trackedIssues[idx].updatedAt = Date()
     }
 
     func addIssueComment(id: UUID, text: String) {
         guard !text.isEmpty, let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].comments.append(IssueComment(text: text))
+        trackedIssues[idx].updatedAt = Date()
     }
 
     func deleteIssueComment(issueID: UUID, commentID: UUID) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == issueID }) else { return }
         trackedIssues[idx].comments.removeAll { $0.id == commentID }
+        trackedIssues[idx].updatedAt = Date()
     }
 
     func updateIssueJiraKey(id: UUID, jiraKey: String?) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].jiraKey = jiraKey
+        trackedIssues[idx].updatedAt = Date()
     }
 
     func updateIssueTitle(id: UUID, title: String) {
         guard !title.isEmpty, let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].title = title
+        trackedIssues[idx].updatedAt = Date()
     }
 
     func updateIssueDepartment(id: UUID, department: String?) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].department = department
+        trackedIssues[idx].updatedAt = Date()
     }
 
     func updateIssueType(id: UUID, type: IssueType) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].type = type
+        trackedIssues[idx].updatedAt = Date()
     }
 
     func deleteIssue(id: UUID) {

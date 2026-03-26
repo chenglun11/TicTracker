@@ -465,6 +465,18 @@ private struct IssueTrackerTab: View {
                 }
                 .onChange(of: store.issueTrackerEnabled) { _, _ in saveState.triggerSave() }
 
+                if store.issueTrackerEnabled {
+                    Toggle(isOn: Bindable(store).diaryShowAllPending) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("日记展示全部待处理")
+                            Text("在日记详情中显示所有未解决问题，当天新增高亮标记")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .onChange(of: store.diaryShowAllPending) { _, _ in saveState.triggerSave() }
+                }
+
                 if store.jiraConfig.enabled {
                     Picker("Jira 工单来源", selection: Bindable(store).jiraSourceMode) {
                         Text("指派给我").tag(0)

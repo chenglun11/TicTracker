@@ -27,7 +27,7 @@ final class JiraService {
         pollingTask = Task {
             while !Task.isCancelled {
                 if isInPollingWindow(config: store.jiraConfig) {
-                    _ = await fetchMyIssues()
+                    _ = await fetchByMode()
                     await syncTrackedIssues()
                 }
                 let minutes = store.jiraConfig.pollingInterval
@@ -52,6 +52,16 @@ final class JiraService {
     }
 
     // MARK: - API
+
+    /// Fetch issues based on current jiraSourceMode setting
+    func fetchByMode() async -> String? {
+        guard let store else { return "未初始化" }
+        let mode = store.jiraSourceMode
+        var error: String?
+        if mode == 0 || mode == 2 { error = await fetchMyIssues() }
+        if mode == 1 || mode == 2 { error = await fetchReportedIssues() ?? error }
+        return error
+    }
 
     func fetchMyIssues() async -> String? {
         guard let store else { return "未初始化" }

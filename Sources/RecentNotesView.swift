@@ -80,6 +80,12 @@ struct RecentNotesView: View {
         return fmt
     }()
 
+    private static let shortTimeFmt: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d HH:mm"
+        return fmt
+    }()
+
     private static let displayFmt: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "M/d (EEE)"
@@ -443,9 +449,12 @@ struct RecentNotesView: View {
                     }
                 }
 
-                // Tracked issues by type
-                if !item.issues.isEmpty {
-                    let grouped = Dictionary(grouping: item.issues, by: \.type)
+                // Tracked issues: all pending or just this day's activity
+                let displayIssues = store.diaryShowAllPending
+                    ? store.issuesVisibleForKey(item.id)
+                    : item.issues
+                if !displayIssues.isEmpty {
+                    let grouped = Dictionary(grouping: displayIssues, by: \.type)
                     ForEach(IssueType.allCases, id: \.self) { type in
                         if let issues = grouped[type], !issues.isEmpty {
                             issueTypeSection(type: type, issues: issues, dayID: item.id)
@@ -467,6 +476,7 @@ struct RecentNotesView: View {
     private func issueTypeSection(type: IssueType, issues: [TrackedIssue], dayID: String) -> some View {
         let sectionKey = "\(dayID)-\(type.rawValue)"
         let unresolvedCount = issues.filter { !$0.status.isResolved }.count
+        let newCount = issues.filter { $0.dateKey == dayID }.count
         VStack(alignment: .leading, spacing: 6) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -495,13 +505,18 @@ struct RecentNotesView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                    if newCount > 0 {
+                        Text("+\(newCount)新增")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
             .buttonStyle(.plain)
             if expandedIssueDays.contains(sectionKey) {
                 FlowLayout(spacing: 6) {
                     ForEach(issues) { issue in
-                        issueTag(issue)
+                        issueTag(issue, dayKey: dayID)
                     }
                 }
             }
@@ -516,8 +531,11 @@ struct RecentNotesView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func issueTag(_ issue: TrackedIssue) -> some View {
+    private func issueTag(_ issue: TrackedIssue, dayKey: String) -> some View {
         let isUnresolved = !issue.status.isResolved
+        let isNewToday = issue.dateKey == dayKey
+        let isUpdated = issue.updatedAt != nil && !isNewToday
+        let accentColor: Color = isNewToday ? .orange : (isUpdated ? .blue : issue.type.color)
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 Image(systemName: issue.type.icon)
@@ -526,11 +544,34 @@ struct RecentNotesView: View {
                 Image(systemName: issue.status.icon)
                     .font(.system(size: 9))
                     .fontWeight(isUnresolved ? .bold : .regular)
+                if isNewToday {
+                    Text("NEW")
+                        .font(.system(size: 8, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.orange, in: Capsule())
+                } else if isUpdated {
+                    Text("UPD")
+                        .font(.system(size: 8, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.blue, in: Capsule())
+                }
                 Text(issueTagLabel(issue))
                     .lineLimit(1)
                     .fontWeight(isUnresolved ? .semibold : .regular)
             }
             .font(.caption)
+            HStack(spacing: 6) {
+                Text("创建 " + Self.shortTimeFmt.string(from: issue.createdAt))
+                if let upd = issue.updatedAt {
+                    Text("· 更新 " + Self.shortTimeFmt.string(from: upd))
+                }
+            }
+            .font(.system(size: 9))
+            .foregroundStyle(.tertiary)
             if let latest = issue.comments.last {
                 Text(latest.text)
                     .font(.caption2)
@@ -540,16 +581,20 @@ struct RecentNotesView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(issue.type.color.opacity(isUnresolved ? 0.10 : 0.05))
+        .background(accentColor.opacity(isNewToday || isUpdated ? 0.12 : (isUnresolved ? 0.10 : 0.05)))
         .overlay(alignment: .leading) {
-            if isUnresolved {
+            if isNewToday || isUpdated {
+                Rectangle()
+                    .fill(accentColor.opacity(0.8))
+                    .frame(width: 3)
+            } else if isUnresolved {
                 Rectangle()
                     .fill(issue.type.color.opacity(0.4))
                     .frame(width: 3)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .help("\(issue.type.rawValue) · \(issue.status.rawValue)")
+        .help("\(issue.type.rawValue) · \(issue.status.rawValue)\(isNewToday ? " · 当日新增" : (isUpdated ? " · 有更新" : ""))")
     }
 
 }

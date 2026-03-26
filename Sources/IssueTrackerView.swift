@@ -301,7 +301,7 @@ struct IssueTrackerView: View {
                 Button {
                     jiraRefreshing = true
                     Task {
-                        _ = await JiraService.shared.fetchMyIssues()
+                        _ = await JiraService.shared.fetchByMode()
                         jiraRefreshing = false
                     }
                 } label: {
