@@ -1309,12 +1309,25 @@ private struct DataTab: View {
     @State private var showClearTodayAlert = false
     @State private var showClearAllAlert = false
     @State private var importResult: String?
+    @State private var showOperationLog = false
+    @State private var showSnapshot = false
 
     var body: some View {
         Form {
             Section("统计") {
                 LabeledContent("已记录天数", value: "\(store.totalDaysTracked) 天")
                 LabeledContent("累计点击次数", value: "\(store.totalSupportCount) 次")
+            }
+
+            Section("操作记录") {
+                HStack {
+                    Button("操作日志") {
+                        showOperationLog = true
+                    }
+                    Button("数据快照") {
+                        showSnapshot = true
+                    }
+                }
             }
 
             Section("导出 / 导入") {
@@ -1360,6 +1373,16 @@ private struct DataTab: View {
             Button("全部清除", role: .destructive) { store.clearAllHistory() }
         } message: {
             Text("所有支持记录和日报将被永久删除，此操作不可撤销")
+        }
+        .sheet(isPresented: $showOperationLog) {
+            OperationLogView()
+                .environment(store)
+                .frame(minWidth: 600, minHeight: 400)
+        }
+        .sheet(isPresented: $showSnapshot) {
+            SnapshotView()
+                .environment(store)
+                .frame(minWidth: 600, minHeight: 400)
         }
     }
 

@@ -85,6 +85,12 @@ final class DataStore {
         didSet { saveBugTeamMembers() }
     }
 
+    // MARK: - Operation Log
+
+    var operationLog: [OperationLogEntry] {
+        didSet { saveOperationLog() }
+    }
+
     // MARK: - Tap Timestamps
 
     var tapTimestamps: [String: [String: [String]]] {  // dateKey → dept → ["HH:mm:ss", ...]
@@ -300,6 +306,13 @@ final class DataStore {
         rssEnabled = UserDefaults.standard.object(forKey: "rssEnabled") as? Bool ?? true
         todoEnabled = UserDefaults.standard.object(forKey: "todoEnabled") as? Bool ?? true
         diaryShowAllPending = UserDefaults.standard.object(forKey: "diaryShowAllPending") as? Bool ?? true
+        // Load operation log
+        if let data = UserDefaults.standard.data(forKey: "operationLog"),
+           let decoded = try? JSONDecoder().decode([OperationLogEntry].self, from: data) {
+            operationLog = decoded
+        } else {
+            operationLog = []
+        }
         // Migrate: if either old toggle was on, enable unified tracker
         if let existing = UserDefaults.standard.object(forKey: "issueTrackerEnabled") as? Bool {
             issueTrackerEnabled = existing
@@ -392,6 +405,7 @@ final class DataStore {
         var day = records[key] ?? [:]
         day[dept, default: 0] += 1
         records[key] = day
+        logOperation(module: "计数", action: "+1", detail: "\(dept) [\(key)]")
 
         // Record timestamp
         if timestampEnabled {
@@ -409,6 +423,7 @@ final class DataStore {
         guard current > 0 else { return }
         day[dept] = current - 1
         records[key] = day
+        logOperation(module: "计数", action: "-1", detail: "\(dept) [\(key)]")
 
         // Remove last timestamp
         var dayTaps = tapTimestamps[key] ?? [:]
@@ -573,6 +588,7 @@ final class DataStore {
     // MARK: - Data Management
 
     func clearToday() {
+        logOperation(module: "系统", action: "清除", detail: "今日数据 [\(todayKey)]")
         records.removeValue(forKey: todayKey)
         dailyNotes.removeValue(forKey: todayKey)
         tapTimestamps.removeValue(forKey: todayKey)
@@ -580,6 +596,7 @@ final class DataStore {
     }
 
     func clearAllHistory() {
+        logOperation(module: "系统", action: "清除", detail: "全部历史数据")
         records = [:]
         dailyNotes = [:]
         tapTimestamps = [:]
@@ -774,6 +791,30 @@ final class DataStore {
         UserDefaults.standard.set(bugTeamMembers, forKey: "bugTeamMembers")
     }
 
+    private func saveOperationLog() {
+        if let data = try? JSONEncoder().encode(operationLog) {
+            UserDefaults.standard.set(data, forKey: "operationLog")
+        }
+    }
+
+    func logOperation(module: String, action: String, detail: String) {
+        let entry = OperationLogEntry(module: module, action: action, detail: detail)
+        operationLog.insert(entry, at: 0)
+        if operationLog.count > 200 {
+            operationLog = Array(operationLog.prefix(200))
+        }
+        // Check if we need an auto snapshot (every 30 minutes)
+        SnapshotManager.shared.autoSnapshotIfNeeded(store: self)
+    }
+
+    func clearOperationLog() {
+        operationLog = []
+    }
+
+    func deleteOperationLogEntry(id: UUID) {
+        operationLog.removeAll { $0.id == id }
+    }
+
     // MARK: - Todo Task Helpers
 
     func tasksForKey(_ key: String) -> [TodoTask] {
@@ -794,6 +835,7 @@ final class DataStore {
         var newTask = task
         newTask.dateKey = key
         todoTasks.append(newTask)
+        logOperation(module: "任务", action: "新增", detail: task.title)
     }
 
     func updateTask(_ task: TodoTask, forKey key: String) {
@@ -803,6 +845,9 @@ final class DataStore {
     }
 
     func deleteTask(id: UUID, forKey key: String) {
+        if let task = todoTasks.first(where: { $0.id == id }) {
+            logOperation(module: "任务", action: "删除", detail: task.title)
+        }
         todoTasks.removeAll { $0.id == id }
     }
 
@@ -851,6 +896,7 @@ final class DataStore {
         entry.jiraKey = jiraKey
         entry.department = department
         trackedIssues.append(entry)
+        logOperation(module: "问题", action: "新增", detail: "[\(type.rawValue)] \(title)")
     }
 
     private func touchIssue(at idx: Int) {
@@ -862,9 +908,12 @@ final class DataStore {
 
     func updateIssueStatus(id: UUID, status: IssueStatus) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        let title = trackedIssues[idx].title
+        let oldStatus = trackedIssues[idx].status.rawValue
         trackedIssues[idx].status = status
         trackedIssues[idx].resolvedAt = status.isResolved ? Date() : nil
         touchIssue(at: idx)
+        logOperation(module: "问题", action: "状态", detail: "\(title): \(oldStatus)→\(status.rawValue)")
     }
 
     func updateIssueAssignee(id: UUID, assignee: String?) {
@@ -893,8 +942,10 @@ final class DataStore {
 
     func updateIssueTitle(id: UUID, title: String) {
         guard !title.isEmpty, let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        let old = trackedIssues[idx].title
         trackedIssues[idx].title = title
         touchIssue(at: idx)
+        logOperation(module: "问题", action: "改名", detail: "\(old)→\(title)")
     }
 
     func updateIssueDepartment(id: UUID, department: String?) {
@@ -915,6 +966,9 @@ final class DataStore {
     }
 
     func deleteIssue(id: UUID) {
+        if let issue = trackedIssues.first(where: { $0.id == id }) {
+            logOperation(module: "问题", action: "删除", detail: "[\(issue.type.rawValue)] \(issue.title)")
+        }
         trackedIssues.removeAll { $0.id == id }
     }
 }
