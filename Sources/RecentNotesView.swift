@@ -193,28 +193,6 @@ struct RecentNotesView: View {
                     Text("最近日记")
                         .font(.title3.bold())
 
-                    HStack(spacing: 8) {
-                        HStack(spacing: 4) {
-                            Text("记录")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text("\(allEntries.count)")
-                                .font(.caption.bold())
-                                .foregroundStyle(.blue)
-                        }
-                        let totalIssues = store.trackedIssues.filter { !$0.status.isResolved }.count
-                        if totalIssues > 0 {
-                            HStack(spacing: 4) {
-                                Text("待处理")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                Text("\(totalIssues)")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-                    }
-
                     Spacer()
                     if store.aiEnabled {
                         Button {
