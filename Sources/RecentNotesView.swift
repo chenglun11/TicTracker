@@ -192,6 +192,29 @@ struct RecentNotesView: View {
                 HStack(spacing: 12) {
                     Text("最近日记")
                         .font(.title3.bold())
+
+                    HStack(spacing: 8) {
+                        HStack(spacing: 4) {
+                            Text("记录")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("\(allEntries.count)")
+                                .font(.caption.bold())
+                                .foregroundStyle(.blue)
+                        }
+                        let totalIssues = store.trackedIssues.filter { !$0.status.isResolved }.count
+                        if totalIssues > 0 {
+                            HStack(spacing: 4) {
+                                Text("待处理")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text("\(totalIssues)")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+
                     Spacer()
                     if store.aiEnabled {
                         Button {
@@ -383,7 +406,10 @@ struct RecentNotesView: View {
                             Text("\(item.total)")
                                 .font(.caption.bold())
                         }
-                        .foregroundStyle(.blue.opacity(0.6))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.1), in: Capsule())
+                        .foregroundStyle(.blue)
                     }
                     if item.jiraTotal > 0 {
                         HStack(spacing: 4) {
@@ -392,7 +418,10 @@ struct RecentNotesView: View {
                             Text("\(item.jiraTotal)")
                                 .font(.caption.bold())
                         }
-                        .foregroundStyle(.orange.opacity(0.6))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.1), in: Capsule())
+                        .foregroundStyle(.orange)
                     }
                     if !item.issues.isEmpty {
                         HStack(spacing: 4) {
@@ -401,50 +430,65 @@ struct RecentNotesView: View {
                             Text("\(item.issues.count)")
                                 .font(.caption.bold())
                         }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.1), in: Capsule())
                         .foregroundStyle(.secondary)
                     }
                 }
 
                 // Project tags
                 if item.total > 0 {
-                    let sorted = store.departments.filter { item.records[$0, default: 0] > 0 }
-                        + item.records.keys.filter { !store.departments.contains($0) && item.records[$0, default: 0] > 0 }.sorted()
-                    FlowLayout(spacing: 6) {
-                        ForEach(sorted, id: \.self) { dept in
-                            let times = item.timestamps[dept] ?? []
-                            HStack(spacing: 4) {
-                                Text(dept)
-                                Text("\(item.records[dept]!)")
-                                    .fontWeight(.bold)
+                    Divider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("项目记录", systemImage: "folder")
+                            .font(.headline)
+
+                        let sorted = store.departments.filter { item.records[$0, default: 0] > 0 }
+                            + item.records.keys.filter { !store.departments.contains($0) && item.records[$0, default: 0] > 0 }.sorted()
+                        FlowLayout(spacing: 6) {
+                            ForEach(sorted, id: \.self) { dept in
+                                let times = item.timestamps[dept] ?? []
+                                HStack(spacing: 4) {
+                                    Text(dept)
+                                    Text("\(item.records[dept]!)")
+                                        .fontWeight(.bold)
+                                }
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color.blue.opacity(0.08))
+                                .clipShape(Capsule())
+                                .help(times.isEmpty ? "" : times.map { String($0.prefix(5)) }.joined(separator: "  "))
                             }
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Color.blue.opacity(0.08))
-                            .clipShape(Capsule())
-                            .help(times.isEmpty ? "" : times.map { String($0.prefix(5)) }.joined(separator: "  "))
                         }
                     }
                 }
 
                 // Jira tags
                 if item.jiraTotal > 0 {
-                    let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
-                    let sortedJira = item.jiraCounts.sorted { $0.value > $1.value }
-                    FlowLayout(spacing: 6) {
-                        ForEach(sortedJira, id: \.key) { issueKey, count in
-                            let label = issueMap[issueKey].map { "\(issueKey) \($0)" } ?? issueKey
-                            HStack(spacing: 4) {
-                                Text(label)
-                                    .lineLimit(1)
-                                Text("×\(count)")
-                                    .fontWeight(.bold)
+                    Divider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Jira 工单", systemImage: "ticket")
+                            .font(.headline)
+
+                        let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
+                        let sortedJira = item.jiraCounts.sorted { $0.value > $1.value }
+                        FlowLayout(spacing: 6) {
+                            ForEach(sortedJira, id: \.key) { issueKey, count in
+                                let label = issueMap[issueKey].map { "\(issueKey) \($0)" } ?? issueKey
+                                HStack(spacing: 4) {
+                                    Text(label)
+                                        .lineLimit(1)
+                                    Text("×\(count)")
+                                        .fontWeight(.bold)
+                                }
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color.orange.opacity(0.08))
+                                .clipShape(Capsule())
                             }
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Color.orange.opacity(0.08))
-                            .clipShape(Capsule())
                         }
                     }
                 }
@@ -454,6 +498,7 @@ struct RecentNotesView: View {
                     ? store.issuesVisibleForKey(item.id)
                     : item.issues
                 if !displayIssues.isEmpty {
+                    Divider()
                     let grouped = Dictionary(grouping: displayIssues, by: \.type)
                     let sectionKeys = IssueType.allCases.compactMap { type -> String? in
                         guard let issues = grouped[type], !issues.isEmpty else { return nil }
@@ -462,6 +507,8 @@ struct RecentNotesView: View {
                     let allExpanded = sectionKeys.allSatisfy { expandedIssueDays.contains($0) }
 
                     HStack {
+                        Label("问题追踪", systemImage: "ladybug")
+                            .font(.headline)
                         Spacer()
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) {
@@ -493,7 +540,11 @@ struct RecentNotesView: View {
                 // Note content
                 if !item.note.isEmpty {
                     Divider()
-                    MarkdownContentView(text: item.note)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("日记", systemImage: "note.text")
+                            .font(.headline)
+                        MarkdownContentView(text: item.note)
+                    }
                 }
             }
             .padding(20)
