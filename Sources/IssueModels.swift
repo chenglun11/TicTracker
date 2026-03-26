@@ -56,6 +56,13 @@ struct IssueComment: Identifiable, Codable, Sendable {
     var createdAt: Date = Date()
 }
 
+enum DiaryBadge: String, Codable, Sendable, CaseIterable {
+    case auto = "自动"
+    case new = "NEW"
+    case upd = "UPD"
+    case none = "无"
+}
+
 struct TrackedIssue: Identifiable, Codable, Sendable {
     var id: UUID = UUID()
     var type: IssueType = .bug
@@ -63,6 +70,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     var dateKey: String = ""
     var createdAt: Date = Date()
     var updatedAt: Date? = nil
+    var diaryBadge: DiaryBadge = .auto
     var status: IssueStatus = .pending
     var assignee: String?
     var jiraKey: String?
@@ -78,7 +86,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     // MARK: - Custom Codable for migration
 
     private enum CodingKeys: String, CodingKey {
-        case id, type, title, dateKey, createdAt, updatedAt, status, assignee, jiraKey, department, comments, resolvedAt
+        case id, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, assignee, jiraKey, department, comments, resolvedAt
         case note       // legacy single-note field
         case isFixed    // legacy BugEntry field
         case fixedAt    // legacy BugEntry field
@@ -92,6 +100,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         dateKey = try container.decode(String.self, forKey: .dateKey)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try? container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? nil
+        diaryBadge = (try? container.decodeIfPresent(DiaryBadge.self, forKey: .diaryBadge)) ?? .auto
         assignee = try container.decodeIfPresent(String.self, forKey: .assignee)
         jiraKey = try container.decodeIfPresent(String.self, forKey: .jiraKey)
         department = try container.decodeIfPresent(String.self, forKey: .department)
@@ -154,6 +163,9 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         try container.encode(dateKey, forKey: .dateKey)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
+        if diaryBadge != .auto {
+            try container.encode(diaryBadge, forKey: .diaryBadge)
+        }
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(assignee, forKey: .assignee)
         try container.encodeIfPresent(jiraKey, forKey: .jiraKey)

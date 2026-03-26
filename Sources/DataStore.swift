@@ -853,53 +853,65 @@ final class DataStore {
         trackedIssues.append(entry)
     }
 
+    private func touchIssue(at idx: Int) {
+        trackedIssues[idx].updatedAt = Date()
+        if trackedIssues[idx].diaryBadge != .auto {
+            trackedIssues[idx].diaryBadge = .auto
+        }
+    }
+
     func updateIssueStatus(id: UUID, status: IssueStatus) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].status = status
         trackedIssues[idx].resolvedAt = status.isResolved ? Date() : nil
-        trackedIssues[idx].updatedAt = Date()
+        touchIssue(at: idx)
     }
 
     func updateIssueAssignee(id: UUID, assignee: String?) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].assignee = assignee
-        trackedIssues[idx].updatedAt = Date()
+        touchIssue(at: idx)
     }
 
     func addIssueComment(id: UUID, text: String) {
         guard !text.isEmpty, let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].comments.append(IssueComment(text: text))
-        trackedIssues[idx].updatedAt = Date()
+        touchIssue(at: idx)
     }
 
     func deleteIssueComment(issueID: UUID, commentID: UUID) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == issueID }) else { return }
         trackedIssues[idx].comments.removeAll { $0.id == commentID }
-        trackedIssues[idx].updatedAt = Date()
+        touchIssue(at: idx)
     }
 
     func updateIssueJiraKey(id: UUID, jiraKey: String?) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].jiraKey = jiraKey
-        trackedIssues[idx].updatedAt = Date()
+        touchIssue(at: idx)
     }
 
     func updateIssueTitle(id: UUID, title: String) {
         guard !title.isEmpty, let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].title = title
-        trackedIssues[idx].updatedAt = Date()
+        touchIssue(at: idx)
     }
 
     func updateIssueDepartment(id: UUID, department: String?) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].department = department
-        trackedIssues[idx].updatedAt = Date()
+        touchIssue(at: idx)
     }
 
     func updateIssueType(id: UUID, type: IssueType) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].type = type
-        trackedIssues[idx].updatedAt = Date()
+        touchIssue(at: idx)
+    }
+
+    func updateIssueDiaryBadge(id: UUID, badge: DiaryBadge) {
+        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        trackedIssues[idx].diaryBadge = badge
     }
 
     func deleteIssue(id: UUID) {

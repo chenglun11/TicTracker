@@ -455,6 +455,34 @@ struct RecentNotesView: View {
                     : item.issues
                 if !displayIssues.isEmpty {
                     let grouped = Dictionary(grouping: displayIssues, by: \.type)
+                    let sectionKeys = IssueType.allCases.compactMap { type -> String? in
+                        guard let issues = grouped[type], !issues.isEmpty else { return nil }
+                        return "\(item.id)-\(type.rawValue)"
+                    }
+                    let allExpanded = sectionKeys.allSatisfy { expandedIssueDays.contains($0) }
+
+                    HStack {
+                        Spacer()
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                if allExpanded {
+                                    for key in sectionKeys { expandedIssueDays.remove(key) }
+                                } else {
+                                    for key in sectionKeys { expandedIssueDays.insert(key) }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: allExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                                    .font(.caption2)
+                                Text(allExpanded ? "收起全部" : "展开全部")
+                                    .font(.caption)
+                            }
+                            .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     ForEach(IssueType.allCases, id: \.self) { type in
                         if let issues = grouped[type], !issues.isEmpty {
                             issueTypeSection(type: type, issues: issues, dayID: item.id)
@@ -533,8 +561,26 @@ struct RecentNotesView: View {
 
     private func issueTag(_ issue: TrackedIssue, dayKey: String) -> some View {
         let isUnresolved = !issue.status.isResolved
-        let isNewToday = issue.dateKey == dayKey
-        let isUpdated = issue.updatedAt != nil && !isNewToday
+        let autoNew = issue.dateKey == dayKey
+        let autoUpd = issue.updatedAt != nil && !autoNew
+        // Resolve effective badge
+        let showNew: Bool
+        let showUpd: Bool
+        switch issue.diaryBadge {
+        case .auto:
+            showNew = autoNew
+            showUpd = autoUpd
+        case .new:
+            showNew = true
+            showUpd = false
+        case .upd:
+            showNew = false
+            showUpd = true
+        case .none:
+            showNew = false
+            showUpd = false
+        }
+        let highlighted = showNew || showUpd
         let typeColor = issue.type.color
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
@@ -544,14 +590,14 @@ struct RecentNotesView: View {
                 Image(systemName: issue.status.icon)
                     .font(.system(size: 9))
                     .fontWeight(isUnresolved ? .bold : .regular)
-                if isNewToday {
+                if showNew {
                     Text("NEW")
                         .font(.system(size: 8, weight: .heavy))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
                         .background(typeColor, in: Capsule())
-                } else if isUpdated {
+                } else if showUpd {
                     Text("UPD")
                         .font(.system(size: 8, weight: .heavy))
                         .foregroundStyle(.white)
@@ -581,9 +627,9 @@ struct RecentNotesView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(typeColor.opacity(isNewToday || isUpdated ? 0.12 : (isUnresolved ? 0.10 : 0.05)))
+        .background(typeColor.opacity(highlighted ? 0.12 : (isUnresolved ? 0.10 : 0.05)))
         .overlay(alignment: .leading) {
-            if isNewToday || isUpdated {
+            if highlighted {
                 Rectangle()
                     .fill(typeColor.opacity(0.8))
                     .frame(width: 3)
@@ -594,7 +640,33 @@ struct RecentNotesView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .help("\(issue.type.rawValue) · \(issue.status.rawValue)\(isNewToday ? " · 当日新增" : (isUpdated ? " · 有更新" : ""))")
+        .help("\(issue.type.rawValue) · \(issue.status.rawValue)\(showNew ? " · 当日新增" : (showUpd ? " · 有更新" : ""))")
+        .contextMenu {
+            Menu("徽章标记") {
+                ForEach(DiaryBadge.allCases, id: \.self) { badge in
+                    Button {
+                        store.updateIssueDiaryBadge(id: issue.id, badge: badge)
+                    } label: {
+                        HStack {
+                            Text(badge.rawValue)
+                            if issue.diaryBadge == badge {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+            Menu("状态") {
+                ForEach(IssueStatus.allCases, id: \.self) { status in
+                    Button {
+                        store.updateIssueStatus(id: issue.id, status: status)
+                    } label: {
+                        Label(status.rawValue, systemImage: status.icon)
+                    }
+                    .disabled(issue.status == status)
+                }
+            }
+        }
     }
 
 }
