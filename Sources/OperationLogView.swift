@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct OperationLogView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(DataStore.self) private var store
     @State private var searchText = ""
     @State private var showingClearAlert = false
@@ -25,6 +26,10 @@ struct OperationLogView: View {
                 Spacer()
                 Button("清空") {
                     showingClearAlert = true
+                }
+                .buttonStyle(.borderless)
+                Button("关闭") {
+                    dismiss()
                 }
                 .buttonStyle(.borderless)
             }

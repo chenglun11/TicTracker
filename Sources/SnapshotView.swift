@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SnapshotView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(DataStore.self) private var store
     @State private var showingRestore = false
     @State private var selectedSnapshot: SnapshotEntry?
@@ -15,6 +16,10 @@ struct SnapshotView: View {
                 Text("数据快照")
                     .font(.headline)
                 Spacer()
+                Button("关闭") {
+                    dismiss()
+                }
+                .buttonStyle(.borderless)
             }
             .padding()
 
