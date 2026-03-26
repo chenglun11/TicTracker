@@ -254,9 +254,10 @@ struct IssueTrackerView: View {
                 TextField("标题", text: Binding(
                     get: { issue.title },
                     set: { store.updateIssueTitle(id: issue.id, title: $0) }
-                ))
+                ), axis: .vertical)
                 .font(.title2.bold())
                 .textFieldStyle(.plain)
+                .lineLimit(1...5)
 
                 // Type, Status, Assignee, Department
                 HStack(spacing: 12) {
