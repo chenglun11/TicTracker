@@ -258,7 +258,13 @@ struct IssueTrackerView: View {
                         TextEditor(text: $editingTitle)
                             .font(.title2.bold())
                             .frame(height: 100)
-                            .border(Color.gray.opacity(0.3))
+                            .padding(4)
+                            .background(Color(nsColor: .textBackgroundColor))
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                            )
                     } else {
                         ScrollView(.vertical, showsIndicators: true) {
                             Text(issue.title)
