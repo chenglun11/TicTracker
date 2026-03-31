@@ -200,34 +200,63 @@ final class JiraService {
         }
     }
 
-    // MARK: - Sync Tracked Issues with Jira Status
+    // MARK: - Sync Tracked Issues with Jira Status & Comments
 
-    /// Syncs local TrackedIssues that have a jiraKey with the latest Jira status.
-    /// When a Jira issue's status category changes, updates local status and adds a timeline comment.
+    /// Syncs local TrackedIssues that have a jiraKey with the latest Jira status and comments.
     func syncTrackedIssues() async {
         guard let store else { return }
-        let jiraMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0) })
+        // Merge assigned + reported for broader lookup
+        var jiraMap: [String: JiraIssue] = [:]
+        for issue in store.jiraIssues { jiraMap[issue.key] = issue }
+        for issue in store.reportedJiraIssues { jiraMap[issue.key] = jiraMap[issue.key] ?? issue }
+
+        // Only sync comments for issues updated in the last 7 days to avoid N+1 on every poll
+        let commentCutoff = Date().addingTimeInterval(-7 * 24 * 3600)
 
         for issue in store.trackedIssues {
             guard let jiraKey = issue.jiraKey, !jiraKey.isEmpty else { continue }
-            guard let jiraIssue = jiraMap[jiraKey] else {
-                DevLog.shared.info("JiraSync", "\(jiraKey) not in fetch results, skipped")
-                continue
+
+            // If not in batch results, fetch individually
+            var jiraIssue = jiraMap[jiraKey]
+            if jiraIssue == nil {
+                jiraIssue = await fetchSingleIssue(key: jiraKey)
+                if jiraIssue == nil {
+                    DevLog.shared.info("JiraSync", "\(jiraKey) fetch failed, skipped")
+                    continue
+                }
             }
 
-            // Map Jira statusCategoryKey to local IssueStatus
-            let newStatus = mapJiraStatus(jiraIssue.statusCategoryKey)
+            guard let ji = jiraIssue else { continue }
 
+            // --- Status sync ---
+            let newStatus = mapJiraStatus(ji.statusCategoryKey)
             if newStatus != issue.status {
                 let oldLabel = issue.status.rawValue
                 let newLabel = newStatus.rawValue
-                let commentText = "[Jira] 状态变更: \(oldLabel) → \(newLabel)（\(jiraIssue.status)）"
-                // Prevent duplicate comment if sync runs multiple times in quick succession
+                let commentText = "[Jira] 状态变更: \(oldLabel) → \(newLabel)（\(ji.status)）"
                 let alreadyLogged = issue.comments.contains { $0.text == commentText }
-                guard !alreadyLogged else { continue }
-                store.updateIssueStatus(id: issue.id, status: newStatus)
-                store.addIssueComment(id: issue.id, text: commentText)
-                DevLog.shared.info("JiraSync", "\(jiraKey): \(oldLabel) → \(newLabel)")
+                if !alreadyLogged {
+                    store.updateIssueStatus(id: issue.id, status: newStatus)
+                    store.addIssueComment(id: issue.id, text: commentText)
+                    DevLog.shared.info("JiraSync", "\(jiraKey): \(oldLabel) → \(newLabel)")
+                }
+            }
+
+            // --- Comment sync (only for recently active issues) ---
+            guard (issue.updatedAt ?? issue.createdAt) >= commentCutoff else { continue }
+            let remoteComments = await fetchJiraComments(issueKey: jiraKey)
+            // Build from current store snapshot to include any comments added earlier this loop
+            let freshIssue = store.trackedIssues.first { $0.id == issue.id }
+            let existingJiraIds = Set((freshIssue ?? issue).comments.compactMap { $0.jiraCommentId })
+            for rc in remoteComments {
+                guard !existingJiraIds.contains(rc.id) else { continue }
+                let comment = IssueComment(
+                    text: "[Jira] \(rc.author): \(rc.body)",
+                    createdAt: rc.created,
+                    jiraCommentId: rc.id
+                )
+                store.addIssueCommentDirect(id: issue.id, comment: comment)
+                DevLog.shared.info("JiraSync", "\(jiraKey): synced comment \(rc.id)")
             }
         }
     }
@@ -242,6 +271,110 @@ final class JiraService {
     }
 
     // MARK: - Helpers
+
+    /// Fetch a single Jira issue by key (for issues not in JQL batch results)
+    private func fetchSingleIssue(key: String) async -> JiraIssue? {
+        guard let store else { return nil }
+        let config = store.jiraConfig
+        guard let token = loadToken() else { return nil }
+        let base = config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/rest/api/2/issue/\(key)?fields=summary,status,priority,issuetype") else { return nil }
+
+        var request = URLRequest(url: url)
+        applyAuth(&request, username: config.username, token: token)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            return parseSingleIssue(data)
+        } catch {
+            DevLog.shared.error("Jira", "fetchSingleIssue(\(key)) failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private nonisolated func parseSingleIssue(_ data: Data) -> JiraIssue? {
+        guard let issue = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let key = issue["key"] as? String,
+              let fields = issue["fields"] as? [String: Any],
+              let summary = fields["summary"] as? String else { return nil }
+        let statusObj = fields["status"] as? [String: Any]
+        let statusName = statusObj?["name"] as? String ?? "Unknown"
+        let statusCategory = statusObj?["statusCategory"] as? [String: Any]
+        let categoryKey = statusCategory?["key"] as? String ?? "undefined"
+        let priorityObj = fields["priority"] as? [String: Any]
+        let priorityName = priorityObj?["name"] as? String
+        let typeObj = fields["issuetype"] as? [String: Any]
+        let typeName = typeObj?["name"] as? String
+        return JiraIssue(key: key, summary: summary, status: statusName,
+                         statusCategoryKey: categoryKey, priority: priorityName, issueType: typeName)
+    }
+
+    struct JiraCommentEntry: Sendable {
+        let id: String
+        let author: String
+        let body: String
+        let created: Date
+    }
+
+    /// Fetch comments for a Jira issue
+    private func fetchJiraComments(issueKey: String) async -> [JiraCommentEntry] {
+        guard let store else { return [] }
+        let config = store.jiraConfig
+        guard let token = loadToken() else { return [] }
+        let base = config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/rest/api/2/issue/\(issueKey)/comment?orderBy=-created&maxResults=20") else { return [] }
+
+        var request = URLRequest(url: url)
+        applyAuth(&request, username: config.username, token: token)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+            return parseJiraComments(data)
+        } catch {
+            DevLog.shared.error("Jira", "fetchJiraComments(\(issueKey)) failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    private nonisolated func parseJiraComments(_ data: Data) -> [JiraCommentEntry] {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let comments = json["comments"] as? [[String: Any]] else { return [] }
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return comments.compactMap { c in
+            guard let id = c["id"] as? String,
+                  let bodyObj = c["body"] else { return nil }
+            let body: String
+            if let bodyStr = bodyObj as? String {
+                body = bodyStr
+            } else if let bodyDoc = bodyObj as? [String: Any] {
+                // Jira Cloud uses ADF (Atlassian Document Format)
+                body = Self.extractTextFromADF(bodyDoc)
+            } else {
+                return nil
+            }
+            let authorObj = c["author"] as? [String: Any]
+            let author = authorObj?["displayName"] as? String ?? "未知"
+            let createdStr = c["created"] as? String ?? ""
+            let created = fmt.date(from: createdStr) ?? Date()
+            return JiraCommentEntry(id: id, author: author, body: body, created: created)
+        }
+    }
+
+    /// Extract plain text from Atlassian Document Format (ADF) used by Jira Cloud
+    private nonisolated static func extractTextFromADF(_ doc: [String: Any]) -> String {
+        guard let content = doc["content"] as? [[String: Any]] else { return "" }
+        return content.compactMap { node -> String? in
+            if let innerContent = node["content"] as? [[String: Any]] {
+                return innerContent.compactMap { inner -> String? in
+                    inner["text"] as? String
+                }.joined()
+            }
+            return nil
+        }.joined(separator: "\n")
+    }
 
     private func loadToken() -> String? {
         guard let data = KeychainHelper.load() else { return nil }

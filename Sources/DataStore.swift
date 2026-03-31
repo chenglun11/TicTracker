@@ -928,6 +928,13 @@ final class DataStore {
         touchIssue(at: idx)
     }
 
+    /// Add a pre-built IssueComment (used by Jira comment sync with custom createdAt / jiraCommentId)
+    func addIssueCommentDirect(id: UUID, comment: IssueComment) {
+        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        trackedIssues[idx].comments.append(comment)
+        touchIssue(at: idx)
+    }
+
     func deleteIssueComment(issueID: UUID, commentID: UUID) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == issueID }) else { return }
         trackedIssues[idx].comments.removeAll { $0.id == commentID }
@@ -937,6 +944,10 @@ final class DataStore {
     func updateIssueJiraKey(id: UUID, jiraKey: String?) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].jiraKey = jiraKey
+        // Auto-set source to Jira when jiraKey is provided
+        if let key = jiraKey, !key.isEmpty, trackedIssues[idx].source == .manual {
+            trackedIssues[idx].source = .jira
+        }
         touchIssue(at: idx)
     }
 

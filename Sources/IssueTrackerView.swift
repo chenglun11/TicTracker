@@ -538,20 +538,32 @@ struct IssueTrackerView: View {
                         ForEach(issue.comments.sorted { $0.createdAt > $1.createdAt }) { comment in
                             HStack(alignment: .top, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(Self.timeFmt.string(from: comment.createdAt))
-                                        .font(.caption)
-                                        .foregroundStyle(.tertiary)
+                                    HStack(spacing: 4) {
+                                        Text(Self.timeFmt.string(from: comment.createdAt))
+                                            .font(.caption)
+                                            .foregroundStyle(.tertiary)
+                                        if comment.jiraCommentId != nil {
+                                            Text("Jira")
+                                                .font(.caption2)
+                                                .padding(.horizontal, 4)
+                                                .padding(.vertical, 1)
+                                                .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+                                                .foregroundStyle(.blue)
+                                        }
+                                    }
                                     Text(comment.text)
                                         .font(.callout)
                                 }
                                 Spacer()
-                                Button {
-                                    store.deleteIssueComment(issueID: issue.id, commentID: comment.id)
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundStyle(.tertiary)
+                                if comment.jiraCommentId == nil {
+                                    Button {
+                                        store.deleteIssueComment(issueID: issue.id, commentID: comment.id)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .buttonStyle(.borderless)
                                 }
-                                .buttonStyle(.borderless)
                             }
                             .padding(8)
                             .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))

@@ -405,6 +405,7 @@ struct MenuBarView: View {
                     jiraRefreshing = true
                     Task {
                         _ = await JiraService.shared.fetchByMode()
+                        await JiraService.shared.syncTrackedIssues()
                         jiraRefreshing = false
                     }
                 } label: {

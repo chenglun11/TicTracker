@@ -55,6 +55,8 @@ struct IssueComment: Identifiable, Codable, Sendable {
     var id: UUID = UUID()
     var text: String
     var createdAt: Date = Date()
+    /// Jira comment ID for deduplication; nil means local comment
+    var jiraCommentId: String?
 }
 
 enum IssueSource: String, Codable, Sendable, CaseIterable {
@@ -116,6 +118,11 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         jiraKey = try container.decodeIfPresent(String.self, forKey: .jiraKey)
         ticketURL = try container.decodeIfPresent(String.self, forKey: .ticketURL)
         department = try container.decodeIfPresent(String.self, forKey: .department)
+
+        // Auto-fix: if jiraKey is set but source is still manual, correct it
+        if let key = jiraKey, !key.isEmpty, source == .manual {
+            source = .jira
+        }
 
         // Comments: decode new format, or migrate from legacy single note
         if let decoded = try? container.decode([IssueComment].self, forKey: .comments) {
