@@ -10,6 +10,7 @@ struct IssueTrackerView: View {
     @State private var newCommentText = ""
     @State private var editingTitle = ""
     @State private var isEditingTitle = false
+    @State private var isEditingTime = false
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -21,8 +22,8 @@ struct IssueTrackerView: View {
     private enum TypeFilter: String, CaseIterable {
         case all = "全部"
         case bug = "Bug"
-        case hotfix = "Feat"
-        case issue = "问题"
+        case hotfix = "Feature"
+        case issue = "Support"
 
         var issueType: IssueType? {
             switch self {
@@ -194,7 +195,7 @@ struct IssueTrackerView: View {
                 issueDetail(issue)
             } else {
                 ContentUnavailableView {
-                    Label("选择问题查看详情", systemImage: "ladybug")
+                    Label("选择问题查看详情", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text("在左侧列表中选择问题")
                 }
@@ -205,6 +206,11 @@ struct IssueTrackerView: View {
             if selectedIssueID == nil, let first = filteredIssues.first {
                 selectedIssueID = first.id
             }
+        }
+        .onChange(of: selectedIssueID) {
+            isEditingTitle = false
+            isEditingTime = false
+            newCommentText = ""
         }
         .onChange(of: searchText) {
             if let id = selectedIssueID, !filteredIssues.contains(where: { $0.id == id }) {
@@ -238,6 +244,11 @@ struct IssueTrackerView: View {
                     .padding(.vertical, 1)
                     .background(Color.blue.opacity(0.15))
                     .clipShape(Capsule())
+            }
+            if issue.source != .manual {
+                Text(issue.source.rawValue)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             Text(issue.dateKey)
                 .font(.caption2)
@@ -365,37 +376,104 @@ struct IssueTrackerView: View {
                     }
                 }
 
-                // Jira
-                if store.jiraConfig.enabled {
+                // 来源 & 工单关联
+                VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
-                        TextField("Jira Key", text: Binding(
-                            get: { issue.jiraKey ?? "" },
-                            set: { store.updateIssueJiraKey(id: issue.id, jiraKey: $0.isEmpty ? nil : $0) }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 120)
-
-                        if !store.filteredJiraIssues.isEmpty {
-                            Menu {
-                                Button("无关联") {
-                                    store.updateIssueJiraKey(id: issue.id, jiraKey: nil)
-                                }
-                                Divider()
-                                ForEach(store.filteredJiraIssues) { jiraIssue in
-                                    Button("\(jiraIssue.key) \(jiraIssue.summary)") {
-                                        store.updateIssueJiraKey(id: issue.id, jiraKey: jiraIssue.key)
-                                    }
-                                }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "link")
-                                    Text("关联工单")
-                                }
-                                .font(.caption)
+                        Text("来源")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker("", selection: Binding(
+                            get: { issue.source },
+                            set: { store.updateIssueSource(id: issue.id, source: $0) }
+                        )) {
+                            ForEach(IssueSource.allCases, id: \.self) { s in
+                                Text(s.rawValue).tag(s)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
                         }
+                        .labelsHidden()
+                        .frame(width: 160)
+                    }
+
+                    switch issue.source {
+                    case .jira:
+                        HStack(spacing: 8) {
+                            TextField("Jira Key", text: Binding(
+                                get: { issue.jiraKey ?? "" },
+                                set: { store.updateIssueJiraKey(id: issue.id, jiraKey: $0.isEmpty ? nil : $0) }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 120)
+
+                            if !store.filteredJiraIssues.isEmpty {
+                                Menu {
+                                    Button("无关联") {
+                                        store.updateIssueJiraKey(id: issue.id, jiraKey: nil)
+                                    }
+                                    Divider()
+                                    ForEach(store.filteredJiraIssues) { jiraIssue in
+                                        Button("\(jiraIssue.key) \(jiraIssue.summary)") {
+                                            store.updateIssueJiraKey(id: issue.id, jiraKey: jiraIssue.key)
+                                        }
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "link")
+                                        Text("关联工单")
+                                    }
+                                    .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+
+                            if let jiraKey = issue.jiraKey, !jiraKey.isEmpty {
+                                Button {
+                                    openJiraInBrowser(jiraKey)
+                                } label: {
+                                    Image(systemName: "arrow.up.forward.square")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("在浏览器中打开 Jira 工单")
+                            }
+                        }
+                    case .meta:
+                        HStack(spacing: 8) {
+                            TextField("工单链接", text: Binding(
+                                get: { issue.ticketURL ?? "" },
+                                set: { store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0) }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+
+                            if let url = issue.ticketURL, !url.isEmpty {
+                                Button {
+                                    openURL(url)
+                                } label: {
+                                    Image(systemName: "arrow.up.forward.square")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("在浏览器中打开")
+                            }
+                        }
+                    case .feishu:
+                        HStack(spacing: 8) {
+                            TextField("飞书文档链接", text: Binding(
+                                get: { issue.ticketURL ?? "" },
+                                set: { store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0) }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+
+                            if let url = issue.ticketURL, !url.isEmpty {
+                                Button {
+                                    openURL(url)
+                                } label: {
+                                    Image(systemName: "arrow.up.forward.square")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("在浏览器中打开")
+                            }
+                        }
+                    case .manual:
+                        EmptyView()
                     }
                 }
 
@@ -403,21 +481,45 @@ struct IssueTrackerView: View {
 
                 // Timestamps
                 HStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("创建时间")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(Self.timeFmt.string(from: issue.createdAt))
-                            .font(.callout)
-                    }
-                    if let updated = issue.updatedAt {
+                    if isEditingTime {
+                        DatePicker("创建时间", selection: Binding(
+                            get: { issue.createdAt },
+                            set: { store.updateIssueCreatedAt(id: issue.id, date: $0) }
+                        ))
+                        .font(.callout)
+
+                        DatePicker("更新时间", selection: Binding(
+                            get: { issue.updatedAt ?? issue.createdAt },
+                            set: { store.updateIssueUpdatedAt(id: issue.id, date: $0) }
+                        ))
+                        .font(.callout)
+
+                        Button("完成") { isEditingTime = false }
+                            .controlSize(.small)
+                    } else {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("更新时间")
+                            Text("创建时间")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text(Self.timeFmt.string(from: updated))
+                            Text(Self.timeFmt.string(from: issue.createdAt))
                                 .font(.callout)
                         }
+                        if let updated = issue.updatedAt {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("更新时间")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(Self.timeFmt.string(from: updated))
+                                    .font(.callout)
+                            }
+                        }
+                        Button {
+                            isEditingTime = true
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
                     }
                 }
 
@@ -517,6 +619,17 @@ struct IssueTrackerView: View {
                 .font(.caption.bold())
                 .foregroundStyle(color)
         }
+    }
+
+    private func openJiraInBrowser(_ key: String) {
+        let base = store.jiraConfig.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/browse/\(key)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func openURL(_ urlString: String) {
+        guard let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func addNewIssue() {

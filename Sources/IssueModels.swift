@@ -2,14 +2,14 @@ import SwiftUI
 
 enum IssueType: String, Codable, Sendable, CaseIterable {
     case bug = "Bug"
-    case hotfix = "Feat"
-    case issue = "问题"
+    case hotfix = "Feature"
+    case issue = "Support"
 
     var icon: String {
         switch self {
-        case .bug: return "ladybug.fill"
+        case .bug: return "exclamationmark.triangle.fill"
         case .hotfix: return "star.fill"
-        case .issue: return "bolt.fill"
+        case .issue: return "questionmark.circle.fill"
         }
     }
 
@@ -24,7 +24,8 @@ enum IssueType: String, Codable, Sendable, CaseIterable {
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         switch raw {
-        case "Hotfix", "Feat": self = .hotfix
+        case "Hotfix", "Feat", "Feature": self = .hotfix
+        case "问题", "Support": self = .issue
         default: self = IssueType(rawValue: raw) ?? .bug
         }
     }
@@ -56,6 +57,13 @@ struct IssueComment: Identifiable, Codable, Sendable {
     var createdAt: Date = Date()
 }
 
+enum IssueSource: String, Codable, Sendable, CaseIterable {
+    case manual = "手动"
+    case jira = "Jira"
+    case meta = "Meta Direct Support"
+    case feishu = "飞书文档"
+}
+
 enum DiaryBadge: String, Codable, Sendable, CaseIterable {
     case auto = "自动"
     case new = "NEW"
@@ -72,8 +80,10 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     var updatedAt: Date? = nil
     var diaryBadge: DiaryBadge = .auto
     var status: IssueStatus = .pending
+    var source: IssueSource = .manual
     var assignee: String?
     var jiraKey: String?
+    var ticketURL: String?   // 外部工单链接（Meta Direct Support 等）
     var department: String?
     var comments: [IssueComment] = []
     var resolvedAt: Date?
@@ -86,7 +96,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     // MARK: - Custom Codable for migration
 
     private enum CodingKeys: String, CodingKey {
-        case id, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, assignee, jiraKey, department, comments, resolvedAt
+        case id, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt
         case note       // legacy single-note field
         case isFixed    // legacy BugEntry field
         case fixedAt    // legacy BugEntry field
@@ -101,8 +111,10 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try? container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? nil
         diaryBadge = (try? container.decodeIfPresent(DiaryBadge.self, forKey: .diaryBadge)) ?? .auto
+        source = (try? container.decodeIfPresent(IssueSource.self, forKey: .source)) ?? .manual
         assignee = try container.decodeIfPresent(String.self, forKey: .assignee)
         jiraKey = try container.decodeIfPresent(String.self, forKey: .jiraKey)
+        ticketURL = try container.decodeIfPresent(String.self, forKey: .ticketURL)
         department = try container.decodeIfPresent(String.self, forKey: .department)
 
         // Comments: decode new format, or migrate from legacy single note
@@ -167,8 +179,12 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
             try container.encode(diaryBadge, forKey: .diaryBadge)
         }
         try container.encode(status, forKey: .status)
+        if source != .manual {
+            try container.encode(source, forKey: .source)
+        }
         try container.encodeIfPresent(assignee, forKey: .assignee)
         try container.encodeIfPresent(jiraKey, forKey: .jiraKey)
+        try container.encodeIfPresent(ticketURL, forKey: .ticketURL)
         try container.encodeIfPresent(department, forKey: .department)
         try container.encode(comments, forKey: .comments)
         try container.encodeIfPresent(resolvedAt, forKey: .resolvedAt)

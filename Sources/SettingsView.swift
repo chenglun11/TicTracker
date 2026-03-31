@@ -1328,6 +1328,14 @@ private struct DataTab: View {
                         showSnapshot = true
                     }
                 }
+                HStack {
+                    Button("打开数据文件") {
+                        openPreferencesInFinder()
+                    }
+                    Button("打开快照目录") {
+                        openSnapshotDirectory()
+                    }
+                }
             }
 
             Section("导出 / 导入") {
@@ -1414,6 +1422,20 @@ private struct DataTab: View {
            let content = try? String(contentsOf: url, encoding: .utf8) {
             importResult = store.importJSON(from: content) ? "导入成功" : "导入失败：格式不正确"
         }
+    }
+
+    private func openPreferencesInFinder() {
+        let prefsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences")
+        let plistPath = prefsDir.appendingPathComponent("com.maxli.TicTracker.plist").path
+        NSWorkspace.shared.selectFile(plistPath, inFileViewerRootedAtPath: prefsDir.path)
+    }
+
+    private func openSnapshotDirectory() {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let snapshotDir = appSupport.appendingPathComponent("TicTracker/snapshots")
+        try? FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: snapshotDir.path)
     }
 }
 

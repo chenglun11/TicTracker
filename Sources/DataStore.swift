@@ -940,6 +940,28 @@ final class DataStore {
         touchIssue(at: idx)
     }
 
+    func updateIssueCreatedAt(id: UUID, date: Date) {
+        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        trackedIssues[idx].createdAt = date
+    }
+
+    func updateIssueUpdatedAt(id: UUID, date: Date) {
+        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        trackedIssues[idx].updatedAt = date
+    }
+
+    func updateIssueSource(id: UUID, source: IssueSource) {
+        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        trackedIssues[idx].source = source
+        touchIssue(at: idx)
+    }
+
+    func updateIssueTicketURL(id: UUID, ticketURL: String?) {
+        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        trackedIssues[idx].ticketURL = ticketURL
+        touchIssue(at: idx)
+    }
+
     func updateIssueTitle(id: UUID, title: String) {
         guard !title.isEmpty, let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         let old = trackedIssues[idx].title
