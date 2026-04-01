@@ -214,7 +214,17 @@ final class JiraService {
         let commentCutoff = Date().addingTimeInterval(-7 * 24 * 3600)
 
         for issue in store.trackedIssues {
-            guard let jiraKey = issue.jiraKey, !jiraKey.isEmpty else { continue }
+            guard let rawKey = issue.jiraKey, !rawKey.isEmpty else { continue }
+
+            // Extract issue key from URL if needed (e.g. "https://jira.example.com/browse/YC-123" → "YC-123")
+            let jiraKey: String
+            if rawKey.hasPrefix("http"), let url = URL(string: rawKey.trimmingCharacters(in: .whitespacesAndNewlines)),
+               let last = url.pathComponents.last, last.contains("-") {
+                jiraKey = last
+            } else {
+                jiraKey = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            guard !jiraKey.isEmpty else { continue }
 
             // If not in batch results, fetch individually
             var jiraIssue = jiraMap[jiraKey]
