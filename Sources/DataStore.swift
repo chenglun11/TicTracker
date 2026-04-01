@@ -944,8 +944,10 @@ final class DataStore {
     func updateIssueJiraKey(id: UUID, jiraKey: String?) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         trackedIssues[idx].jiraKey = jiraKey
-        // Auto-set source to Jira when jiraKey is provided
-        if let key = jiraKey, !key.isEmpty, trackedIssues[idx].source == .manual {
+        // Auto-set source to Jira when jiraKey is provided (only if ticketURL is empty)
+        if let key = jiraKey, !key.isEmpty,
+           trackedIssues[idx].source == .manual,
+           trackedIssues[idx].ticketURL == nil || trackedIssues[idx].ticketURL?.isEmpty == true {
             trackedIssues[idx].source = .jira
         }
         touchIssue(at: idx)

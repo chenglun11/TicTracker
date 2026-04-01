@@ -120,7 +120,8 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         department = try container.decodeIfPresent(String.self, forKey: .department)
 
         // Auto-fix: if jiraKey is set but source is still manual, correct it
-        if let key = jiraKey, !key.isEmpty, source == .manual {
+        // Only if ticketURL is empty (to avoid affecting Meta/Feishu tickets)
+        if let key = jiraKey, !key.isEmpty, source == .manual, ticketURL == nil || ticketURL?.isEmpty == true {
             source = .jira
         }
 
