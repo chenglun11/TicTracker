@@ -11,6 +11,7 @@ struct IssueTrackerView: View {
     @State private var editingTitle = ""
     @State private var isEditingTitle = false
     @State private var isEditingTime = false
+    @State private var saveState = AutoSaveState()
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -93,6 +94,7 @@ struct IssueTrackerView: View {
                                 _ = await (myResult, reportedResult)
                                 await JiraService.shared.syncTrackedIssues()
                                 jiraSyncing = false
+                                saveState.triggerSave()
                             }
                         } label: {
                             Image(systemName: jiraSyncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath")
@@ -220,6 +222,7 @@ struct IssueTrackerView: View {
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
+        .autoSaveIndicator(saveState)
     }
 
     // MARK: - List Row
@@ -295,6 +298,7 @@ struct IssueTrackerView: View {
                             Button("保存") {
                                 store.updateIssueTitle(id: issue.id, title: editingTitle)
                                 isEditingTitle = false
+                                saveState.triggerSave()
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
@@ -310,7 +314,10 @@ struct IssueTrackerView: View {
                 HStack(spacing: 12) {
                     Picker("类型", selection: Binding(
                         get: { issue.type },
-                        set: { store.updateIssueType(id: issue.id, type: $0) }
+                        set: {
+                            store.updateIssueType(id: issue.id, type: $0)
+                            saveState.triggerSave()
+                        }
                     )) {
                         ForEach(IssueType.allCases, id: \.self) { type in
                             Label(type.rawValue, systemImage: type.icon).tag(type)
@@ -323,6 +330,7 @@ struct IssueTrackerView: View {
                         ForEach(IssueStatus.allCases, id: \.self) { status in
                             Button {
                                 store.updateIssueStatus(id: issue.id, status: status)
+                                saveState.triggerSave()
                             } label: {
                                 Label(status.rawValue, systemImage: status.icon)
                             }
@@ -342,11 +350,13 @@ struct IssueTrackerView: View {
                         Menu {
                             Button("未指派") {
                                 store.updateIssueAssignee(id: issue.id, assignee: nil)
+                                saveState.triggerSave()
                             }
                             Divider()
                             ForEach(store.bugTeamMembers, id: \.self) { member in
                                 Button(member) {
                                     store.updateIssueAssignee(id: issue.id, assignee: member)
+                                    saveState.triggerSave()
                                 }
                             }
                         } label: {
@@ -364,7 +374,10 @@ struct IssueTrackerView: View {
                     if issue.type == .issue {
                         Picker("项目", selection: Binding(
                             get: { issue.department },
-                            set: { store.updateIssueDepartment(id: issue.id, department: $0) }
+                            set: {
+                                store.updateIssueDepartment(id: issue.id, department: $0)
+                                saveState.triggerSave()
+                            }
                         )) {
                             Text("选择项目").tag(String?.none)
                             ForEach(store.departments, id: \.self) { dept in
@@ -384,7 +397,10 @@ struct IssueTrackerView: View {
                             .foregroundStyle(.secondary)
                         Picker("", selection: Binding(
                             get: { issue.source },
-                            set: { store.updateIssueSource(id: issue.id, source: $0) }
+                            set: {
+                                store.updateIssueSource(id: issue.id, source: $0)
+                                saveState.triggerSave()
+                            }
                         )) {
                             ForEach(IssueSource.allCases, id: \.self) { s in
                                 Text(s.rawValue).tag(s)
@@ -399,7 +415,10 @@ struct IssueTrackerView: View {
                         HStack(spacing: 8) {
                             TextField("Jira Key", text: Binding(
                                 get: { issue.jiraKey ?? "" },
-                                set: { store.updateIssueJiraKey(id: issue.id, jiraKey: $0.isEmpty ? nil : $0) }
+                                set: {
+                                    store.updateIssueJiraKey(id: issue.id, jiraKey: $0.isEmpty ? nil : $0)
+                                    saveState.debouncedSave()
+                                }
                             ))
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 120)
@@ -408,11 +427,13 @@ struct IssueTrackerView: View {
                                 Menu {
                                     Button("无关联") {
                                         store.updateIssueJiraKey(id: issue.id, jiraKey: nil)
+                                        saveState.triggerSave()
                                     }
                                     Divider()
                                     ForEach(store.filteredJiraIssues) { jiraIssue in
                                         Button("\(jiraIssue.key) \(jiraIssue.summary)") {
                                             store.updateIssueJiraKey(id: issue.id, jiraKey: jiraIssue.key)
+                                            saveState.triggerSave()
                                         }
                                     }
                                 } label: {
@@ -440,7 +461,10 @@ struct IssueTrackerView: View {
                         HStack(spacing: 8) {
                             TextField("工单链接", text: Binding(
                                 get: { issue.ticketURL ?? "" },
-                                set: { store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0) }
+                                set: {
+                                    store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0)
+                                    saveState.debouncedSave()
+                                }
                             ))
                             .textFieldStyle(.roundedBorder)
 
@@ -458,7 +482,10 @@ struct IssueTrackerView: View {
                         HStack(spacing: 8) {
                             TextField("飞书文档链接", text: Binding(
                                 get: { issue.ticketURL ?? "" },
-                                set: { store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0) }
+                                set: {
+                                    store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0)
+                                    saveState.debouncedSave()
+                                }
                             ))
                             .textFieldStyle(.roundedBorder)
 
@@ -484,13 +511,19 @@ struct IssueTrackerView: View {
                     if isEditingTime {
                         DatePicker("创建时间", selection: Binding(
                             get: { issue.createdAt },
-                            set: { store.updateIssueCreatedAt(id: issue.id, date: $0) }
+                            set: {
+                                store.updateIssueCreatedAt(id: issue.id, date: $0)
+                                saveState.debouncedSave()
+                            }
                         ))
                         .font(.callout)
 
                         DatePicker("更新时间", selection: Binding(
                             get: { issue.updatedAt ?? issue.createdAt },
-                            set: { store.updateIssueUpdatedAt(id: issue.id, date: $0) }
+                            set: {
+                                store.updateIssueUpdatedAt(id: issue.id, date: $0)
+                                saveState.debouncedSave()
+                            }
                         ))
                         .font(.callout)
 
@@ -542,14 +575,7 @@ struct IssueTrackerView: View {
                                         Text(Self.timeFmt.string(from: comment.createdAt))
                                             .font(.caption)
                                             .foregroundStyle(.tertiary)
-                                        if comment.jiraCommentId != nil {
-                                            Text("Jira")
-                                                .font(.caption2)
-                                                .padding(.horizontal, 4)
-                                                .padding(.vertical, 1)
-                                                .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
-                                                .foregroundStyle(.blue)
-                                        }
+                                        commentSourceBadge(comment)
                                     }
                                     Text(comment.text)
                                         .font(.callout)
@@ -558,6 +584,7 @@ struct IssueTrackerView: View {
                                 if comment.jiraCommentId == nil {
                                     Button {
                                         store.deleteIssueComment(issueID: issue.id, commentID: comment.id)
+                                        saveState.triggerSave()
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
                                             .foregroundStyle(.tertiary)
@@ -580,6 +607,7 @@ struct IssueTrackerView: View {
                             if !text.isEmpty {
                                 store.addIssueComment(id: issue.id, text: text)
                                 newCommentText = ""
+                                saveState.triggerSave()
                             }
                         }
                     Button("提交") {
@@ -587,6 +615,7 @@ struct IssueTrackerView: View {
                         if !text.isEmpty {
                             store.addIssueComment(id: issue.id, text: text)
                             newCommentText = ""
+                            saveState.triggerSave()
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -600,6 +629,7 @@ struct IssueTrackerView: View {
                 Button {
                     store.deleteIssue(id: issue.id)
                     selectedIssueID = filteredIssues.first?.id
+                    saveState.triggerSave()
                 } label: {
                     HStack {
                         Image(systemName: "trash")
@@ -620,6 +650,35 @@ struct IssueTrackerView: View {
         fmt.dateFormat = "M/d HH:mm"
         return fmt
     }()
+
+    @ViewBuilder
+    private func commentSourceBadge(_ comment: IssueComment) -> some View {
+        if comment.jiraCommentId != nil {
+            // Jira 同步的原生评论
+            Text("Jira")
+                .font(.caption2)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+                .foregroundStyle(.blue)
+        } else if comment.text.hasPrefix("[Jira]") {
+            // Jira 状态变更等系统自动生成的评论
+            Text("Jira 同步")
+                .font(.caption2)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 3))
+                .foregroundStyle(.blue.opacity(0.7))
+        } else {
+            // 用户手动添加的本地评论
+            Text("本地")
+                .font(.caption2)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
+                .foregroundStyle(.secondary)
+        }
+    }
 
     @ViewBuilder
     private func statBadge(title: String, value: Int, color: Color) -> some View {
@@ -649,6 +708,7 @@ struct IssueTrackerView: View {
         if let newIssue = store.trackedIssues.last {
             selectedIssueID = newIssue.id
         }
+        saveState.triggerSave()
     }
 
     private func statusColor(_ status: IssueStatus) -> Color {

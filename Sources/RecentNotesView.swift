@@ -591,7 +591,8 @@ struct RecentNotesView: View {
     private func issueTag(_ issue: TrackedIssue, dayKey: String) -> some View {
         let isUnresolved = !issue.status.isResolved
         let autoNew = issue.dateKey == dayKey
-        let autoUpd = issue.updatedAt != nil && !autoNew
+        // 非当天新建，但当天有评论活动（被 issuesActiveForKey 拉进来的）
+        let autoUpd = !autoNew && issue.comments.contains { DataStore.dateKey(from: $0.createdAt) == dayKey }
         // Resolve effective badge
         let showNew: Bool
         let showUpd: Bool
