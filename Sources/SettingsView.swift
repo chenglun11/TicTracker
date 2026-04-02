@@ -70,6 +70,8 @@ struct SettingsView: View {
                 .tabItem { Label("通用", systemImage: "gearshape") }
             RSSTab(store: store)
                 .tabItem { Label("RSS", systemImage: "dot.radiowaves.up.forward") }
+            IssueTrackerTab(store: store)
+                .tabItem { Label("问题追踪", systemImage: "ladybug.fill") }
             JiraTab(store: store)
                 .tabItem { Label("Jira", systemImage: "server.rack") }
             AITab(store: store)
@@ -440,6 +442,124 @@ private struct GeneralTab: View {
         UserDefaults.standard.set(reminderHour, forKey: "reminderHour")
         UserDefaults.standard.set(reminderMinute, forKey: "reminderMinute")
         NotificationManager.shared.scheduleReminder(hour: reminderHour, minute: reminderMinute)
+    }
+}
+
+// MARK: - Issue Tracker Tab
+
+private struct IssueTrackerTab: View {
+    @Bindable var store: DataStore
+    @State private var newMember = ""
+    @State private var saveState = AutoSaveState()
+
+    var body: some View {
+        Form {
+            Section("问题追踪") {
+                Toggle(isOn: Bindable(store).issueTrackerEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用问题追踪")
+                        Text("统一管理 Bug、Feat 和项目问题")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: store.issueTrackerEnabled) { _, _ in saveState.triggerSave() }
+
+                if store.issueTrackerEnabled {
+                    Toggle(isOn: Bindable(store).diaryShowAllPending) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("日记展示全部待处理")
+                            Text("在日记详情中显示所有未解决问题，当天新增高亮标记")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .onChange(of: store.diaryShowAllPending) { _, _ in saveState.triggerSave() }
+                }
+
+                if store.jiraConfig.enabled {
+                    Picker("Jira 工单来源", selection: Bindable(store).jiraSourceMode) {
+                        Text("指派给我").tag(0)
+                        Text("我提交的").tag(1)
+                        Text("全部").tag(2)
+                    }
+                    .onChange(of: store.jiraSourceMode) { _, _ in saveState.triggerSave() }
+                }
+            }
+
+            if store.issueTrackerEnabled {
+                Section("团队成员") {
+                    ForEach(store.bugTeamMembers, id: \.self) { member in
+                        HStack {
+                            Image(systemName: "person.fill")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 20)
+                            Text(member)
+                            Spacer()
+                            Button {
+                                store.bugTeamMembers.removeAll { $0 == member }
+                                saveState.triggerSave()
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    HStack {
+                        TextField("添加成员…", text: $newMember)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { addMember() }
+                        Button("添加") { addMember() }
+                            .disabled(newMember.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+
+                Section("统计") {
+                    let total = store.trackedIssues.count
+                    let unresolved = store.trackedIssues.filter { !$0.status.isResolved }.count
+                    HStack {
+                        Text("总数")
+                        Spacer()
+                        Text("\(total)")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("未解决")
+                        Spacer()
+                        Text("\(unresolved)")
+                            .monospacedDigit()
+                            .foregroundStyle(unresolved > 0 ? .red : .green)
+                    }
+                    ForEach(IssueType.allCases, id: \.self) { type in
+                        let count = store.trackedIssues.filter { $0.type == type }.count
+                        if count > 0 {
+                            HStack {
+                                Image(systemName: type.icon)
+                                    .foregroundStyle(type.color)
+                                    .frame(width: 20)
+                                Text(type.rawValue)
+                                Spacer()
+                                Text("\(count)")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .autoSaveIndicator(saveState)
+    }
+
+    private func addMember() {
+        let name = newMember.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !store.bugTeamMembers.contains(name) else { return }
+        store.bugTeamMembers.append(name)
+        newMember = ""
+        saveState.triggerSave()
     }
 }
 
@@ -1189,12 +1309,33 @@ private struct DataTab: View {
     @State private var showClearTodayAlert = false
     @State private var showClearAllAlert = false
     @State private var importResult: String?
+    @State private var showOperationLog = false
+    @State private var showSnapshot = false
 
     var body: some View {
         Form {
             Section("统计") {
                 LabeledContent("已记录天数", value: "\(store.totalDaysTracked) 天")
                 LabeledContent("累计点击次数", value: "\(store.totalSupportCount) 次")
+            }
+
+            Section("操作记录") {
+                HStack {
+                    Button("操作日志") {
+                        showOperationLog = true
+                    }
+                    Button("数据快照") {
+                        showSnapshot = true
+                    }
+                }
+                HStack {
+                    Button("打开数据文件") {
+                        openPreferencesInFinder()
+                    }
+                    Button("打开快照目录") {
+                        openSnapshotDirectory()
+                    }
+                }
             }
 
             Section("导出 / 导入") {
@@ -1241,6 +1382,16 @@ private struct DataTab: View {
         } message: {
             Text("所有支持记录和日报将被永久删除，此操作不可撤销")
         }
+        .sheet(isPresented: $showOperationLog) {
+            OperationLogView()
+                .environment(store)
+                .frame(minWidth: 600, minHeight: 400)
+        }
+        .sheet(isPresented: $showSnapshot) {
+            SnapshotView()
+                .environment(store)
+                .frame(minWidth: 600, minHeight: 400)
+        }
     }
 
     private func exportData() {
@@ -1271,6 +1422,20 @@ private struct DataTab: View {
            let content = try? String(contentsOf: url, encoding: .utf8) {
             importResult = store.importJSON(from: content) ? "导入成功" : "导入失败：格式不正确"
         }
+    }
+
+    private func openPreferencesInFinder() {
+        let prefsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences")
+        let plistPath = prefsDir.appendingPathComponent("com.maxli.TicTracker.plist").path
+        NSWorkspace.shared.selectFile(plistPath, inFileViewerRootedAtPath: prefsDir.path)
+    }
+
+    private func openSnapshotDirectory() {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let snapshotDir = appSupport.appendingPathComponent("TicTracker/snapshots")
+        try? FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: snapshotDir.path)
     }
 }
 

@@ -3,6 +3,12 @@ import Foundation
 
 @MainActor
 struct WeeklyReport {
+    private static let commentFmt: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d HH:mm"
+        return fmt
+    }()
+
     static func generate(from store: DataStore) -> String {
         let calendar = Calendar.current
         let today = Date()
@@ -76,6 +82,42 @@ struct WeeklyReport {
             }
             let jiraGrand = jiraTotals.values.reduce(0, +)
             lines.append("Jira 合计: \(jiraGrand) 次")
+        }
+
+        // Tracked issues for the week (unified)
+        let weekTracked = store.trackedIssues.filter { (entry: TrackedIssue) -> Bool in
+            guard let entryDate = fmt.date(from: entry.dateKey) else { return false }
+            return entryDate >= monday && entryDate <= today
+        }
+        if !weekTracked.isEmpty {
+            let sorted = weekTracked.sorted { $0.dateKey < $1.dateKey }
+            lines.append("")
+            lines.append("--- 问题追踪 ---")
+            for issue in sorted {
+                var detail = [issue.type.rawValue]
+                if let dept = issue.department, !dept.isEmpty { detail.append(dept) }
+                if let jira = issue.jiraKey { detail.append(jira) }
+                if let assignee = issue.assignee { detail.append(assignee) }
+                let suffix = " (\(detail.joined(separator: " · ")))"
+                lines.append("[\(issue.status.rawValue)] \(issue.title)\(suffix)")
+                for comment in issue.comments {
+                    let time = Self.commentFmt.string(from: comment.createdAt)
+                    lines.append("  [\(time)] \(comment.text)")
+                }
+            }
+            // Summary by type
+            let byType = Dictionary(grouping: weekTracked, by: \.type)
+            for type in IssueType.allCases {
+                guard let items = byType[type] else { continue }
+                let fixed = items.filter { $0.status == .fixed }.count
+                let ignored = items.filter { $0.status == .ignored }.count
+                let unresolved = items.count - fixed - ignored
+                var summary = "\(type.rawValue): \(items.count) 个（已修复 \(fixed)"
+                if ignored > 0 { summary += "，已忽略 \(ignored)" }
+                if unresolved > 0 { summary += "，未解决 \(unresolved)" }
+                summary += "）"
+                lines.append(summary)
+            }
         }
 
         // Daily breakdown

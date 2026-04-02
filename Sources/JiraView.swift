@@ -4,15 +4,16 @@ struct JiraView: View {
     @Bindable var store: DataStore
     @State private var searchText = ""
     @State private var refreshing = false
-    @State private var transitionsFor: String?
     @State private var transitions: [JiraTransition] = []
     @State private var transitioning = false
     @State private var errorMessage: String?
+    @State private var selectedIssueKey: String?
 
     private var filteredIssues: [JiraIssue] {
-        if searchText.isEmpty { return store.jiraIssues }
+        let source = store.filteredJiraIssues
+        if searchText.isEmpty { return source }
         let q = searchText.lowercased()
-        return store.jiraIssues.filter {
+        return source.filter {
             $0.key.lowercased().contains(q) || $0.summary.lowercased().contains(q)
         }
     }
@@ -24,93 +25,88 @@ struct JiraView: View {
         return dayCounts.values.reduce(0, +)
     }
 
+    private var selectedJiraIssue: JiraIssue? {
+        guard let key = selectedIssueKey else { return nil }
+        return filteredIssues.first { $0.key == key }
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Toolbar
-            HStack(spacing: 12) {
-                Button {
-                    refresh()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: refreshing ? "arrow.clockwise" : "arrow.clockwise")
-                        Text("刷新")
-                            .font(.caption)
+        HSplitView {
+            // Left sidebar
+            VStack(spacing: 0) {
+                // Toolbar
+                HStack(spacing: 12) {
+                    Button {
+                        refresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
                     }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(refreshing)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(refreshing)
 
-                TextField("搜索工单…", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
+                    Spacer()
 
-                Spacer()
-
-                // Stats
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(filteredIssues.count) 个工单")
-                        .font(.caption.bold())
-                    Text("今日 \(todayJiraTotal) 次")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-                .monospacedDigit()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(nsColor: .controlBackgroundColor))
-
-            Divider()
-
-            // Issue list
-            if store.jiraIssues.isEmpty && !refreshing {
-                ContentUnavailableView {
-                    Label("暂无工单", systemImage: "tray")
-                } description: {
-                    Text("请先在设置中配置 Jira 连接")
-                }
-                .frame(maxHeight: .infinity)
-            } else if refreshing && store.jiraIssues.isEmpty {
-                ProgressView("加载中…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(filteredIssues) { issue in
-                    issueRow(issue)
-                }
-                .listStyle(.inset)
-            }
-
-            Divider()
-
-            // Bottom bar
-            HStack {
-                if let errorMessage {
-                    HStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                        Text(errorMessage)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(filteredIssues.count)")
+                            .font(.caption.bold())
+                        Text("今日 \(todayJiraTotal)")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
+                    .monospacedDigit()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+
+                Divider()
+
+                if store.jiraIssues.isEmpty && !refreshing {
+                    ContentUnavailableView {
+                        Label("暂无工单", systemImage: "tray")
+                    } description: {
+                        Text("请先在设置中配置 Jira 连接")
+                    }
+                    .frame(maxHeight: .infinity)
+                } else if refreshing && store.jiraIssues.isEmpty {
+                    ProgressView("加载中…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    Text("💡 点击工单编号在浏览器中打开")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer()
-                if refreshing {
-                    ProgressView()
-                        .controlSize(.small)
+                    List(selection: $selectedIssueKey) {
+                        ForEach(filteredIssues) { issue in
+                            sidebarRow(issue)
+                                .tag(issue.key)
+                        }
+                    }
+                    .listStyle(.sidebar)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .frame(minWidth: 200, idealWidth: 240, maxWidth: 300)
+            .searchable(text: $searchText, prompt: "搜索工单")
+
+            // Right detail
+            if let issue = selectedJiraIssue {
+                jiraDetail(issue)
+            } else {
+                ContentUnavailableView {
+                    Label("选择工单查看详情", systemImage: "ticket")
+                } description: {
+                    Text("在左侧列表中选择工单")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
-        .frame(minWidth: 600, minHeight: 400)
         .onAppear {
             if store.jiraIssues.isEmpty && store.jiraConfig.enabled {
                 refresh()
+            }
+            if selectedIssueKey == nil, let first = filteredIssues.first {
+                selectedIssueKey = first.key
+            }
+        }
+        .onChange(of: searchText) {
+            if let key = selectedIssueKey, !filteredIssues.contains(where: { $0.key == key }) {
+                selectedIssueKey = filteredIssues.first?.key
             }
         }
         .onDisappear {
@@ -118,70 +114,144 @@ struct JiraView: View {
         }
     }
 
-    @ViewBuilder
-    private func issueRow(_ issue: JiraIssue) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Header row
-            HStack(spacing: 6) {
-                // Status indicator
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(statusColor(issue.statusCategoryKey))
-                        .frame(width: 8, height: 8)
-                    Text(issue.status)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(statusColor(issue.statusCategoryKey).opacity(0.1), in: Capsule())
+    // MARK: - Sidebar Row
 
-                // Key (clickable)
-                Text(issue.key)
-                    .font(.caption.monospaced().bold())
-                    .foregroundStyle(.blue)
-                    .onTapGesture { openInBrowser(issue.key) }
-                    .onHover { inside in
-                        if inside {
-                            NSCursor.pointingHand.push()
-                        } else {
-                            NSCursor.pop()
+    @ViewBuilder
+    private func sidebarRow(_ issue: JiraIssue) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(statusColor(issue.statusCategoryKey))
+                .frame(width: 6, height: 6)
+
+            Text(issue.key)
+                .font(.caption.monospaced().bold())
+                .foregroundStyle(.secondary)
+
+            Text(issue.summary)
+                .font(.callout)
+                .lineLimit(1)
+
+            Spacer()
+
+            if let priority = issue.priority {
+                Text(priority)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            let todayCount = store.jiraTodayCount(issueKey: issue.key)
+            if todayCount > 0 {
+                Text("\(todayCount)")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.orange, in: Capsule())
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Jira Detail
+
+    @ViewBuilder
+    private func jiraDetail(_ issue: JiraIssue) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Key header (clickable)
+                HStack(spacing: 8) {
+                    Text(issue.key)
+                        .font(.title2.bold().monospaced())
+                        .foregroundStyle(.blue)
+                        .onTapGesture { openInBrowser(issue.key) }
+                        .onHover { inside in
+                            if inside {
+                                NSCursor.pointingHand.push()
+                            } else {
+                                NSCursor.pop()
+                            }
                         }
+
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.caption)
+                        .foregroundStyle(.blue.opacity(0.6))
+
+                    Spacer()
+                }
+
+                // Summary
+                Text(issue.summary)
+                    .font(.body)
+
+                // Status / Priority / Type
+                HStack(spacing: 8) {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(statusColor(issue.statusCategoryKey))
+                            .frame(width: 8, height: 8)
+                        Text(issue.status)
+                            .font(.caption)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(statusColor(issue.statusCategoryKey).opacity(0.1), in: Capsule())
+
+                    if let priority = issue.priority {
+                        Text(priority)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.quaternary, in: Capsule())
                     }
 
-                if let type = issue.issueType {
-                    Text(type)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                    if let type = issue.issueType {
+                        Text(type)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.quaternary, in: Capsule())
+                    }
                 }
 
-                if let priority = issue.priority {
-                    Text(priority)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                Divider()
 
-                Spacer()
-
-                // Counts
+                // Count operations
                 let todayCount = store.jiraTodayCount(issueKey: issue.key)
                 let totalCount = store.jiraTotalCount(issueKey: issue.key)
 
-                HStack(spacing: 8) {
-                    VStack(spacing: 0) {
+                HStack(spacing: 16) {
+                    Button {
+                        store.jiraDecrementForKey(todayKey, issueKey: issue.key)
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.title2)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(todayCount == 0)
+
+                    VStack(spacing: 4) {
                         Text("\(todayCount)")
-                            .font(.caption.bold())
-                        Text("今日")
-                            .font(.caption2)
+                            .font(.title.bold())
+                        Text("今日计数")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     .monospacedDigit()
+                    .frame(minWidth: 80)
 
-                    VStack(spacing: 0) {
+                    Button {
+                        store.jiraIncrementForKey(todayKey, issueKey: issue.key)
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                    }
+                    .buttonStyle(.borderless)
+
+                    Spacer()
+
+                    VStack(spacing: 4) {
                         Text("\(totalCount)")
-                            .font(.caption.bold())
+                            .font(.title3.bold())
                             .foregroundStyle(.secondary)
                         Text("总计")
                             .font(.caption2)
@@ -189,84 +259,62 @@ struct JiraView: View {
                     }
                     .monospacedDigit()
                 }
-            }
 
-            // Summary
-            Text(issue.summary)
-                .font(.callout)
-                .lineLimit(2)
+                Divider()
 
-            // Actions
-            HStack(spacing: 8) {
-                Button {
-                    store.jiraDecrementForKey(todayKey, issueKey: issue.key)
-                } label: {
-                    Label("", systemImage: "minus.circle")
-                }
-                .buttonStyle(.borderless)
-                .disabled(store.jiraTodayCount(issueKey: issue.key) == 0)
-                .help("减少计数")
+                // Transitions
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("流转操作")
+                            .font(.headline)
+                        Spacer()
+                        Button {
+                            loadTransitions(issue.key)
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                    }
 
-                Button {
-                    store.jiraIncrementForKey(todayKey, issueKey: issue.key)
-                } label: {
-                    Label("", systemImage: "plus.circle.fill")
-                }
-                .buttonStyle(.borderless)
-                .help("增加计数")
-
-                Spacer()
-
-                Button {
-                    loadTransitions(issue.key)
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.right.circle")
-                        Text("流转")
+                    if transitions.isEmpty {
+                        Text("点击刷新按钮加载可用流转")
                             .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        FlowLayout(spacing: 8) {
+                            ForEach(transitions) { t in
+                                Button {
+                                    performTransition(issueKey: issue.key, transitionID: t.id)
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "arrow.right.circle")
+                                        Text(t.name)
+                                    }
+                                    .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(transitioning)
+                            }
+                        }
                     }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .popover(isPresented: Binding(
-                    get: { transitionsFor == issue.key },
-                    set: { if !$0 { transitionsFor = nil } }
-                )) {
-                    transitionPopover(issueKey: issue.key)
-                }
-            }
-        }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
-    }
 
-    @ViewBuilder
-    private func transitionPopover(issueKey: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("流转到")
-                .font(.caption.bold())
-                .padding(.bottom, 2)
-            if transitions.isEmpty {
-                Text("无可用流转")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(transitions) { t in
-                    Button {
-                        performTransition(issueKey: issueKey, transitionID: t.id)
-                    } label: {
-                        Text(t.name)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                // Error message
+                if let errorMessage {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text(errorMessage)
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(transitioning)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(8)
+                    .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                 }
             }
+            .padding(20)
         }
-        .padding(8)
-        .frame(minWidth: 120)
     }
 
     // MARK: - Actions
@@ -275,9 +323,14 @@ struct JiraView: View {
         refreshing = true
         errorMessage = nil
         Task {
-            if let err = await JiraService.shared.fetchMyIssues() {
+            async let assigned = JiraService.shared.fetchMyIssues()
+            async let reported = JiraService.shared.fetchReportedIssues()
+            let err1 = await assigned
+            let err2 = await reported
+            if let err = err1 ?? err2 {
                 errorMessage = "刷新失败：\(err)"
             }
+            await JiraService.shared.syncTrackedIssues()
             refreshing = false
         }
     }
@@ -290,7 +343,6 @@ struct JiraView: View {
 
     private func loadTransitions(_ issueKey: String) {
         transitions = []
-        transitionsFor = issueKey
         Task {
             transitions = await JiraService.shared.fetchTransitions(issueKey: issueKey)
         }
@@ -305,11 +357,11 @@ struct JiraView: View {
                 _ = await JiraService.shared.fetchMyIssues()
                 store.jiraTransitioned(todayKey, issueKey: issueKey)
                 DevLog.shared.info("Jira", "\(issueKey) 流转 +1")
+                transitions = []
             } else {
                 errorMessage = "流转失败，请重试"
             }
             transitioning = false
-            transitionsFor = nil
         }
     }
 
@@ -320,5 +372,52 @@ struct JiraView: View {
         case "done": return .green
         default: return .gray
         }
+    }
+}
+
+// Simple flow layout for tags
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = computeRows(proposal: proposal, subviews: subviews)
+        var height: CGFloat = 0
+        for (i, row) in rows.enumerated() {
+            let rowHeight = row.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+            height += rowHeight + (i > 0 ? spacing : 0)
+        }
+        return CGSize(width: proposal.width ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let rows = computeRows(proposal: proposal, subviews: subviews)
+        var y = bounds.minY
+        for (i, row) in rows.enumerated() {
+            if i > 0 { y += spacing }
+            var x = bounds.minX
+            let rowHeight = row.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+            for view in row {
+                let size = view.sizeThatFits(.unspecified)
+                view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += rowHeight
+        }
+    }
+
+    private func computeRows(proposal: ProposedViewSize, subviews: Subviews) -> [[LayoutSubviews.Element]] {
+        let maxWidth = proposal.width ?? .infinity
+        var rows: [[LayoutSubviews.Element]] = [[]]
+        var x: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth && !rows[rows.count - 1].isEmpty {
+                rows.append([])
+                x = 0
+            }
+            rows[rows.count - 1].append(view)
+            x += size.width + spacing
+        }
+        return rows
     }
 }

@@ -176,5 +176,10 @@ struct TicTrackerApp: App {
             TodoView(store: store)
         }
         .defaultSize(width: 650, height: 550)
+
+        Window("问题追踪", id: "issue-tracker") {
+            IssueTrackerView(store: store)
+        }
+        .defaultSize(width: 650, height: 500)
     }
 }

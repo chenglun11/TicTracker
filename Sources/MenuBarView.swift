@@ -6,6 +6,11 @@ struct MenuBarView: View {
     @State private var noteText = ""
     @State private var selectedDate = Date()
     @State private var trendExpanded = true
+    @State private var issuesExpanded = false
+    @State private var addIssueFormExpanded = false
+    @State private var newIssueTitle = ""
+    @State private var newIssueType: IssueType = .bug
+    @State private var newIssueDept: String?
     @State private var jiraRefreshing = false
     @State private var animatingDept: String?
     @State private var saveState = AutoSaveState()
@@ -102,6 +107,12 @@ struct MenuBarView: View {
             if store.jiraConfig.showInMenuBar {
                 Divider()
                 jiraSection
+            }
+
+            // Unified issue tracker section
+            if store.issueTrackerEnabled {
+                Divider()
+                issueTrackerSection
             }
 
             // Mini weekly trend chart
@@ -304,6 +315,20 @@ struct MenuBarView: View {
                     Spacer()
                 }
 
+                if store.issueTrackerEnabled {
+                    Button {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "issue-tracker")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "ladybug.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("问题追踪")
+
+                    Spacer()
+                }
+
                 Button {
                     NSApp.setActivationPolicy(.regular)
                     openWindow(id: "dev-log")
@@ -338,7 +363,7 @@ struct MenuBarView: View {
             }
         }
         .padding()
-        .frame(width: 300)
+        .frame(width: 380)
         .autoSaveIndicator(saveState)
         .onAppear {
             selectedDate = Date()
@@ -379,7 +404,8 @@ struct MenuBarView: View {
                 Button {
                     jiraRefreshing = true
                     Task {
-                        _ = await JiraService.shared.fetchMyIssues()
+                        _ = await JiraService.shared.fetchByMode()
+                        await JiraService.shared.syncTrackedIssues()
                         jiraRefreshing = false
                     }
                 } label: {
@@ -401,6 +427,199 @@ struct MenuBarView: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.blue)
         }
+    }
+
+    // MARK: - Unified Issue Tracker Section
+
+    @ViewBuilder
+    private var issueTrackerSection: some View {
+        let issues = store.issuesVisibleForKey(selectedKey)
+        let unresolved = issues.filter { !$0.status.isResolved }
+        let grouped = Dictionary(grouping: unresolved, by: \.type)
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button {
+                    withAnimation { issuesExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: issuesExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .frame(width: 10)
+                        Image(systemName: "ladybug")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text("问题追踪")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        if !unresolved.isEmpty {
+                            Text("\(unresolved.count)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "issue-tracker")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Text("打开")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.blue)
+            }
+
+            if issuesExpanded {
+                // Add new issue button
+                Button {
+                    withAnimation { addIssueFormExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus.circle")
+                            .font(.caption)
+                        Text("新建")
+                            .font(.caption)
+                    }
+                }
+                .buttonStyle(.borderless)
+
+                if addIssueFormExpanded {
+                    HStack(spacing: 6) {
+                        Picker("", selection: $newIssueType) {
+                            ForEach(IssueType.allCases, id: \.self) { type in
+                                Label(type.rawValue, systemImage: type.icon).tag(type)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 85)
+
+                        if newIssueType == .issue {
+                            Picker("", selection: $newIssueDept) {
+                                Text("项目").tag(String?.none)
+                                ForEach(store.departments, id: \.self) { dept in
+                                    Text(dept).tag(String?.some(dept))
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 70)
+                        }
+
+                        TextField("描述…", text: $newIssueTitle)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.caption)
+                            .onSubmit { addIssue() }
+                        Button {
+                            addIssue()
+                        } label: {
+                            Image(systemName: "checkmark.circle.fill")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(newIssueTitle.isEmpty)
+                    }
+                }
+
+                // Issue list by type
+                ForEach(IssueType.allCases, id: \.self) { type in
+                    if let typeIssues = grouped[type], !typeIssues.isEmpty {
+                        issueTypeGroup(type: type, issues: typeIssues)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Issue Type Group
+
+    @ViewBuilder
+    private func issueTypeGroup(type: IssueType, issues: [TrackedIssue]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Image(systemName: type.icon)
+                    .font(.caption2)
+                    .foregroundStyle(type.color.opacity(0.7))
+                Text(type.rawValue)
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+                Text("\(issues.count)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.top, 4)
+
+            ForEach(issues) { issue in
+                compactIssueRow(issue)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func compactIssueRow(_ issue: TrackedIssue) -> some View {
+        HStack(spacing: 5) {
+            // Status toggle
+            Menu {
+                ForEach(IssueStatus.allCases, id: \.self) { status in
+                    Button {
+                        store.updateIssueStatus(id: issue.id, status: status)
+                    } label: {
+                        Label(status.rawValue, systemImage: status.icon)
+                    }
+                    .disabled(issue.status == status)
+                }
+            } label: {
+                Image(systemName: issue.status.icon)
+                    .font(.caption)
+                    .foregroundStyle(issue.status.isResolved ? .green.opacity(0.7) : .orange.opacity(0.7))
+            }
+            .menuIndicator(.hidden)
+            .fixedSize()
+
+            // Department badge
+            if let dept = issue.department, !dept.isEmpty {
+                Text(dept)
+                    .font(.caption2)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(Color.purple.opacity(0.1))
+                    .clipShape(Capsule())
+            }
+
+            // Title
+            Text(issue.title)
+                .font(.caption)
+                .lineLimit(1)
+
+            Spacer()
+
+            // Jira badge
+            if let jiraKey = issue.jiraKey {
+                Text(jiraKey)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Assignee badge
+            if let assignee = issue.assignee {
+                Text(assignee)
+                    .font(.caption2)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(Color.blue.opacity(0.1))
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func addIssue() {
+        guard !newIssueTitle.isEmpty else { return }
+        store.addIssue(newIssueTitle, type: newIssueType, forKey: selectedKey,
+                       department: newIssueDept)
+        newIssueTitle = ""
+        newIssueDept = nil
     }
 
     private func shiftDate(_ days: Int) {

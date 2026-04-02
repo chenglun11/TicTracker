@@ -84,6 +84,10 @@ struct StatisticsView: View {
                     statCard(title: "天数", value: "\(dayCount)", subtitle: "天", color: .green)
                     statCard(title: "日均", value: dayCount > 0 ? String(format: "%.1f", Double(grandTotal) / Double(dayCount)) : "0", subtitle: "次/天", color: .orange)
                     statCard(title: "项目", value: "\(items.count)", subtitle: "个", color: .purple)
+                    if store.issueTrackerEnabled {
+                        let issueCount = store.trackedIssues.filter { !$0.status.isResolved }.count
+                        statCard(title: "问题", value: "\(issueCount)", subtitle: "未解决", color: issueCount > 0 ? .orange : .green)
+                    }
                 }
                 .padding(.horizontal)
 
