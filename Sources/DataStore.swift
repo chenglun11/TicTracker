@@ -58,6 +58,12 @@ final class DataStore {
         didSet { saveJiraTransitionLog() }
     }
 
+    // MARK: - Feishu Bot
+
+    var feishuBotConfig: FeishuBotConfig {
+        didSet { saveFeishuBotConfig() }
+    }
+
     // MARK: - RSS
 
     var rssFeeds: [RSSFeed] {
@@ -80,6 +86,9 @@ final class DataStore {
 
     var trackedIssues: [TrackedIssue] {
         didSet { saveTrackedIssues() }
+    }
+    var nextIssueNumber: Int {
+        didSet { UserDefaults.standard.set(nextIssueNumber, forKey: "nextIssueNumber") }
     }
     var bugTeamMembers: [String] {
         didSet { saveBugTeamMembers() }
@@ -238,6 +247,14 @@ final class DataStore {
             jiraTransitionLog = [:]
         }
 
+        // Feishu Bot
+        if let data = UserDefaults.standard.data(forKey: "feishuBotConfig"),
+           let decoded = try? JSONDecoder().decode(FeishuBotConfig.self, from: data) {
+            feishuBotConfig = decoded
+        } else {
+            feishuBotConfig = FeishuBotConfig()
+        }
+
         // RSS
         if let data = UserDefaults.standard.data(forKey: "rssFeeds"),
            let decoded = try? JSONDecoder().decode([RSSFeed].self, from: data) {
@@ -284,6 +301,10 @@ final class DataStore {
                 UserDefaults.standard.set(data, forKey: "trackedIssues")
             }
         }
+
+        // Issue number counter
+        nextIssueNumber = UserDefaults.standard.object(forKey: "nextIssueNumber") as? Int ?? 1
+
         if let data = UserDefaults.standard.array(forKey: "bugTeamMembers") as? [String] {
             bugTeamMembers = data
         } else {
@@ -358,6 +379,20 @@ final class DataStore {
                 migrated[dept] = HotkeyBinding(keyCode: keyCodes[i], carbonModifiers: legacyFlags)
             }
             hotkeyBindings = migrated
+        }
+
+        // Backfill issueNumber for existing issues that don't have one
+        var needsBackfill = false
+        for i in trackedIssues.indices where trackedIssues[i].issueNumber == 0 {
+            trackedIssues[i].issueNumber = nextIssueNumber
+            nextIssueNumber += 1
+            needsBackfill = true
+        }
+        if needsBackfill {
+            if let data = try? JSONEncoder().encode(trackedIssues) {
+                UserDefaults.standard.set(data, forKey: "trackedIssues")
+            }
+            UserDefaults.standard.set(nextIssueNumber, forKey: "nextIssueNumber")
         }
     }
 
@@ -727,6 +762,12 @@ final class DataStore {
         }
     }
 
+    private func saveFeishuBotConfig() {
+        if let data = try? JSONEncoder().encode(feishuBotConfig) {
+            UserDefaults.standard.set(data, forKey: "feishuBotConfig")
+        }
+    }
+
     private func saveJiraIssues() {
         if let data = try? JSONEncoder().encode(jiraIssues) {
             UserDefaults.standard.set(data, forKey: "jiraIssues")
@@ -891,113 +932,106 @@ final class DataStore {
                   assignee: String? = nil, jiraKey: String? = nil,
                   department: String? = nil) {
         var entry = TrackedIssue(title: title, type: type)
+        entry.issueNumber = nextIssueNumber
+        nextIssueNumber += 1
         entry.dateKey = key
         entry.assignee = assignee
         entry.jiraKey = jiraKey
         entry.department = department
         trackedIssues.append(entry)
-        logOperation(module: "问题", action: "新增", detail: "[\(type.rawValue)] \(title)")
+        logOperation(module: "问题", action: "新增", detail: "#\(entry.issueNumber) [\(type.rawValue)] \(title)")
     }
 
-    private func touchIssue(at idx: Int) {
-        trackedIssues[idx].updatedAt = Date()
-        if trackedIssues[idx].diaryBadge != .auto {
-            trackedIssues[idx].diaryBadge = .auto
-        }
+    /// Apply mutations to a tracked issue via copy-modify-writeback to reliably trigger didSet.
+    private func mutateIssue(id: UUID, _ transform: (inout TrackedIssue) -> Void) {
+        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        var copy = trackedIssues[idx]
+        transform(&copy)
+        copy.updatedAt = Date()
+        if copy.diaryBadge != .auto { copy.diaryBadge = .auto }
+        trackedIssues[idx] = copy
+    }
+
+    /// Mutate without touching updatedAt / diaryBadge
+    private func mutateIssueRaw(id: UUID, _ transform: (inout TrackedIssue) -> Void) {
+        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
+        var copy = trackedIssues[idx]
+        transform(&copy)
+        trackedIssues[idx] = copy
     }
 
     func updateIssueStatus(id: UUID, status: IssueStatus) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        let title = trackedIssues[idx].title
-        let oldStatus = trackedIssues[idx].status.rawValue
-        trackedIssues[idx].status = status
-        trackedIssues[idx].resolvedAt = status.isResolved ? Date() : nil
-        touchIssue(at: idx)
-        logOperation(module: "问题", action: "状态", detail: "\(title): \(oldStatus)→\(status.rawValue)")
+        guard let issue = trackedIssues.first(where: { $0.id == id }) else { return }
+        let oldStatus = issue.status.rawValue
+        mutateIssue(id: id) { issue in
+            issue.status = status
+            issue.resolvedAt = status.isResolved ? Date() : nil
+        }
+        logOperation(module: "问题", action: "状态", detail: "\(issue.title): \(oldStatus)→\(status.rawValue)")
     }
 
     func updateIssueAssignee(id: UUID, assignee: String?) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].assignee = assignee
-        touchIssue(at: idx)
+        mutateIssue(id: id) { $0.assignee = assignee }
     }
 
     func addIssueComment(id: UUID, text: String) {
-        guard !text.isEmpty, let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].comments.append(IssueComment(text: text))
-        touchIssue(at: idx)
+        guard !text.isEmpty else { return }
+        mutateIssue(id: id) { $0.comments.append(IssueComment(text: text)) }
     }
 
     /// Add a pre-built IssueComment (used by Jira comment sync with custom createdAt / jiraCommentId)
     func addIssueCommentDirect(id: UUID, comment: IssueComment) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].comments.append(comment)
-        touchIssue(at: idx)
+        mutateIssue(id: id) { $0.comments.append(comment) }
     }
 
     func deleteIssueComment(issueID: UUID, commentID: UUID) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == issueID }) else { return }
-        trackedIssues[idx].comments.removeAll { $0.id == commentID }
-        touchIssue(at: idx)
+        mutateIssue(id: issueID) { $0.comments.removeAll { $0.id == commentID } }
     }
 
     func updateIssueJiraKey(id: UUID, jiraKey: String?) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].jiraKey = jiraKey
-        // Auto-set source to Jira when jiraKey is provided (only if ticketURL is empty)
-        if let key = jiraKey, !key.isEmpty,
-           trackedIssues[idx].source == .manual,
-           trackedIssues[idx].ticketURL == nil || trackedIssues[idx].ticketURL?.isEmpty == true {
-            trackedIssues[idx].source = .jira
+        mutateIssue(id: id) { issue in
+            issue.jiraKey = jiraKey
+            if let key = jiraKey, !key.isEmpty,
+               issue.source == .manual,
+               issue.ticketURL == nil || issue.ticketURL?.isEmpty == true {
+                issue.source = .jira
+            }
         }
-        touchIssue(at: idx)
     }
 
     func updateIssueCreatedAt(id: UUID, date: Date) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].createdAt = date
+        mutateIssueRaw(id: id) { $0.createdAt = date }
     }
 
     func updateIssueUpdatedAt(id: UUID, date: Date) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].updatedAt = date
+        mutateIssueRaw(id: id) { $0.updatedAt = date }
     }
 
     func updateIssueSource(id: UUID, source: IssueSource) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].source = source
-        touchIssue(at: idx)
+        mutateIssue(id: id) { $0.source = source }
     }
 
     func updateIssueTicketURL(id: UUID, ticketURL: String?) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].ticketURL = ticketURL
-        touchIssue(at: idx)
+        mutateIssue(id: id) { $0.ticketURL = ticketURL }
     }
 
     func updateIssueTitle(id: UUID, title: String) {
-        guard !title.isEmpty, let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        let old = trackedIssues[idx].title
-        trackedIssues[idx].title = title
-        touchIssue(at: idx)
+        guard !title.isEmpty else { return }
+        let old = trackedIssues.first(where: { $0.id == id })?.title ?? ""
+        mutateIssue(id: id) { $0.title = title }
         logOperation(module: "问题", action: "改名", detail: "\(old)→\(title)")
     }
 
     func updateIssueDepartment(id: UUID, department: String?) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].department = department
-        touchIssue(at: idx)
+        mutateIssue(id: id) { $0.department = department }
     }
 
     func updateIssueType(id: UUID, type: IssueType) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].type = type
-        touchIssue(at: idx)
+        mutateIssue(id: id) { $0.type = type }
     }
 
     func updateIssueDiaryBadge(id: UUID, badge: DiaryBadge) {
-        guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
-        trackedIssues[idx].diaryBadge = badge
+        mutateIssueRaw(id: id) { $0.diaryBadge = badge }
     }
 
     func deleteIssue(id: UUID) {
@@ -1005,5 +1039,9 @@ final class DataStore {
             logOperation(module: "问题", action: "删除", detail: "[\(issue.type.rawValue)] \(issue.title)")
         }
         trackedIssues.removeAll { $0.id == id }
+    }
+
+    func markDevActivity(id: UUID) {
+        mutateIssueRaw(id: id) { $0.hasDevActivity = true }
     }
 }

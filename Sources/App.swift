@@ -122,6 +122,10 @@ struct TicTrackerApp: App {
                         if store.jiraConfig.enabled {
                             JiraService.shared.startPolling()
                         }
+                        FeishuBotService.shared.setup(store: store)
+                        if store.feishuBotConfig.enabled {
+                            FeishuBotService.shared.startScheduler()
+                        }
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .openWindowRequest)) { notification in

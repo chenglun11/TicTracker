@@ -74,6 +74,8 @@ struct SettingsView: View {
                 .tabItem { Label("问题追踪", systemImage: "ladybug.fill") }
             JiraTab(store: store)
                 .tabItem { Label("Jira", systemImage: "server.rack") }
+            FeishuBotTab(store: store)
+                .tabItem { Label("飞书 Bot", systemImage: "paperplane.fill") }
             AITab(store: store)
                 .tabItem { Label("AI", systemImage: "sparkles") }
             DataTab(store: store)
@@ -1039,6 +1041,172 @@ private struct JiraTab: View {
                 testSuccess = false
             }
             testing = false
+        }
+    }
+}
+
+// MARK: - Feishu Bot Tab
+
+private struct FeishuBotTab: View {
+    @Bindable var store: DataStore
+    @State private var secretInput = ""
+    @State private var secretSaved = false
+    @FocusState private var isSecretFocused: Bool
+    @State private var saveState = AutoSaveState()
+    @State private var sending = false
+    @State private var sendResult: String?
+    @State private var sendSuccess = false
+
+    var body: some View {
+        Form {
+            Section("飞书 Bot") {
+                Toggle(isOn: Bindable(store).feishuBotConfig.enabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用飞书 Bot 日报推送")
+                        Text("开启后在指定时间自动将每日工单报告发送到飞书群")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: store.feishuBotConfig.enabled) { _, enabled in
+                    if enabled {
+                        FeishuBotService.shared.startScheduler()
+                    } else {
+                        FeishuBotService.shared.stopScheduler()
+                    }
+                    saveState.triggerSave()
+                }
+            }
+
+            Section("Webhook") {
+                Picker("消息格式", selection: Bindable(store).feishuBotConfig.messageFormat) {
+                    ForEach(FeishuMessageFormat.allCases, id: \.self) { fmt in
+                        Text(fmt.rawValue).tag(fmt)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: store.feishuBotConfig.messageFormat) { _, _ in saveState.triggerSave() }
+
+                TextField("Webhook URL", text: Bindable(store).feishuBotConfig.webhookURL,
+                          prompt: Text("https://open.feishu.cn/open-apis/bot/v2/hook/..."))
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .onChange(of: store.feishuBotConfig.webhookURL) { _, _ in saveState.debouncedSave() }
+
+                Toggle("签名校验", isOn: Bindable(store).feishuBotConfig.signEnabled)
+                    .onChange(of: store.feishuBotConfig.signEnabled) { _, _ in saveState.triggerSave() }
+
+                if store.feishuBotConfig.signEnabled {
+                    autoSaveSecureField("Secret", text: $secretInput, saved: $secretSaved,
+                                        focused: $isSecretFocused, onSave: saveSecret)
+                }
+
+                HStack {
+                    Button(sending ? "发送中…" : "测试发送") {
+                        testSend()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(sending || store.feishuBotConfig.webhookURL.isEmpty)
+
+                    if let result = sendResult {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundStyle(sendSuccess ? .green : .red)
+                    }
+                }
+            }
+
+            Section("定时发送") {
+                HStack {
+                    Text("每日发送时间")
+                    Spacer()
+                    Picker("", selection: Bindable(store).feishuBotConfig.sendHour) {
+                        ForEach(0..<24, id: \.self) { h in
+                            Text(String(format: "%02d", h)).tag(h)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 60)
+                    Text(":")
+                        .foregroundStyle(.tertiary)
+                    Picker("", selection: Bindable(store).feishuBotConfig.sendMinute) {
+                        ForEach([0, 15, 30, 45], id: \.self) { m in
+                            Text(String(format: "%02d", m)).tag(m)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 60)
+                }
+                .onChange(of: store.feishuBotConfig.sendHour) { _, _ in
+                    FeishuBotService.shared.restartScheduler()
+                    saveState.triggerSave()
+                }
+                .onChange(of: store.feishuBotConfig.sendMinute) { _, _ in
+                    FeishuBotService.shared.restartScheduler()
+                    saveState.triggerSave()
+                }
+
+                if !store.feishuBotConfig.lastSentDate.isEmpty {
+                    Text("上次发送：\(store.feishuBotConfig.lastSentDate)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("卡片模块") {
+                Toggle("项目支持统计", isOn: Bindable(store).feishuBotConfig.showSupportStats)
+                    .onChange(of: store.feishuBotConfig.showSupportStats) { _, _ in saveState.triggerSave() }
+                Toggle("统计概览（新建/解决/待处理）", isOn: Bindable(store).feishuBotConfig.showOverview)
+                    .onChange(of: store.feishuBotConfig.showOverview) { _, _ in saveState.triggerSave() }
+                Toggle("待处理问题列表", isOn: Bindable(store).feishuBotConfig.showPending)
+                    .onChange(of: store.feishuBotConfig.showPending) { _, _ in saveState.triggerSave() }
+                Toggle("今日已解决列表", isOn: Bindable(store).feishuBotConfig.showResolved)
+                    .onChange(of: store.feishuBotConfig.showResolved) { _, _ in saveState.triggerSave() }
+                Toggle("日报文字", isOn: Bindable(store).feishuBotConfig.showDailyNote)
+                    .onChange(of: store.feishuBotConfig.showDailyNote) { _, _ in saveState.triggerSave() }
+                Toggle("问题评论（最近2条）", isOn: Bindable(store).feishuBotConfig.showComments)
+                    .onChange(of: store.feishuBotConfig.showComments) { _, _ in saveState.triggerSave() }
+            }
+
+            Section("问题显示字段") {
+                Toggle("类型", isOn: Bindable(store).feishuBotConfig.fieldType)
+                    .onChange(of: store.feishuBotConfig.fieldType) { _, _ in saveState.triggerSave() }
+                Toggle("部门", isOn: Bindable(store).feishuBotConfig.fieldDepartment)
+                    .onChange(of: store.feishuBotConfig.fieldDepartment) { _, _ in saveState.triggerSave() }
+                Toggle("Jira Key", isOn: Bindable(store).feishuBotConfig.fieldJiraKey)
+                    .onChange(of: store.feishuBotConfig.fieldJiraKey) { _, _ in saveState.triggerSave() }
+                Toggle("状态", isOn: Bindable(store).feishuBotConfig.fieldStatus)
+                    .onChange(of: store.feishuBotConfig.fieldStatus) { _, _ in saveState.triggerSave() }
+                Toggle("负责人", isOn: Bindable(store).feishuBotConfig.fieldAssignee)
+                    .onChange(of: store.feishuBotConfig.fieldAssignee) { _, _ in saveState.triggerSave() }
+            }
+        }
+        .formStyle(.grouped)
+        .autoSaveIndicator(saveState)
+        .onAppear {
+            if let secret = FeishuBotService.loadSecret() {
+                secretInput = secret
+            }
+        }
+    }
+
+    private func saveSecret() {
+        FeishuBotService.saveSecret(secretInput)
+    }
+
+    private func testSend() {
+        if store.feishuBotConfig.signEnabled && !secretInput.isEmpty {
+            saveSecret()
+        }
+        sending = true
+        sendResult = nil
+        Task {
+            let result = await FeishuBotService.shared.sendNow(store: store)
+            sendResult = result.message
+            sendSuccess = result.success
+            sending = false
         }
     }
 }

@@ -12,6 +12,8 @@ struct IssueTrackerView: View {
     @State private var isEditingTitle = false
     @State private var isEditingTime = false
     @State private var saveState = AutoSaveState()
+    @State private var showJiraPicker = false
+    @State private var jiraSearchText = ""
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -236,10 +238,23 @@ struct IssueTrackerView: View {
             Image(systemName: issue.status.icon)
                 .font(.system(size: 10))
                 .foregroundStyle(statusColor(issue.status))
+            if issue.issueNumber > 0 {
+                Text("#\(issue.issueNumber)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
             Text(issue.title)
                 .font(.callout)
                 .lineLimit(1)
             Spacer()
+            if issue.hasDevActivity {
+                Text("开发中")
+                    .font(.caption2)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .foregroundStyle(.white)
+                    .background(Color.green, in: Capsule())
+            }
             if let assignee = issue.assignee {
                 Text(assignee)
                     .font(.caption2)
@@ -281,10 +296,17 @@ struct IssueTrackerView: View {
                             )
                     } else {
                         ScrollView(.vertical, showsIndicators: true) {
-                            Text(issue.title)
-                                .font(.title2.bold())
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                if issue.issueNumber > 0 {
+                                    Text("#\(issue.issueNumber)")
+                                        .font(.title3.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(issue.title)
+                                    .font(.title2.bold())
+                                    .textSelection(.enabled)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .frame(maxHeight: 100)
                         .onTapGesture {
@@ -424,18 +446,9 @@ struct IssueTrackerView: View {
                             .frame(width: 120)
 
                             if !store.filteredJiraIssues.isEmpty {
-                                Menu {
-                                    Button("无关联") {
-                                        store.updateIssueJiraKey(id: issue.id, jiraKey: nil)
-                                        saveState.triggerSave()
-                                    }
-                                    Divider()
-                                    ForEach(store.filteredJiraIssues) { jiraIssue in
-                                        Button("\(jiraIssue.key) \(jiraIssue.summary)") {
-                                            store.updateIssueJiraKey(id: issue.id, jiraKey: jiraIssue.key)
-                                            saveState.triggerSave()
-                                        }
-                                    }
+                                Button {
+                                    jiraSearchText = ""
+                                    showJiraPicker.toggle()
                                 } label: {
                                     HStack(spacing: 4) {
                                         Image(systemName: "link")
@@ -445,6 +458,9 @@ struct IssueTrackerView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
+                                .popover(isPresented: $showJiraPicker, arrowEdge: .bottom) {
+                                    jiraPickerPopover(issue: issue)
+                                }
                             }
 
                             if let jiraKey = issue.jiraKey, !jiraKey.isEmpty {
@@ -690,6 +706,71 @@ struct IssueTrackerView: View {
                 .font(.caption.bold())
                 .foregroundStyle(color)
         }
+    }
+
+    @ViewBuilder
+    private func jiraPickerPopover(issue: TrackedIssue) -> some View {
+        VStack(spacing: 0) {
+            TextField("搜索工单…", text: $jiraSearchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(8)
+
+            let query = jiraSearchText.lowercased()
+            let filtered = store.filteredJiraIssues.filter { jiraIssue in
+                query.isEmpty ||
+                jiraIssue.key.lowercased().contains(query) ||
+                jiraIssue.summary.lowercased().contains(query)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    Button {
+                        store.updateIssueJiraKey(id: issue.id, jiraKey: nil)
+                        saveState.triggerSave()
+                        showJiraPicker = false
+                    } label: {
+                        Text("无关联")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+
+                    Divider()
+
+                    ForEach(filtered) { jiraIssue in
+                        Button {
+                            store.updateIssueJiraKey(id: issue.id, jiraKey: jiraIssue.key)
+                            saveState.triggerSave()
+                            showJiraPicker = false
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(jiraIssue.key)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.blue)
+                                Text(jiraIssue.summary)
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if filtered.isEmpty {
+                        Text("无匹配结果")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                }
+            }
+            .frame(maxHeight: 240)
+        }
+        .frame(width: 340)
     }
 
     private func openJiraInBrowser(_ key: String) {

@@ -241,14 +241,18 @@ final class JiraService {
             // --- Status sync ---
             let newStatus = mapJiraStatus(ji.statusCategoryKey)
             if newStatus != issue.status {
-                let oldLabel = issue.status.rawValue
-                let newLabel = newStatus.rawValue
-                let commentText = "[Jira] 状态变更: \(oldLabel) → \(newLabel)（\(ji.status)）"
-                let alreadyLogged = issue.comments.contains { $0.text == commentText }
-                if !alreadyLogged {
-                    store.updateIssueStatus(id: issue.id, status: newStatus)
-                    store.addIssueComment(id: issue.id, text: commentText)
-                    DevLog.shared.info("JiraSync", "\(jiraKey): \(oldLabel) → \(newLabel)")
+                // 如果有开发活动且 Jira 想改回"待处理"，跳过（GitLab 活动优先）
+                let skipDowngrade = issue.hasDevActivity && newStatus == .pending && issue.status == .inProgress
+                if !skipDowngrade {
+                    let oldLabel = issue.status.rawValue
+                    let newLabel = newStatus.rawValue
+                    let commentText = "[Jira] 状态变更: \(oldLabel) → \(newLabel)（\(ji.status)）"
+                    let alreadyLogged = issue.comments.contains { $0.text == commentText }
+                    if !alreadyLogged {
+                        store.updateIssueStatus(id: issue.id, status: newStatus)
+                        store.addIssueComment(id: issue.id, text: commentText)
+                        DevLog.shared.info("JiraSync", "\(jiraKey): \(oldLabel) → \(newLabel)")
+                    }
                 }
             }
 
@@ -267,6 +271,23 @@ final class JiraService {
                 )
                 store.addIssueCommentDirect(id: issue.id, comment: comment)
                 DevLog.shared.info("JiraSync", "\(jiraKey): synced comment \(rc.id)")
+            }
+
+            // 检测所有远程评论中是否有 GitLab bot 活动
+            let hasGitActivity = remoteComments.contains { rc in
+                let a = rc.author.lowercased()
+                return a.contains("gitlab") || a.contains("git")
+            }
+            if hasGitActivity {
+                let current = store.trackedIssues.first { $0.id == issue.id }
+                if current?.hasDevActivity != true {
+                    store.markDevActivity(id: issue.id)
+                    DevLog.shared.info("JiraSync", "\(jiraKey): 检测到开发活动")
+                }
+                if current?.status == .pending {
+                    store.updateIssueStatus(id: issue.id, status: .inProgress)
+                    DevLog.shared.info("JiraSync", "\(jiraKey): 自动变更为处理中 (GitLab 活动)")
+                }
             }
         }
     }

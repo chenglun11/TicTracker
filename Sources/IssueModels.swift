@@ -75,6 +75,7 @@ enum DiaryBadge: String, Codable, Sendable, CaseIterable {
 
 struct TrackedIssue: Identifiable, Codable, Sendable {
     var id: UUID = UUID()
+    var issueNumber: Int = 0            // 人类可读序号，如 #1, #2, #3
     var type: IssueType = .bug
     var title: String
     var dateKey: String = ""
@@ -89,6 +90,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     var department: String?
     var comments: [IssueComment] = []
     var resolvedAt: Date?
+    var hasDevActivity: Bool = false     // 检测到 GitLab bot 等开发活动
 
     init(title: String, type: IssueType = .bug) {
         self.title = title
@@ -98,7 +100,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     // MARK: - Custom Codable for migration
 
     private enum CodingKeys: String, CodingKey {
-        case id, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt
+        case id, issueNumber, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt, hasDevActivity
         case note       // legacy single-note field
         case isFixed    // legacy BugEntry field
         case fixedAt    // legacy BugEntry field
@@ -108,6 +110,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         id = try container.decode(UUID.self, forKey: .id)
+        issueNumber = (try? container.decodeIfPresent(Int.self, forKey: .issueNumber)) ?? 0
         title = try container.decode(String.self, forKey: .title)
         dateKey = try container.decode(String.self, forKey: .dateKey)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
@@ -173,11 +176,16 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         } else {
             resolvedAt = nil
         }
+
+        hasDevActivity = (try? container.decodeIfPresent(Bool.self, forKey: .hasDevActivity)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
+        if issueNumber > 0 {
+            try container.encode(issueNumber, forKey: .issueNumber)
+        }
         try container.encode(type, forKey: .type)
         try container.encode(title, forKey: .title)
         try container.encode(dateKey, forKey: .dateKey)
@@ -196,5 +204,8 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         try container.encodeIfPresent(department, forKey: .department)
         try container.encode(comments, forKey: .comments)
         try container.encodeIfPresent(resolvedAt, forKey: .resolvedAt)
+        if hasDevActivity {
+            try container.encode(hasDevActivity, forKey: .hasDevActivity)
+        }
     }
 }
