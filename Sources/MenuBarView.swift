@@ -434,7 +434,7 @@ struct MenuBarView: View {
     @ViewBuilder
     private var issueTrackerSection: some View {
         let issues = store.issuesVisibleForKey(selectedKey)
-        let unresolved = issues.filter { !$0.status.isResolved }
+        let unresolved = issues.filter { !$0.status.isResolved && $0.status != .observing }
         let grouped = Dictionary(grouping: unresolved, by: \.type)
 
         VStack(alignment: .leading, spacing: 6) {

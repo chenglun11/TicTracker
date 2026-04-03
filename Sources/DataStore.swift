@@ -925,7 +925,7 @@ final class DataStore {
     }
 
     var unresolvedIssueCount: Int {
-        issuesVisibleForKey(todayKey).filter { !$0.status.isResolved }.count
+        issuesVisibleForKey(todayKey).filter { !$0.status.isResolved && $0.status != .observing }.count
     }
 
     func addIssue(_ title: String, type: IssueType, forKey key: String,

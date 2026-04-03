@@ -8,7 +8,7 @@ final class FeishuBotService {
     private var store: DataStore?
     private var schedulerTask: Task<Void, Never>?
 
-    private static let keychainService = "com.tictracker.feishu-bot"
+    private static let keychainService = "com.tictracker.keychain"
     private static let keychainAccount = "webhook-secret"
 
     func setup(store: DataStore) {
@@ -22,7 +22,7 @@ final class FeishuBotService {
         schedulerTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.checkAndSend()
-                try? await Task.sleep(for: .seconds(60))
+                try? await Task.sleep(for: .seconds(30))
             }
         }
         DevLog.shared.info("FeishuBot", "定时发送已启动")
@@ -49,27 +49,67 @@ final class FeishuBotService {
         let minute = calendar.component(.minute, from: now)
         let todayKey = DataStore.dateKey(from: now)
 
-        guard hour == config.sendHour,
-              minute == config.sendMinute,
-              config.lastSentDate != todayKey else { return }
+        for scheduleTime in config.sendTimes {
+            guard hour == scheduleTime.hour,
+                  minute == scheduleTime.minute,
+                  config.lastSentTimes[scheduleTime.key] != todayKey else { continue }
 
-        let result = await sendReport(store: store)
-        if result.success {
-            store.feishuBotConfig.lastSentDate = todayKey
+            let result = await sendReport(store: store)
+            if result.success {
+                store.feishuBotConfig.lastSentTimes[scheduleTime.key] = todayKey
+                let fmt = DateFormatter()
+                fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                store.feishuBotConfig.lastSentDateTime = fmt.string(from: now)
+            }
+            break  // 同一轮只发一次，避免多个时间点同分钟重复发
         }
     }
 
     // MARK: - Send
 
-    /// 手动发送当天报告
+    /// 手动发送当天报告（不重试，即时反馈）
     func sendNow(store: DataStore) async -> (success: Bool, message: String) {
         guard !store.feishuBotConfig.webhookURL.isEmpty else {
             return (false, "Webhook URL 为空")
         }
-        return await sendReport(store: store)
+        let result = await sendReportOnce(store: store)
+        addHistory(store: store, success: result.success, message: result.message, retryCount: 0)
+        return result
     }
 
     private func sendReport(store: DataStore) async -> (success: Bool, message: String) {
+        var retryCount = 0
+        var lastError = ""
+
+        while retryCount <= store.feishuBotConfig.maxRetries {
+            let result = await sendReportOnce(store: store)
+
+            if result.success {
+                addHistory(store: store, success: true, message: result.message, retryCount: retryCount)
+                return result
+            }
+
+            lastError = result.message
+
+            // 配置错误不重试
+            if result.message.contains("URL 无效") || result.message.contains("Secret 未配置") ||
+               result.message.contains("JSON 序列化失败") {
+                addHistory(store: store, success: false, message: result.message, retryCount: retryCount)
+                return result
+            }
+
+            retryCount += 1
+            if retryCount <= store.feishuBotConfig.maxRetries {
+                DevLog.shared.info("FeishuBot", "第 \(retryCount) 次重试...")
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+
+        addHistory(store: store, success: false, message: lastError, retryCount: retryCount - 1)
+        return (false, "\(lastError)（重试 \(retryCount - 1) 次后失败）")
+    }
+
+    private func sendReportOnce(store: DataStore) async -> (success: Bool, message: String) {
         let payload = generateDailyReport(store: store)
         let config = store.feishuBotConfig
 
@@ -128,6 +168,14 @@ final class FeishuBotService {
         }
     }
 
+    private func addHistory(store: DataStore, success: Bool, message: String, retryCount: Int) {
+        let history = SendHistory(timestamp: Date(), success: success, message: message, retryCount: retryCount)
+        store.feishuBotConfig.sendHistory.insert(history, at: 0)
+        if store.feishuBotConfig.sendHistory.count > 50 {
+            store.feishuBotConfig.sendHistory.removeLast()
+        }
+    }
+
     // MARK: - Report Generation
 
     private func generateDailyReport(store: DataStore) -> [String: Any] {
@@ -146,6 +194,7 @@ final class FeishuBotService {
         let newIssues: [TrackedIssue]
         let resolvedToday: [TrackedIssue]
         let pending: [TrackedIssue]
+        let observing: [TrackedIssue]
         let todayRecords: [String: Int]
         let todayTotal: Int
         let dailyNote: String
@@ -164,7 +213,8 @@ final class FeishuBotService {
                 guard issue.status.isResolved, let resolvedAt = issue.resolvedAt else { return false }
                 return DataStore.dateKey(from: resolvedAt) == todayKey
             },
-            pending: allIssues.filter { !$0.status.isResolved },
+            pending: allIssues.filter { !$0.status.isResolved && $0.status != .observing },
+            observing: allIssues.filter { $0.status == .observing },
             todayRecords: store.todayRecords,
             todayTotal: store.todayTotal,
             dailyNote: store.dailyNotes[todayKey] ?? "",
@@ -184,8 +234,12 @@ final class FeishuBotService {
 
         // === 解决情况高亮摘要 ===
         if d.config.showOverview {
+            var statsLine = "🟢 今日新建 \(d.newIssues.count)  ·  ✅ 今日解决 \(d.resolvedToday.count)  ·  🔶 待处理 \(d.pending.count)"
+            if !d.observing.isEmpty {
+                statsLine += "  ·  👁 观测中 \(d.observing.count)"
+            }
             lines.append([
-                text("🟢 今日新建 \(d.newIssues.count)  ·  ✅ 今日解决 \(d.resolvedToday.count)  ·  🔶 待处理 \(d.pending.count)")
+                text(statsLine)
             ])
             lines.append([text("")])
         }
@@ -205,6 +259,21 @@ final class FeishuBotService {
             lines.append([text("📋 待处理问题：")])
             for issue in d.pending {
                 lines.append(richTextIssueLine(issue, showStatus: d.config.fieldStatus, config: d.config, jiraServerURL: d.jiraServerURL))
+                if d.config.showComments {
+                    for comment in issue.comments.suffix(2) {
+                        let time = commentFmt.string(from: comment.createdAt)
+                        lines.append([text("      ↳ [\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))")])
+                    }
+                }
+            }
+            lines.append([text("")])
+        }
+
+        // === 观测中问题 ===
+        if d.config.showObserving && !d.observing.isEmpty {
+            lines.append([text("👁 观测中问题：")])
+            for issue in d.observing {
+                lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
                 if d.config.showComments {
                     for comment in issue.comments.suffix(2) {
                         let time = commentFmt.string(from: comment.createdAt)
@@ -311,7 +380,10 @@ final class FeishuBotService {
         // 统计概览（高亮）
         if d.config.showOverview {
             elements.append(["tag": "hr"])
-            let statsLine = "🟢 **今日新建** \(d.newIssues.count) 个  ·  ✅ **今日解决** \(d.resolvedToday.count) 个  ·  🔶 **待处理** \(d.pending.count) 个"
+            var statsLine = "🟢 **今日新建** \(d.newIssues.count) 个  ·  ✅ **今日解决** \(d.resolvedToday.count) 个  ·  🔶 **待处理** \(d.pending.count) 个"
+            if !d.observing.isEmpty {
+                statsLine += "  ·  👁 **观测中** \(d.observing.count) 个"
+            }
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": statsLine]])
         }
 
@@ -321,6 +393,22 @@ final class FeishuBotService {
             var content = "**待处理问题：**"
             for issue in d.pending {
                 content += "\n" + Self.formatIssue(issue, showStatus: d.config.fieldStatus, config: d.config, jiraServerURL: d.jiraServerURL)
+                if d.config.showComments {
+                    for comment in issue.comments.suffix(2) {
+                        let time = commentFmt.string(from: comment.createdAt)
+                        content += "\n    *[\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))*"
+                    }
+                }
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
+        // 观测中问题列表 + 评论
+        if d.config.showObserving && !d.observing.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**👁 观测中问题：**"
+            for issue in d.observing {
+                content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
                 if d.config.showComments {
                     for comment in issue.comments.suffix(2) {
                         let time = commentFmt.string(from: comment.createdAt)
@@ -357,6 +445,7 @@ final class FeishuBotService {
         let hasContent = (d.config.showSupportStats && d.todayTotal > 0)
             || d.config.showOverview
             || (d.config.showPending && !d.pending.isEmpty)
+            || (d.config.showObserving && !d.observing.isEmpty)
             || (d.config.showResolved && !d.resolvedToday.isEmpty)
         if !hasContent {
             elements.append(["tag": "hr"])

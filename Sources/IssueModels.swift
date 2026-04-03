@@ -34,6 +34,7 @@ enum IssueType: String, Codable, Sendable, CaseIterable {
 enum IssueStatus: String, Codable, Sendable, CaseIterable {
     case pending = "待处理"
     case inProgress = "处理中"
+    case observing = "观测中"
     case fixed = "已修复"
     case ignored = "已忽略"
 
@@ -41,6 +42,7 @@ enum IssueStatus: String, Codable, Sendable, CaseIterable {
         switch self {
         case .pending: return "circle"
         case .inProgress: return "arrow.triangle.2.circlepath"
+        case .observing: return "eye"
         case .fixed: return "checkmark.circle.fill"
         case .ignored: return "minus.circle.fill"
         }

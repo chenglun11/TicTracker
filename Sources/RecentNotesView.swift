@@ -532,7 +532,7 @@ struct RecentNotesView: View {
     @ViewBuilder
     private func issueTypeSection(type: IssueType, issues: [TrackedIssue], dayID: String) -> some View {
         let sectionKey = "\(dayID)-\(type.rawValue)"
-        let unresolvedCount = issues.filter { !$0.status.isResolved }.count
+        let unresolvedCount = issues.filter { !$0.status.isResolved && $0.status != .observing }.count
         let newCount = issues.filter { $0.dateKey == dayID }.count
         VStack(alignment: .leading, spacing: 6) {
             Button {

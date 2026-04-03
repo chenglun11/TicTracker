@@ -18,6 +18,7 @@ struct IssueTrackerView: View {
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
         case unresolved = "未解决"
+        case observing = "观测中"
         case fixed = "已修复"
         case ignored = "已忽略"
     }
@@ -47,7 +48,8 @@ struct IssueTrackerView: View {
 
         switch statusFilter {
         case .all: break
-        case .unresolved: issues = issues.filter { !$0.status.isResolved }
+        case .unresolved: issues = issues.filter { !$0.status.isResolved && $0.status != .observing }
+        case .observing: issues = issues.filter { $0.status == .observing }
         case .fixed: issues = issues.filter { $0.status == .fixed }
         case .ignored: issues = issues.filter { $0.status == .ignored }
         }
@@ -67,7 +69,7 @@ struct IssueTrackerView: View {
     }
 
     private var unresolvedCount: Int {
-        store.trackedIssues.filter { !$0.status.isResolved }.count
+        store.trackedIssues.filter { !$0.status.isResolved && $0.status != .observing }.count
     }
 
     private var selectedIssue: TrackedIssue? {
@@ -234,9 +236,11 @@ struct IssueTrackerView: View {
         HStack(spacing: 6) {
             Image(systemName: issue.type.icon)
                 .font(.system(size: 10))
+                .frame(width: 12)
                 .foregroundStyle(issue.type.color)
             Image(systemName: issue.status.icon)
                 .font(.system(size: 10))
+                .frame(width: 12)
                 .foregroundStyle(statusColor(issue.status))
             if issue.issueNumber > 0 {
                 Text("#\(issue.issueNumber)")
@@ -796,6 +800,7 @@ struct IssueTrackerView: View {
         switch status {
         case .pending: return .orange
         case .inProgress: return .orange
+        case .observing: return .blue
         case .fixed: return .green
         case .ignored: return .secondary
         }

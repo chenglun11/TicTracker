@@ -111,9 +111,11 @@ struct WeeklyReport {
                 guard let items = byType[type] else { continue }
                 let fixed = items.filter { $0.status == .fixed }.count
                 let ignored = items.filter { $0.status == .ignored }.count
-                let unresolved = items.count - fixed - ignored
+                let observing = items.filter { $0.status == .observing }.count
+                let unresolved = items.count - fixed - ignored - observing
                 var summary = "\(type.rawValue): \(items.count) 个（已修复 \(fixed)"
                 if ignored > 0 { summary += "，已忽略 \(ignored)" }
+                if observing > 0 { summary += "，观测中 \(observing)" }
                 if unresolved > 0 { summary += "，未解决 \(unresolved)" }
                 summary += "）"
                 lines.append(summary)

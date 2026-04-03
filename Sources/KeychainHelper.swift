@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum KeychainHelper {
-    static let service = "com.tictracker.jira"
+    static let service = "com.tictracker.keychain"
     static let account = "api-token"
 
     @discardableResult
@@ -58,5 +58,21 @@ enum KeychainHelper {
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(query as CFDictionary)
+    }
+
+    /// 将旧 service 下所有 account 迁移到新 service，只在首次启动时调用
+    static func migrateIfNeeded() {
+        let legacyServices = ["com.tictracker.jira", "com.tictracker.ai", "com.tictracker.feishu-bot"]
+        for legacy in legacyServices {
+            let items = loadAll(service: legacy)
+            for (account, data) in items {
+                // 只在新 service 下不存在时迁移
+                if load(service: service, account: account) == nil {
+                    let ok = save(service: service, account: account, data: data)
+                    guard ok else { continue }  // save 失败则保留旧数据，不删
+                }
+                delete(service: legacy, account: account)
+            }
+        }
     }
 }

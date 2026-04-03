@@ -110,6 +110,7 @@ struct TicTrackerApp: App {
                     if appDelegate.store == nil {
                         appDelegate.store = store
                         DevLog.shared.info("App", "启动 TicTracker")
+                        KeychainHelper.migrateIfNeeded()
                         HotkeyManager.shared.setup(store: store)
                         NotificationManager.shared.refreshReminderIfNeeded()
                         NotificationManager.shared.sendWelcome()

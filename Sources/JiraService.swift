@@ -37,8 +37,13 @@ final class JiraService {
     }
 
     private func isInPollingWindow(config: JiraConfig) -> Bool {
-        let hour = Calendar.current.component(.hour, from: Date())
-        return hour >= config.pollingStartHour && hour < config.pollingEndHour
+        let now = Date()
+        let hour = Calendar.current.component(.hour, from: now)
+        let minute = Calendar.current.component(.minute, from: now)
+        let current = hour * 60 + minute
+        let start = config.pollingStartHour * 60 + config.pollingStartMinute
+        let end = config.pollingEndHour * 60 + config.pollingEndMinute
+        return current >= start && current < end
     }
 
     func stopPolling() {
@@ -240,7 +245,7 @@ final class JiraService {
 
             // --- Status sync ---
             let newStatus = mapJiraStatus(ji.statusCategoryKey)
-            if newStatus != issue.status {
+            if newStatus != issue.status && issue.status != .observing {
                 // 如果有开发活动且 Jira 想改回"待处理"，跳过（GitLab 活动优先）
                 let skipDowngrade = issue.hasDevActivity && newStatus == .pending && issue.status == .inProgress
                 if !skipDowngrade {

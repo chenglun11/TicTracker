@@ -73,7 +73,7 @@ final class AIService {
 
     private let log = DevLog.shared
     private let mod = "AI"
-    private let keychainService = "com.tictracker.ai"
+    private let keychainService = "com.tictracker.keychain"
     private let keychainAccount = "api-key"
     private let keychainBaseURLAccount = "base-url"
     private let keychainModelAccount = "model"

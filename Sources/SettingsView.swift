@@ -349,7 +349,7 @@ private struct GeneralTab: View {
                         }
                         Text(":")
                         Picker("分", selection: $reminderMinute) {
-                            ForEach(Array(stride(from: 0, to: 60, by: 5)), id: \.self) { m in
+                            ForEach(0..<60, id: \.self) { m in
                                 Text(String(format: "%02d", m)).tag(m)
                             }
                         }
@@ -519,7 +519,7 @@ private struct IssueTrackerTab: View {
 
                 Section("统计") {
                     let total = store.trackedIssues.count
-                    let unresolved = store.trackedIssues.filter { !$0.status.isResolved }.count
+                    let unresolved = store.trackedIssues.filter { !$0.status.isResolved && $0.status != .observing }.count
                     HStack {
                         Text("总数")
                         Spacer()
@@ -931,22 +931,50 @@ private struct JiraTab: View {
                     Spacer()
                     Picker("", selection: Bindable(store).jiraConfig.pollingStartHour) {
                         ForEach(0..<24, id: \.self) { h in
-                            Text(String(format: "%02d:00", h)).tag(h)
+                            Text(String(format: "%02d", h)).tag(h)
                         }
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 80)
+                    .frame(width: 60)
+                    Text(":")
+                        .foregroundStyle(.tertiary)
+                    Picker("", selection: Bindable(store).jiraConfig.pollingStartMinute) {
+                        ForEach(0..<60, id: \.self) { m in
+                            Text(String(format: "%02d", m)).tag(m)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 60)
                     Text("—")
                         .foregroundStyle(.tertiary)
                     Picker("", selection: Bindable(store).jiraConfig.pollingEndHour) {
                         ForEach(0..<24, id: \.self) { h in
-                            Text(String(format: "%02d:00", h)).tag(h)
+                            Text(String(format: "%02d", h)).tag(h)
                         }
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 80)
+                    .frame(width: 60)
+                    Text(":")
+                        .foregroundStyle(.tertiary)
+                    Picker("", selection: Bindable(store).jiraConfig.pollingEndMinute) {
+                        ForEach(0..<60, id: \.self) { m in
+                            Text(String(format: "%02d", m)).tag(m)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 60)
+                }
+                .onChange(of: store.jiraConfig.pollingStartMinute) { _, _ in
+                    if store.jiraConfig.enabled { JiraService.shared.restartPolling() }
+                    saveState.triggerSave()
+                }
+                .onChange(of: store.jiraConfig.pollingEndMinute) { _, _ in
+                    if store.jiraConfig.enabled { JiraService.shared.restartPolling() }
+                    saveState.triggerSave()
                 }
             }
 
@@ -1113,46 +1141,69 @@ private struct FeishuBotTab: View {
                             .font(.caption)
                             .foregroundStyle(sendSuccess ? .green : .red)
                     }
+
+                    Spacer()
+
+                    if !store.feishuBotConfig.lastSentDateTime.isEmpty {
+                        Text("上次发送：\(store.feishuBotConfig.lastSentDateTime)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
             Section("定时发送") {
-                HStack {
-                    Text("每日发送时间")
-                    Spacer()
-                    Picker("", selection: Bindable(store).feishuBotConfig.sendHour) {
-                        ForEach(0..<24, id: \.self) { h in
-                            Text(String(format: "%02d", h)).tag(h)
+                ForEach(Array(store.feishuBotConfig.sendTimes.enumerated()), id: \.element.id) { i, scheduleTime in
+                    HStack {
+                        Picker("", selection: Bindable(store).feishuBotConfig.sendTimes[i].hour) {
+                            ForEach(0..<24, id: \.self) { h in
+                                Text(String(format: "%02d", h)).tag(h)
+                            }
                         }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 60)
-                    Text(":")
-                        .foregroundStyle(.tertiary)
-                    Picker("", selection: Bindable(store).feishuBotConfig.sendMinute) {
-                        ForEach([0, 15, 30, 45], id: \.self) { m in
-                            Text(String(format: "%02d", m)).tag(m)
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 60)
+                        Text(":")
+                            .foregroundStyle(.tertiary)
+                        Picker("", selection: Bindable(store).feishuBotConfig.sendTimes[i].minute) {
+                            ForEach(0..<60, id: \.self) { m in
+                                Text(String(format: "%02d", m)).tag(m)
+                            }
                         }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 60)
+                        Spacer()
+                        Button {
+                            let key = store.feishuBotConfig.sendTimes[i].key
+                            store.feishuBotConfig.sendTimes.remove(at: i)
+                            store.feishuBotConfig.lastSentTimes.removeValue(forKey: key)
+                            FeishuBotService.shared.restartScheduler()
+                            saveState.triggerSave()
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                                .foregroundStyle(.red.opacity(0.7))
+                        }
+                        .buttonStyle(.borderless)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 60)
+                    .onChange(of: store.feishuBotConfig.sendTimes[i].hour) { _, _ in
+                        store.feishuBotConfig.lastSentTimes.removeValue(forKey: scheduleTime.key)
+                        FeishuBotService.shared.restartScheduler()
+                        saveState.triggerSave()
+                    }
+                    .onChange(of: store.feishuBotConfig.sendTimes[i].minute) { _, _ in
+                        store.feishuBotConfig.lastSentTimes.removeValue(forKey: scheduleTime.key)
+                        FeishuBotService.shared.restartScheduler()
+                        saveState.triggerSave()
+                    }
                 }
-                .onChange(of: store.feishuBotConfig.sendHour) { _, _ in
+                Button("添加时间") {
+                    store.feishuBotConfig.sendTimes.append(ScheduleTime(hour: 18, minute: 0))
                     FeishuBotService.shared.restartScheduler()
                     saveState.triggerSave()
                 }
-                .onChange(of: store.feishuBotConfig.sendMinute) { _, _ in
-                    FeishuBotService.shared.restartScheduler()
-                    saveState.triggerSave()
-                }
-
-                if !store.feishuBotConfig.lastSentDate.isEmpty {
-                    Text("上次发送：\(store.feishuBotConfig.lastSentDate)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                .controlSize(.small)
             }
 
             Section("卡片模块") {
@@ -1162,6 +1213,8 @@ private struct FeishuBotTab: View {
                     .onChange(of: store.feishuBotConfig.showOverview) { _, _ in saveState.triggerSave() }
                 Toggle("待处理问题列表", isOn: Bindable(store).feishuBotConfig.showPending)
                     .onChange(of: store.feishuBotConfig.showPending) { _, _ in saveState.triggerSave() }
+                Toggle("观测中问题列表", isOn: Bindable(store).feishuBotConfig.showObserving)
+                    .onChange(of: store.feishuBotConfig.showObserving) { _, _ in saveState.triggerSave() }
                 Toggle("今日已解决列表", isOn: Bindable(store).feishuBotConfig.showResolved)
                     .onChange(of: store.feishuBotConfig.showResolved) { _, _ in saveState.triggerSave() }
                 Toggle("日报文字", isOn: Bindable(store).feishuBotConfig.showDailyNote)
@@ -1181,6 +1234,51 @@ private struct FeishuBotTab: View {
                     .onChange(of: store.feishuBotConfig.fieldStatus) { _, _ in saveState.triggerSave() }
                 Toggle("负责人", isOn: Bindable(store).feishuBotConfig.fieldAssignee)
                     .onChange(of: store.feishuBotConfig.fieldAssignee) { _, _ in saveState.triggerSave() }
+            }
+
+            Section("发送历史") {
+                Picker("失败自动重试", selection: Bindable(store).feishuBotConfig.maxRetries) {
+                    Text("不重试").tag(0)
+                    Text("1 次").tag(1)
+                    Text("2 次").tag(2)
+                    Text("3 次").tag(3)
+                }
+                .onChange(of: store.feishuBotConfig.maxRetries) { _, _ in saveState.triggerSave() }
+
+                if store.feishuBotConfig.sendHistory.isEmpty {
+                    Text("暂无发送记录")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else {
+                    ForEach(Array(store.feishuBotConfig.sendHistory.prefix(10))) { history in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: history.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(history.success ? .green : .red)
+                                .font(.caption)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(history.message)
+                                    .font(.caption)
+                                HStack {
+                                    Text(formatTimestamp(history.timestamp))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    if history.retryCount > 0 {
+                                        Text("· 重试 \(history.retryCount) 次")
+                                            .font(.caption2)
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    Button("清空历史") {
+                        store.feishuBotConfig.sendHistory.removeAll()
+                        saveState.triggerSave()
+                    }
+                    .controlSize(.small)
+                    .foregroundStyle(.red)
+                }
             }
         }
         .formStyle(.grouped)
@@ -1206,8 +1304,20 @@ private struct FeishuBotTab: View {
             let result = await FeishuBotService.shared.sendNow(store: store)
             sendResult = result.message
             sendSuccess = result.success
+            if result.success {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                store.feishuBotConfig.lastSentDateTime = fmt.string(from: Date())
+                saveState.triggerSave()
+            }
             sending = false
         }
+    }
+
+    private func formatTimestamp(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MM-dd HH:mm:ss"
+        return fmt.string(from: date)
     }
 }
 
