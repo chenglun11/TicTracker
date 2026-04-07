@@ -94,6 +94,7 @@ final class AIChatViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var attachments: [ChatAttachment] = []
     @Published var scrollTrigger = UUID()
+    @Published var streamingMessageId: UUID?
 
     private let store: DataStore
     private let aiService = AIService.shared
@@ -290,7 +291,10 @@ final class AIChatViewModel: ObservableObject {
 
     private func generateResponse(for userInput: String, attachments: [ChatAttachment], sessionId: UUID) async {
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            streamingMessageId = nil
+        }
 
         guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
 
@@ -311,6 +315,7 @@ final class AIChatViewModel: ObservableObject {
         guard let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         sessions[idx].messages.append(assistantMessage)
         sessions[idx].updatedAt = Date()
+        streamingMessageId = messageId
         scrollTrigger = UUID()
 
         do {
@@ -321,27 +326,44 @@ final class AIChatViewModel: ObservableObject {
                 config: store.aiConfig
             )
 
-            var charsSinceScroll = 0
+            var buffer = ""
+            var lastFlush = Date()
+
             for try await chunk in stream {
-                guard let si = sessions.firstIndex(where: { $0.id == sessionId }),
-                      let mi = sessions[si].messages.firstIndex(where: { $0.id == messageId }) else { break }
+                buffer += chunk
+                let now = Date()
+                // 每 100ms 或 buffer 超过 200 字符时刷新一次
+                if now.timeIntervalSince(lastFlush) >= 0.1 || buffer.count >= 200 {
+                    guard let si = sessions.firstIndex(where: { $0.id == sessionId }),
+                          let mi = sessions[si].messages.firstIndex(where: { $0.id == messageId }) else { break }
+                    let current = sessions[si].messages[mi].content
+                    sessions[si].messages[mi] = ChatMessage(
+                        id: messageId,
+                        role: .assistant,
+                        content: current + buffer,
+                        timestamp: sessions[si].messages[mi].timestamp
+                    )
+                    buffer = ""
+                    lastFlush = now
+                    scrollTrigger = UUID()
+                }
+            }
+
+            // 刷新剩余 buffer
+            if !buffer.isEmpty,
+               let si = sessions.firstIndex(where: { $0.id == sessionId }),
+               let mi = sessions[si].messages.firstIndex(where: { $0.id == messageId }) {
                 let current = sessions[si].messages[mi].content
                 sessions[si].messages[mi] = ChatMessage(
                     id: messageId,
                     role: .assistant,
-                    content: current + chunk,
+                    content: current + buffer,
                     timestamp: sessions[si].messages[mi].timestamp
                 )
-                charsSinceScroll += chunk.count
-                if charsSinceScroll >= 50 {
-                    scrollTrigger = UUID()
-                    charsSinceScroll = 0
-                }
             }
-            // 最终滚动一次
+
             scrollTrigger = UUID()
 
-            // 流结束，保存
             if let si = sessions.firstIndex(where: { $0.id == sessionId }) {
                 sessions[si].updatedAt = Date()
             }
@@ -349,7 +371,6 @@ final class AIChatViewModel: ObservableObject {
 
         } catch {
             log.error("AIChat", "对话失败: \(error.localizedDescription)")
-            // 如果流式失败且消息为空，移除空消息
             if let si = sessions.firstIndex(where: { $0.id == sessionId }),
                let mi = sessions[si].messages.firstIndex(where: { $0.id == messageId }),
                sessions[si].messages[mi].content.isEmpty {
@@ -594,21 +615,18 @@ struct AIChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 16) {
-                    if viewModel.messages.isEmpty {
-                        emptyStateView
-                    } else {
-                        ForEach(viewModel.messages) { message in
-                            MessageRow(
-                                message: message,
-                                onCopy: { viewModel.copyMessage(message) },
-                                onDelete: { viewModel.deleteMessage(message) },
-                                onRegenerate: { viewModel.regenerateResponse(for: message) }
-                            )
-                            .id(message.id)
-                        }
+                    ForEach(viewModel.messages) { message in
+                        MessageRow(
+                            message: message,
+                            isStreaming: viewModel.streamingMessageId == message.id,
+                            onCopy: { viewModel.copyMessage(message) },
+                            onDelete: { viewModel.deleteMessage(message) },
+                            onRegenerate: { viewModel.regenerateResponse(for: message) }
+                        )
+                        .id(message.id)
                     }
 
-                    if viewModel.isLoading {
+                    if viewModel.isLoading && viewModel.streamingMessageId == nil {
                         HStack(spacing: 8) {
                             ProgressView().scaleEffect(0.7)
                             Text("思考中...")
@@ -618,25 +636,22 @@ struct AIChatView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.leading, 52)
                     }
+
+                    Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding()
             }
+            .overlay {
+                if viewModel.messages.isEmpty { emptyStateView }
+            }
             .onChange(of: viewModel.scrollTrigger) { _, _ in
-                if let lastMessage = viewModel.messages.last {
-                    withAnimation {
-                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                    }
-                }
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
             .onChange(of: viewModel.currentSessionId) { _, newId in
                 guard newId != nil else { return }
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 50_000_000)
-                    if let lastMessage = viewModel.messages.last {
-                        withAnimation {
-                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                        }
-                    }
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
         }
@@ -730,6 +745,7 @@ struct AIChatView: View {
 
 struct MessageRow: View {
     let message: ChatMessage
+    let isStreaming: Bool
     let onCopy: () -> Void
     let onDelete: () -> Void
     let onRegenerate: () -> Void
@@ -759,8 +775,12 @@ struct MessageRow: View {
                 }
 
                 if !message.content.isEmpty {
-                    MarkdownText(content: message.content)
-                        .textSelection(.enabled)
+                    if isStreaming {
+                        Text(message.content).font(.body).textSelection(.enabled)
+                    } else {
+                        MarkdownText(content: message.content)
+                            .textSelection(.enabled)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -1,3 +1,4 @@
+import AppKit
 import CommonCrypto
 import Foundation
 
@@ -7,12 +8,71 @@ final class FeishuBotService {
 
     private var store: DataStore?
     private var schedulerTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
 
     private static let keychainService = "com.tictracker.keychain"
     private static let keychainAccount = "webhook-secret"
 
     func setup(store: DataStore) {
         self.store = store
+        observeSystemWake()
+    }
+
+    // MARK: - System Wake
+
+    private func observeSystemWake() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleSystemWake()
+            }
+        }
+    }
+
+    private func handleSystemWake() {
+        DevLog.shared.info("FeishuBot", "系统唤醒，检查是否有错过的定时发送")
+        guard let store, store.feishuBotConfig.enabled,
+              !store.feishuBotConfig.webhookURL.isEmpty else { return }
+
+        Task { [weak self] in
+            await self?.catchUpMissedSends()
+        }
+    }
+
+    /// 唤醒后检查今天是否有已过时间但未发送的定时任务，如有则补发
+    private func catchUpMissedSends() async {
+        guard let store else { return }
+        let config = store.feishuBotConfig
+        let now = Date()
+        let calendar = Calendar.current
+        let currentHour = calendar.component(.hour, from: now)
+        let currentMinute = calendar.component(.minute, from: now)
+        let todayKey = DataStore.dateKey(from: now)
+
+        for scheduleTime in config.sendTimes {
+            // 已经发过了，跳过
+            guard config.lastSentTimes[scheduleTime.key] != todayKey else { continue }
+
+            // 只补发已过去的时间点（当前时间 > 计划时间）
+            let isPast = currentHour > scheduleTime.hour
+                || (currentHour == scheduleTime.hour && currentMinute > scheduleTime.minute)
+            guard isPast else { continue }
+
+            DevLog.shared.info("FeishuBot", "补发错过的 \(scheduleTime.key) 日报")
+            let result = await sendReport(store: store)
+            if result.success {
+                store.feishuBotConfig.lastSentTimes[scheduleTime.key] = todayKey
+                let fmt = DateFormatter()
+                fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                store.feishuBotConfig.lastSentDateTime = fmt.string(from: now)
+                DevLog.shared.info("FeishuBot", "补发 \(scheduleTime.key) 成功")
+            } else {
+                DevLog.shared.error("FeishuBot", "补发 \(scheduleTime.key) 失败: \(result.message)")
+            }
+        }
     }
 
     // MARK: - Scheduler
@@ -25,12 +85,13 @@ final class FeishuBotService {
                 try? await Task.sleep(for: .seconds(30))
             }
         }
-        DevLog.shared.info("FeishuBot", "定时发送已启动")
+        DevLog.shared.info("FeishuBot", "定时发送已启动，共 \(store?.feishuBotConfig.sendTimes.count ?? 0) 个时间点")
     }
 
     func stopScheduler() {
         schedulerTask?.cancel()
         schedulerTask = nil
+        DevLog.shared.info("FeishuBot", "定时发送已停止")
     }
 
     func restartScheduler() {

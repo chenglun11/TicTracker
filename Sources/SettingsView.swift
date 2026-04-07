@@ -453,6 +453,7 @@ private struct IssueTrackerTab: View {
     @Bindable var store: DataStore
     @State private var newMember = ""
     @State private var saveState = AutoSaveState()
+    @FocusState private var memberFieldFocused: Bool
 
     var body: some View {
         Form {
@@ -511,10 +512,15 @@ private struct IssueTrackerTab: View {
                     HStack {
                         TextField("添加成员…", text: $newMember)
                             .textFieldStyle(.roundedBorder)
+                            .focused($memberFieldFocused)
                             .onSubmit { addMember() }
-                        Button("添加") { addMember() }
-                            .disabled(newMember.trimmingCharacters(in: .whitespaces).isEmpty)
+                        Button("添加") {
+                            addMember()
+                            memberFieldFocused = true
+                        }
+                        .disabled(newMember.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
+                    .onAppear { memberFieldFocused = true }
                 }
 
                 Section("统计") {
