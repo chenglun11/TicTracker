@@ -1,0 +1,4 @@
+port: "8080"
+token: "your-secret-token-here"
+data_dir: "./data"
+feishu_secret: ""  # 飞书签名 secret，不用签名留空

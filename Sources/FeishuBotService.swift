@@ -245,6 +245,8 @@ final class FeishuBotService {
             return generateCardReport(store: store)
         case .richText:
             return generateRichTextReport(store: store)
+        case .customTemplate:
+            return generateCustomTemplateReport(store: store)
         }
     }
 
@@ -384,7 +386,7 @@ final class FeishuBotService {
             "content": [
                 "post": [
                     "zh_cn": [
-                        "title": "每日工单报告（\(d.todayKey)）",
+                        "title": d.config.cardTitle.isEmpty ? "每日工单报告（\(d.todayKey)）" : "\(d.config.cardTitle)（\(d.todayKey)）",
                         "content": lines
                     ]
                 ]
@@ -418,6 +420,76 @@ final class FeishuBotService {
         }
 
         return parts
+    }
+
+    // MARK: - Custom Template Report
+
+    private func generateCustomTemplateReport(store: DataStore) -> [String: Any] {
+        let d = collectReportData(store: store)
+        let template = d.config.customTemplate
+
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "yyyy-MM-dd HH:mm"
+
+        let deptStats: String = {
+            if d.todayTotal == 0 { return "无" }
+            return d.todayRecords.sorted(by: { $0.key < $1.key })
+                .map { "\($0.key) \($0.value)次" }
+                .joined(separator: "，")
+        }()
+
+        let variables: [String: String] = [
+            "日期": d.todayKey,
+            "今日总数": "\(d.todayTotal)",
+            "项目统计": deptStats,
+            "新建数量": "\(d.newIssues.count)",
+            "解决数量": "\(d.resolvedToday.count)",
+            "待处理数量": "\(d.pending.count)",
+            "观测中数量": "\(d.observing.count)",
+            "待处理列表": formatIssueListMd(d.pending, showStatus: true, config: d.config, jiraServerURL: d.jiraServerURL),
+            "已解决列表": formatIssueListMd(d.resolvedToday, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
+            "观测中列表": formatIssueListMd(d.observing, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
+            "日报内容": d.dailyNote.isEmpty ? "无" : d.dailyNote,
+            "当前时间": timeFmt.string(from: Date()),
+        ]
+
+        var result = template
+        for (key, value) in variables {
+            result = result.replacingOccurrences(of: "{{\(key)}}", with: value)
+        }
+
+        // 按 --- 分隔为多个卡片段落，每段一个 lark_md div，段间加 hr 分隔线
+        let sections = result.components(separatedBy: "\n---\n")
+        var elements: [[String: Any]] = []
+        for (i, section) in sections.enumerated() {
+            let trimmed = section.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            if i > 0 { elements.append(["tag": "hr"]) }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": trimmed]])
+        }
+        if elements.isEmpty {
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": "（空模板）"]])
+        }
+
+        // 底部备注
+        elements.append(["tag": "note", "elements": [["tag": "plain_text", "content": "由 TicTracker 自动生成 | \(timeFmt.string(from: Date()))"]]])
+
+        return [
+            "msg_type": "interactive",
+            "card": [
+                "config": ["wide_screen_mode": true],
+                "header": ["title": ["tag": "plain_text", "content": d.config.customTemplateTitle.isEmpty ? "每日工单报告" : d.config.customTemplateTitle], "template": "blue"],
+                "elements": elements
+            ]
+        ]
+    }
+
+    /// 格式化 issue 列表为 lark_md（用于自定义模板卡片）
+    private func formatIssueListMd(_ issues: [TrackedIssue], showStatus: Bool, config: FeishuBotConfig, jiraServerURL: String) -> String {
+        if issues.isEmpty { return "无" }
+        return issues.map { issue in
+            Self.formatIssue(issue, showStatus: showStatus, config: config, jiraServerURL: jiraServerURL)
+        }.joined(separator: "\n")
     }
 
     // MARK: - Card Report
@@ -522,7 +594,7 @@ final class FeishuBotService {
             "msg_type": "interactive",
             "card": [
                 "config": ["wide_screen_mode": true],
-                "header": ["title": ["tag": "plain_text", "content": "每日工单报告"], "template": "blue"],
+                "header": ["title": ["tag": "plain_text", "content": d.config.cardTitle.isEmpty ? "每日工单报告" : d.config.cardTitle], "template": "blue"],
                 "elements": elements
             ]
         ]

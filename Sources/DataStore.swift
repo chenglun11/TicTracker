@@ -668,6 +668,50 @@ final class DataStore {
         return String(data: data, encoding: .utf8)
     }
 
+    func exportSyncData() -> Data? {
+        var payload: [String: Any] = [
+            "lastModified": Date().timeIntervalSince1970,
+            "departments": departments,
+            "records": records,
+            "dailyNotes": dailyNotes
+        ]
+        if !tapTimestamps.isEmpty {
+            payload["tapTimestamps"] = tapTimestamps
+        }
+        if !trackedIssues.isEmpty,
+           let issueData = try? JSONEncoder().encode(trackedIssues),
+           let issueArray = try? JSONSerialization.jsonObject(with: issueData) {
+            payload["trackedIssues"] = issueArray
+        }
+        if !bugTeamMembers.isEmpty {
+            payload["bugTeamMembers"] = bugTeamMembers
+        }
+        // 配置数据
+        if let jiraData = try? JSONEncoder().encode(jiraConfig),
+           let jiraObj = try? JSONSerialization.jsonObject(with: jiraData) {
+            payload["jiraConfig"] = jiraObj
+        }
+        if let feishuData = try? JSONEncoder().encode(feishuBotConfig),
+           let feishuObj = try? JSONSerialization.jsonObject(with: feishuData) {
+            payload["feishuBotConfig"] = feishuObj
+        }
+        if let aiData = try? JSONEncoder().encode(aiConfig),
+           let aiObj = try? JSONSerialization.jsonObject(with: aiData) {
+            payload["aiConfig"] = aiObj
+        }
+        if !rssFeeds.isEmpty,
+           let rssData = try? JSONEncoder().encode(rssFeeds),
+           let rssArray = try? JSONSerialization.jsonObject(with: rssData) {
+            payload["rssFeeds"] = rssArray
+        }
+        if !todoTasks.isEmpty,
+           let todoData = try? JSONEncoder().encode(todoTasks),
+           let todoArray = try? JSONSerialization.jsonObject(with: todoData) {
+            payload["todoTasks"] = todoArray
+        }
+        return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    }
+
     func exportCSV() -> String {
         let allDates = Set(records.keys).union(dailyNotes.keys).sorted().reversed()
         var lines: [String] = []
@@ -728,6 +772,58 @@ final class DataStore {
         }
         if let members = obj["bugTeamMembers"] as? [String] {
             bugTeamMembers = members
+        }
+        return true
+    }
+
+    func importSyncData(_ data: Data) -> Bool {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        // 核心数据
+        if let depts = obj["departments"] as? [String] {
+            departments = depts
+        }
+        if let recs = obj["records"] as? [String: [String: Int]] {
+            records = recs
+        }
+        if let notes = obj["dailyNotes"] as? [String: String] {
+            dailyNotes = notes
+        }
+        if let taps = obj["tapTimestamps"] as? [String: [String: [String]]] {
+            tapTimestamps = taps
+        }
+        if let issueArray = obj["trackedIssues"],
+           let issueData = try? JSONSerialization.data(withJSONObject: issueArray),
+           let decoded = try? JSONDecoder().decode([TrackedIssue].self, from: issueData) {
+            trackedIssues = decoded
+        }
+        if let members = obj["bugTeamMembers"] as? [String] {
+            bugTeamMembers = members
+        }
+        // 配置数据
+        if let jiraObj = obj["jiraConfig"],
+           let jiraData = try? JSONSerialization.data(withJSONObject: jiraObj),
+           let decoded = try? JSONDecoder().decode(JiraConfig.self, from: jiraData) {
+            jiraConfig = decoded
+        }
+        if let feishuObj = obj["feishuBotConfig"],
+           let feishuData = try? JSONSerialization.data(withJSONObject: feishuObj),
+           let decoded = try? JSONDecoder().decode(FeishuBotConfig.self, from: feishuData) {
+            feishuBotConfig = decoded
+        }
+        if let aiObj = obj["aiConfig"],
+           let aiData = try? JSONSerialization.data(withJSONObject: aiObj),
+           let decoded = try? JSONDecoder().decode(AIConfig.self, from: aiData) {
+            aiConfig = decoded
+        }
+        if let rssArray = obj["rssFeeds"],
+           let rssData = try? JSONSerialization.data(withJSONObject: rssArray),
+           let decoded = try? JSONDecoder().decode([RSSFeed].self, from: rssData) {
+            rssFeeds = decoded
+        }
+        if let todoArray = obj["todoTasks"],
+           let todoData = try? JSONSerialization.data(withJSONObject: todoArray),
+           let decoded = try? JSONDecoder().decode([TodoTask].self, from: todoData) {
+            todoTasks = decoded
         }
         return true
     }

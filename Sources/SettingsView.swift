@@ -80,6 +80,8 @@ struct SettingsView: View {
                 .tabItem { Label("AI", systemImage: "sparkles") }
             DataTab(store: store)
                 .tabItem { Label("数据", systemImage: "externaldrive") }
+            SyncTab(store: store)
+                .tabItem { Label("同步", systemImage: "arrow.triangle.2.circlepath.icloud") }
             AboutTab()
                 .tabItem { Label("关于", systemImage: "info.circle") }
         }
@@ -1091,6 +1093,21 @@ private struct FeishuBotTab: View {
     @State private var sendResult: String?
     @State private var sendSuccess = false
 
+    private let templateVariables: [(String, String)] = [
+        ("{{日期}}", "当天日期，如 2026-04-07"),
+        ("{{今日总数}}", "项目支持总次数"),
+        ("{{项目统计}}", "各项目支持次数"),
+        ("{{新建数量}}", "今日新建问题数"),
+        ("{{解决数量}}", "今日解决问题数"),
+        ("{{待处理数量}}", "当前待处理问题数"),
+        ("{{观测中数量}}", "当前观测中问题数"),
+        ("{{待处理列表}}", "待处理问题列表"),
+        ("{{已解决列表}}", "今日已解决问题列表"),
+        ("{{观测中列表}}", "观测中问题列表"),
+        ("{{日报内容}}", "日报文字内容"),
+        ("{{当前时间}}", "发送时的时间戳"),
+    ]
+
     var body: some View {
         Form {
             Section("飞书 Bot") {
@@ -1120,6 +1137,13 @@ private struct FeishuBotTab: View {
                 }
                 .pickerStyle(.segmented)
                 .onChange(of: store.feishuBotConfig.messageFormat) { _, _ in saveState.triggerSave() }
+
+                if store.feishuBotConfig.messageFormat != .customTemplate {
+                    TextField("卡片标题", text: Bindable(store).feishuBotConfig.cardTitle,
+                              prompt: Text("每日工单报告"))
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .onChange(of: store.feishuBotConfig.cardTitle) { _, _ in saveState.debouncedSave() }
+                }
 
                 TextField("Webhook URL", text: Bindable(store).feishuBotConfig.webhookURL,
                           prompt: Text("https://open.feishu.cn/open-apis/bot/v2/hook/..."))
@@ -1212,7 +1236,60 @@ private struct FeishuBotTab: View {
                 .controlSize(.small)
             }
 
-            Section("卡片模块") {
+            if store.feishuBotConfig.messageFormat == .customTemplate {
+                Section("自定义模板") {
+                    TextField("卡片标题", text: Bindable(store).feishuBotConfig.customTemplateTitle,
+                              prompt: Text("每日工单报告"))
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .onChange(of: store.feishuBotConfig.customTemplateTitle) { _, _ in saveState.debouncedSave() }
+
+                    DisclosureGroup("可用变量") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(templateVariables, id: \.0) { variable, description in
+                                HStack(spacing: 8) {
+                                    Text(variable)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 2)
+                                        .background(.fill.tertiary)
+                                        .cornerRadius(4)
+                                    Text(description)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    Text("支持 **加粗**、[链接](url) 等 Markdown 语法，用 --- 分段")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextEditor(text: Bindable(store).feishuBotConfig.customTemplate)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 200, maxHeight: 400)
+                        .onChange(of: store.feishuBotConfig.customTemplate) { _, _ in
+                            saveState.debouncedSave()
+                        }
+
+                    HStack {
+                        Button("恢复默认模板") {
+                            store.feishuBotConfig.customTemplate = FeishuBotConfig.defaultTemplate
+                            saveState.triggerSave()
+                        }
+                        .controlSize(.small)
+                        .foregroundStyle(.red)
+                        Spacer()
+                        Text("\(store.feishuBotConfig.customTemplate.count) 字符")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if store.feishuBotConfig.messageFormat != .customTemplate {
+                Section("卡片模块") {
                 Toggle("项目支持统计", isOn: Bindable(store).feishuBotConfig.showSupportStats)
                     .onChange(of: store.feishuBotConfig.showSupportStats) { _, _ in saveState.triggerSave() }
                 Toggle("统计概览（新建/解决/待处理）", isOn: Bindable(store).feishuBotConfig.showOverview)
@@ -1227,6 +1304,7 @@ private struct FeishuBotTab: View {
                     .onChange(of: store.feishuBotConfig.showDailyNote) { _, _ in saveState.triggerSave() }
                 Toggle("问题评论（最近2条）", isOn: Bindable(store).feishuBotConfig.showComments)
                     .onChange(of: store.feishuBotConfig.showComments) { _, _ in saveState.triggerSave() }
+            }
             }
 
             Section("问题显示字段") {
@@ -1772,5 +1850,192 @@ private struct AboutTab: View {
                 .padding(.bottom, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Sync Tab
+
+private struct SyncTab: View {
+    @Bindable var store: DataStore
+    @State private var syncManager = SyncManager.shared
+    @State private var credentialInput = ""
+    @State private var testing = false
+    @State private var testResult: String?
+    @State private var testSuccess = false
+    @State private var syncing = false
+
+    var body: some View {
+        Form {
+            Section("云端同步") {
+                Toggle(isOn: $syncManager.config.enabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用数据同步")
+                        Text("自动同步数据到云端，支持多设备")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: syncManager.config.enabled) { _, enabled in
+                    if enabled {
+                        syncManager.startPeriodicSync(store: store)
+                    } else {
+                        syncManager.stopPeriodicSync()
+                    }
+                }
+            }
+
+            Section("同步后端") {
+                Picker("存储方式", selection: $syncManager.config.backend) {
+                    ForEach(SyncConfig.Backend.allCases, id: \.self) { backend in
+                        Text(backend.rawValue).tag(backend)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: syncManager.config.backend) { _, _ in
+                    credentialInput = syncManager.loadCredential()
+                }
+
+                switch syncManager.config.backend {
+                case .iCloud:
+                    Text("通过 iCloud Drive 文件同步，无需额外配置，登录 Apple ID 即可")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .webDAV:
+                    TextField("WebDAV URL", text: $syncManager.config.serverURL,
+                              prompt: Text("https://dav.example.com/sync"))
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                    TextField("用户名", text: $syncManager.config.username)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                    SecureField("密码", text: $credentialInput)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .onChange(of: credentialInput) { _, _ in saveCredential() }
+                case .httpAPI:
+                    TextField("API URL", text: $syncManager.config.serverURL,
+                              prompt: Text("https://api.example.com"))
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                    SecureField("Token", text: $credentialInput)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .onChange(of: credentialInput) { _, _ in saveCredential() }
+                }
+
+                HStack {
+                    Button(testing ? "测试中…" : "测试连接") {
+                        testConnection()
+                    }
+                    .controlSize(.small)
+                    .disabled(testing)
+
+                    if let result = testResult {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundStyle(testSuccess ? .green : .red)
+                    }
+                }
+            }
+
+            Section("同步设置") {
+                Picker("自动同步间隔", selection: $syncManager.config.intervalMinutes) {
+                    Text("10 分钟").tag(10)
+                    Text("30 分钟").tag(30)
+                    Text("1 小时").tag(60)
+                    Text("2 小时").tag(120)
+                    Text("仅手动").tag(0)
+                }
+                .onChange(of: syncManager.config.intervalMinutes) { _, _ in
+                    syncManager.startPeriodicSync(store: store)
+                }
+
+                HStack {
+                    Button(syncing ? "同步中…" : "立即同步") {
+                        manualSync()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(syncing)
+
+                    Spacer()
+
+                    if let lastSync = syncManager.config.lastSyncDate {
+                        Text("上次同步：\(formatDate(lastSync))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                syncStatusView
+            }
+
+            Section("同步范围") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("核心数据：项目、支持记录、日报、问题追踪、团队成员")
+                    Text("配置数据：Jira、飞书 Bot、AI、RSS 订阅")
+                    Text("任务数据：Todo 任务")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            credentialInput = syncManager.loadCredential()
+        }
+    }
+
+    @ViewBuilder
+    private var syncStatusView: some View {
+        switch syncManager.status {
+        case .idle:
+            EmptyView()
+        case .syncing:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("正在同步…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .success(let date):
+            Text("同步成功 \(formatDate(date))")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .error(let msg):
+            Text("同步失败：\(msg)")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+    }
+
+    private func saveCredential() {
+        syncManager.saveCredential(credentialInput)
+    }
+
+    private func testConnection() {
+        if !credentialInput.isEmpty { saveCredential() }
+        testing = true
+        testResult = nil
+        Task {
+            let result = await syncManager.testConnection()
+            switch result {
+            case .success:
+                testResult = "连接成功"
+                testSuccess = true
+            case .failure(let error):
+                testResult = error.localizedDescription
+                testSuccess = false
+            }
+            testing = false
+        }
+    }
+
+    private func manualSync() {
+        if !credentialInput.isEmpty { saveCredential() }
+        syncing = true
+        Task {
+            await syncManager.sync(store: store)
+            syncing = false
+        }
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MM-dd HH:mm:ss"
+        return fmt.string(from: date)
     }
 }

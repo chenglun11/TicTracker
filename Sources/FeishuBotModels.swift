@@ -3,6 +3,7 @@ import Foundation
 enum FeishuMessageFormat: String, Codable, Sendable, CaseIterable {
     case card = "消息卡片"
     case richText = "富文本"
+    case customTemplate = "自定义模板"
 }
 
 struct SendHistory: Codable, Sendable, Identifiable {
@@ -22,6 +23,24 @@ struct ScheduleTime: Codable, Sendable, Identifiable, Equatable {
 }
 
 struct FeishuBotConfig: Codable, Sendable {
+    static let defaultTemplate = """
+📊 **项目支持：**{{项目统计}}（共 {{今日总数}} 次）
+---
+🟢 **今日新建** {{新建数量}} 个  ·  ✅ **今日解决** {{解决数量}} 个  ·  🔶 **待处理** {{待处理数量}} 个  ·  👁 **观测中** {{观测中数量}} 个
+---
+**待处理问题：**
+{{待处理列表}}
+---
+**已解决问题：**
+{{已解决列表}}
+---
+**👁 观测中问题：**
+{{观测中列表}}
+---
+**📝 日报：**
+{{日报内容}}
+"""
+
     var enabled: Bool = false
     var webhookURL: String = ""
     var signEnabled: Bool = false
@@ -29,6 +48,9 @@ struct FeishuBotConfig: Codable, Sendable {
     var lastSentTimes: [String: String] = [:]  // key="HH:mm", value=dateKey of last send
     var lastSentDateTime: String = ""
     var messageFormat: FeishuMessageFormat = .card
+    var customTemplate: String = Self.defaultTemplate
+    var customTemplateTitle: String = "每日工单报告"
+    var cardTitle: String = "每日工单报告"
     var sendHistory: [SendHistory] = []
     var maxRetries: Int = 3
 
@@ -54,7 +76,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case enabled, webhookURL, signEnabled
         case sendTimes, lastSentTimes, lastSentDateTime
         case sendHour, sendMinute, lastSentDate  // legacy
-        case messageFormat, sendHistory, maxRetries
+        case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle
         case showSupportStats, showOverview, showPending, showObserving, showResolved, showDailyNote, showComments
         case fieldType, fieldDepartment, fieldJiraKey, fieldStatus, fieldAssignee
     }
@@ -66,6 +88,9 @@ struct FeishuBotConfig: Codable, Sendable {
         signEnabled = try c.decodeIfPresent(Bool.self, forKey: .signEnabled) ?? false
         lastSentDateTime = try c.decodeIfPresent(String.self, forKey: .lastSentDateTime) ?? ""
         messageFormat = try c.decodeIfPresent(FeishuMessageFormat.self, forKey: .messageFormat) ?? .card
+        customTemplate = try c.decodeIfPresent(String.self, forKey: .customTemplate) ?? Self.defaultTemplate
+        customTemplateTitle = try c.decodeIfPresent(String.self, forKey: .customTemplateTitle) ?? "每日工单报告"
+        cardTitle = try c.decodeIfPresent(String.self, forKey: .cardTitle) ?? "每日工单报告"
         sendHistory = try c.decodeIfPresent([SendHistory].self, forKey: .sendHistory) ?? []
         maxRetries = try c.decodeIfPresent(Int.self, forKey: .maxRetries) ?? 3
 
@@ -109,6 +134,9 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(lastSentTimes, forKey: .lastSentTimes)
         try c.encode(lastSentDateTime, forKey: .lastSentDateTime)
         try c.encode(messageFormat, forKey: .messageFormat)
+        try c.encode(customTemplate, forKey: .customTemplate)
+        try c.encode(customTemplateTitle, forKey: .customTemplateTitle)
+        try c.encode(cardTitle, forKey: .cardTitle)
         try c.encode(sendHistory, forKey: .sendHistory)
         try c.encode(maxRetries, forKey: .maxRetries)
 

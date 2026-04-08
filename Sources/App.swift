@@ -127,6 +127,10 @@ struct TicTrackerApp: App {
                         if store.feishuBotConfig.enabled {
                             FeishuBotService.shared.startScheduler()
                         }
+                        if SyncManager.shared.config.enabled {
+                            Task { await SyncManager.shared.sync(store: store) }
+                            SyncManager.shared.startPeriodicSync(store: store)
+                        }
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .openWindowRequest)) { notification in
