@@ -259,6 +259,14 @@ struct IssueTrackerView: View {
                     .foregroundStyle(.white)
                     .background(Color.green, in: Capsule())
             }
+            if issue.isEscalated {
+                Text("Escalated")
+                    .font(.caption2)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .foregroundStyle(.white)
+                    .background(Color.red, in: Capsule())
+            }
             if let assignee = issue.assignee {
                 Text(assignee)
                     .font(.caption2)
@@ -497,6 +505,18 @@ struct IssueTrackerView: View {
                                 .buttonStyle(.borderless)
                                 .help("在浏览器中打开")
                             }
+
+                            Toggle(isOn: Binding(
+                                get: { issue.isEscalated },
+                                set: {
+                                    store.updateIssueEscalated(id: issue.id, isEscalated: $0)
+                                    saveState.debouncedSave()
+                                }
+                            )) {
+                                Text("Escalated")
+                                    .font(.caption)
+                            }
+                            .toggleStyle(.checkbox)
                         }
                     case .feishu:
                         HStack(spacing: 8) {

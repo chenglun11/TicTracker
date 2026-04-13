@@ -93,6 +93,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     var comments: [IssueComment] = []
     var resolvedAt: Date?
     var hasDevActivity: Bool = false     // 检测到 GitLab bot 等开发活动
+    var isEscalated: Bool = false        // Meta Support 是否已 Escalate
 
     init(title: String, type: IssueType = .bug) {
         self.title = title
@@ -102,7 +103,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     // MARK: - Custom Codable for migration
 
     private enum CodingKeys: String, CodingKey {
-        case id, issueNumber, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt, hasDevActivity
+        case id, issueNumber, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt, hasDevActivity, isEscalated
         case note       // legacy single-note field
         case isFixed    // legacy BugEntry field
         case fixedAt    // legacy BugEntry field
@@ -180,6 +181,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         }
 
         hasDevActivity = (try? container.decodeIfPresent(Bool.self, forKey: .hasDevActivity)) ?? false
+        isEscalated = (try? container.decodeIfPresent(Bool.self, forKey: .isEscalated)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -208,6 +210,9 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         try container.encodeIfPresent(resolvedAt, forKey: .resolvedAt)
         if hasDevActivity {
             try container.encode(hasDevActivity, forKey: .hasDevActivity)
+        }
+        if isEscalated {
+            try container.encode(isEscalated, forKey: .isEscalated)
         }
     }
 }

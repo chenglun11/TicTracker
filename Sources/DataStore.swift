@@ -1126,6 +1126,10 @@ final class DataStore {
         mutateIssue(id: id) { $0.type = type }
     }
 
+    func updateIssueEscalated(id: UUID, isEscalated: Bool) {
+        mutateIssue(id: id) { $0.isEscalated = isEscalated }
+    }
+
     func updateIssueDiaryBadge(id: UUID, badge: DiaryBadge) {
         mutateIssueRaw(id: id) { $0.diaryBadge = badge }
     }
