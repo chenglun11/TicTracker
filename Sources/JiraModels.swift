@@ -42,6 +42,7 @@ struct JiraConfig: Codable, Sendable {
     var showInMenuBar: Bool = true
     var deptMapping: [String: String] = [:]  // legacy: issueKey → department name
     var mappingRules: [JiraMappingRule] = []
+    var statusMapping: [String: String] = [:]  // Jira状态名 → 本地IssueStatus case名 (e.g. "In QA" → "testing")
 
     init() {}
 
@@ -60,6 +61,7 @@ struct JiraConfig: Codable, Sendable {
         showInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showInMenuBar) ?? true
         deptMapping = try c.decodeIfPresent([String: String].self, forKey: .deptMapping) ?? [:]
         mappingRules = try c.decodeIfPresent([JiraMappingRule].self, forKey: .mappingRules) ?? []
+        statusMapping = try c.decodeIfPresent([String: String].self, forKey: .statusMapping) ?? [:]
     }
 
     func matchedDepartment(for issue: JiraIssue) -> String? {

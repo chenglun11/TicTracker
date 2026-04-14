@@ -244,7 +244,7 @@ final class JiraService {
             guard let ji = jiraIssue else { continue }
 
             // --- Status sync ---
-            let newStatus = mapJiraStatus(ji.statusCategoryKey)
+            let newStatus = mapJiraStatus(ji.statusCategoryKey, statusName: ji.status)
             if newStatus != issue.status && issue.status != .observing {
                 // 如果有开发活动且 Jira 想改回"待处理"，跳过（GitLab 活动优先）
                 let skipDowngrade = issue.hasDevActivity && newStatus == .pending && issue.status == .inProgress
@@ -297,7 +297,17 @@ final class JiraService {
         }
     }
 
-    private func mapJiraStatus(_ categoryKey: String) -> IssueStatus {
+    private func mapJiraStatus(_ categoryKey: String, statusName: String = "") -> IssueStatus {
+        // 优先使用自定义状态映射（按 Jira 状态名匹配）
+        if !statusName.isEmpty, let store {
+            for (jiraName, localCase) in store.jiraConfig.statusMapping {
+                if jiraName.localizedCaseInsensitiveCompare(statusName) == .orderedSame,
+                   let matched = IssueStatus.allCases.first(where: { String(describing: $0) == localCase }) {
+                    return matched
+                }
+            }
+        }
+        // Fallback: 按 Jira statusCategoryKey 映射
         switch categoryKey {
         case "new": return .pending
         case "indeterminate": return .inProgress

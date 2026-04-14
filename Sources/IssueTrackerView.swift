@@ -820,6 +820,7 @@ struct IssueTrackerView: View {
         switch status {
         case .pending: return .orange
         case .inProgress: return .orange
+        case .testing: return .purple
         case .observing: return .blue
         case .fixed: return .green
         case .ignored: return .secondary

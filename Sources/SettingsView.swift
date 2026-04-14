@@ -805,6 +805,8 @@ private struct JiraTab: View {
     @Bindable var store: DataStore
     @State private var tokenInput = ""
     @State private var tokenSaved = false
+    @State private var newJiraStatusName = ""
+    @State private var newLocalStatus: IssueStatus = .pending
     @State private var testing = false
     @State private var testResult: String?
     @State private var testSuccess = false
@@ -1040,6 +1042,64 @@ private struct JiraTab: View {
                     )
                 }
                 .controlSize(.small)
+            }
+
+            Section("状态映射") {
+                Text("将 Jira 状态名映射到本地状态，未命中的按默认 Category 规则处理")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Array(store.jiraConfig.statusMapping.sorted(by: { $0.key < $1.key })), id: \.key) { jiraName, localCase in
+                    HStack(spacing: 8) {
+                        Text(jiraName)
+                            .frame(minWidth: 80, alignment: .leading)
+                        Text("→")
+                            .foregroundStyle(.secondary)
+                        if let status = IssueStatus.allCases.first(where: { String(describing: $0) == localCase }) {
+                            Text(status.rawValue)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text(localCase)
+                                .foregroundStyle(.red)
+                        }
+                        Spacer()
+                        Button {
+                            store.jiraConfig.statusMapping.removeValue(forKey: jiraName)
+                            saveState.triggerSave()
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                                .foregroundStyle(.red.opacity(0.7))
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+                }
+                HStack(spacing: 8) {
+                    TextField("Jira 状态名", text: $newJiraStatusName)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .frame(minWidth: 100)
+                    Text("→")
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $newLocalStatus) {
+                        ForEach(IssueStatus.allCases, id: \.self) { s in
+                            Text(s.rawValue).tag(s)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 100)
+                    Button("添加") {
+                        let name = newJiraStatusName.trimmingCharacters(in: .whitespaces)
+                        guard !name.isEmpty else { return }
+                        store.jiraConfig.statusMapping[name] = String(describing: newLocalStatus)
+                        newJiraStatusName = ""
+                        saveState.triggerSave()
+                    }
+                    .controlSize(.small)
+                    .disabled(newJiraStatusName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
             }
         }
         .formStyle(.grouped)
