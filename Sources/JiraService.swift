@@ -245,7 +245,7 @@ final class JiraService {
 
             // --- Status sync ---
             let newStatus = mapJiraStatus(ji.statusCategoryKey, statusName: ji.status)
-            if newStatus != issue.status && issue.status != .observing {
+            if newStatus != issue.status && issue.status != .observing && issue.status != .scheduled {
                 // 如果有开发活动且 Jira 想改回"待处理"，跳过（GitLab 活动优先）
                 let skipDowngrade = issue.hasDevActivity && newStatus == .pending && issue.status == .inProgress
                 if !skipDowngrade {
