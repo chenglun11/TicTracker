@@ -79,7 +79,7 @@ final class JiraService {
         guard var components = URLComponents(string: "\(base)/rest/api/2/search") else { return "URL 无效" }
         components.queryItems = [
             URLQueryItem(name: "jql", value: config.jql),
-            URLQueryItem(name: "fields", value: "summary,status,priority,issuetype"),
+            URLQueryItem(name: "fields", value: "summary,status,priority,issuetype,assignee"),
             URLQueryItem(name: "maxResults", value: "50"),
         ]
         guard let url = components.url else { return "URL 无效" }
@@ -114,7 +114,7 @@ final class JiraService {
         let jql = "reporter=currentUser() AND resolution=Unresolved ORDER BY updated DESC"
         components.queryItems = [
             URLQueryItem(name: "jql", value: jql),
-            URLQueryItem(name: "fields", value: "summary,status,priority,issuetype"),
+            URLQueryItem(name: "fields", value: "summary,status,priority,issuetype,assignee"),
             URLQueryItem(name: "maxResults", value: "50"),
         ]
         guard let url = components.url else { return "URL 无效" }
@@ -261,6 +261,29 @@ final class JiraService {
                 }
             }
 
+            // --- Assignee sync ---
+            if let jiraAssignee = ji.assignee, !jiraAssignee.isEmpty {
+                if issue.assignee != jiraAssignee {
+                    let oldAssignee = issue.assignee ?? "未指派"
+                    let commentText = "[Jira] 经办人变更: \(oldAssignee) → \(jiraAssignee)"
+                    let alreadyLogged = issue.comments.contains { $0.text == commentText }
+                    if !alreadyLogged {
+                        store.updateIssueAssignee(id: issue.id, assignee: jiraAssignee)
+                        store.addIssueComment(id: issue.id, text: commentText)
+                        DevLog.shared.info("JiraSync", "\(jiraKey): assignee \(oldAssignee) → \(jiraAssignee)")
+                    }
+                }
+            } else if issue.assignee != nil {
+                let oldAssignee = issue.assignee!
+                let commentText = "[Jira] 经办人变更: \(oldAssignee) → 未指派"
+                let alreadyLogged = issue.comments.contains { $0.text == commentText }
+                if !alreadyLogged {
+                    store.updateIssueAssignee(id: issue.id, assignee: nil)
+                    store.addIssueComment(id: issue.id, text: commentText)
+                    DevLog.shared.info("JiraSync", "\(jiraKey): assignee \(oldAssignee) → unassigned")
+                }
+            }
+
             // --- Comment sync (only for recently active issues) ---
             guard (issue.updatedAt ?? issue.createdAt) >= commentCutoff else { continue }
             let remoteComments = await fetchJiraComments(issueKey: jiraKey)
@@ -324,7 +347,7 @@ final class JiraService {
         let config = store.jiraConfig
         guard let token = loadToken() else { return nil }
         let base = config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: "\(base)/rest/api/2/issue/\(key)?fields=summary,status,priority,issuetype") else { return nil }
+        guard let url = URL(string: "\(base)/rest/api/2/issue/\(key)?fields=summary,status,priority,issuetype,assignee") else { return nil }
 
         var request = URLRequest(url: url)
         applyAuth(&request, username: config.username, token: token)
@@ -352,8 +375,10 @@ final class JiraService {
         let priorityName = priorityObj?["name"] as? String
         let typeObj = fields["issuetype"] as? [String: Any]
         let typeName = typeObj?["name"] as? String
+        let assigneeObj = fields["assignee"] as? [String: Any]
+        let assigneeName = assigneeObj?["displayName"] as? String
         return JiraIssue(key: key, summary: summary, status: statusName,
-                         statusCategoryKey: categoryKey, priority: priorityName, issueType: typeName)
+                         statusCategoryKey: categoryKey, priority: priorityName, issueType: typeName, assignee: assigneeName)
     }
 
     struct JiraCommentEntry: Sendable {
@@ -455,8 +480,10 @@ final class JiraService {
             let priorityName = priorityObj?["name"] as? String
             let typeObj = fields["issuetype"] as? [String: Any]
             let typeName = typeObj?["name"] as? String
+            let assigneeObj = fields["assignee"] as? [String: Any]
+            let assigneeName = assigneeObj?["displayName"] as? String
             return JiraIssue(key: key, summary: summary, status: statusName,
-                             statusCategoryKey: categoryKey, priority: priorityName, issueType: typeName)
+                             statusCategoryKey: categoryKey, priority: priorityName, issueType: typeName, assignee: assigneeName)
         }
     }
 

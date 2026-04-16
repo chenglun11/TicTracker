@@ -93,6 +93,7 @@ struct JiraIssue: Codable, Identifiable, Sendable {
     let statusCategoryKey: String  // "new" / "indeterminate" / "done"
     let priority: String?
     let issueType: String?
+    let assignee: String?
     var id: String { key }
 }
 
