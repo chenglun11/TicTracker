@@ -302,7 +302,7 @@ final class JiraService {
         if !statusName.isEmpty, let store {
             for (jiraName, localCase) in store.jiraConfig.statusMapping {
                 if jiraName.localizedCaseInsensitiveCompare(statusName) == .orderedSame,
-                   let matched = IssueStatus.allCases.first(where: { String(describing: $0) == localCase }) {
+                   let matched = IssueStatus.fromCaseName(localCase) {
                     return matched
                 }
             }

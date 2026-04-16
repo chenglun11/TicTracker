@@ -39,6 +39,23 @@ enum IssueStatus: String, Codable, Sendable, CaseIterable {
     case fixed = "已修复"
     case ignored = "已忽略"
 
+    /// 稳定的 case 名称字符串，用于序列化/映射匹配（不依赖 String(describing:)）
+    var caseName: String {
+        switch self {
+        case .pending: return "pending"
+        case .inProgress: return "inProgress"
+        case .testing: return "testing"
+        case .observing: return "observing"
+        case .fixed: return "fixed"
+        case .ignored: return "ignored"
+        }
+    }
+
+    /// 通过 caseName 查找对应的 IssueStatus
+    static func fromCaseName(_ name: String) -> IssueStatus? {
+        allCases.first { $0.caseName == name }
+    }
+
     var icon: String {
         switch self {
         case .pending: return "circle"

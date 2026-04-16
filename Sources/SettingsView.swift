@@ -1054,7 +1054,7 @@ private struct JiraTab: View {
                             .frame(minWidth: 80, alignment: .leading)
                         Text("→")
                             .foregroundStyle(.secondary)
-                        if let status = IssueStatus.allCases.first(where: { String(describing: $0) == localCase }) {
+                        if let status = IssueStatus.fromCaseName(localCase) {
                             Text(status.rawValue)
                                 .foregroundStyle(.secondary)
                         } else {
@@ -1093,7 +1093,7 @@ private struct JiraTab: View {
                     Button("添加") {
                         let name = newJiraStatusName.trimmingCharacters(in: .whitespaces)
                         guard !name.isEmpty else { return }
-                        store.jiraConfig.statusMapping[name] = String(describing: newLocalStatus)
+                        store.jiraConfig.statusMapping[name] = newLocalStatus.caseName
                         newJiraStatusName = ""
                         saveState.triggerSave()
                     }
