@@ -1145,11 +1145,9 @@ private struct JiraTab: View {
 
 private struct FeishuBotTab: View {
     @Bindable var store: DataStore
-    @State private var secretInput = ""
-    @State private var secretSaved = false
-    @FocusState private var isSecretFocused: Bool
     @State private var saveState = AutoSaveState()
     @State private var newWebhookURL = ""
+    @State private var secretInputs: [UUID: String] = [:]
     @State private var sending = false
     @State private var sendResult: String?
     @State private var sendSuccess = false
@@ -1206,24 +1204,45 @@ private struct FeishuBotTab: View {
                         .onChange(of: store.feishuBotConfig.cardTitle) { _, _ in saveState.debouncedSave() }
                 }
 
-                ForEach(Array(store.feishuBotConfig.webhookURLs.enumerated()), id: \.element) { index, url in
-                    HStack(spacing: 8) {
-                        Text(url)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Button {
-                            store.feishuBotConfig.webhookURLs.remove(at: index)
-                            saveState.triggerSave()
-                        } label: {
-                            Image(systemName: "trash")
+                ForEach(Array(store.feishuBotConfig.webhooks.enumerated()), id: \.element.id) { index, webhook in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text(webhook.url)
                                 .font(.caption)
-                                .foregroundStyle(.red.opacity(0.7))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button {
+                                FeishuBotService.deleteSecret(for: webhook.id)
+                                store.feishuBotConfig.webhooks.remove(at: index)
+                                saveState.triggerSave()
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                                    .foregroundStyle(.red.opacity(0.7))
+                            }
+                            .buttonStyle(.borderless)
                         }
-                        .buttonStyle(.borderless)
+                        Toggle("签名校验", isOn: Binding(
+                            get: { store.feishuBotConfig.webhooks[index].signEnabled },
+                            set: { store.feishuBotConfig.webhooks[index].signEnabled = $0; saveState.triggerSave() }
+                        ))
+                        .controlSize(.small)
+                        if webhook.signEnabled {
+                            HStack(spacing: 6) {
+                                SecureField("Secret", text: Binding(
+                                    get: { secretInputs[webhook.id] ?? "" },
+                                    set: { secretInputs[webhook.id] = $0 }
+                                ))
+                                .textFieldStyle(UnderlineTextFieldStyle())
+                                .onSubmit { saveWebhookSecret(webhook.id) }
+                                Button("保存") { saveWebhookSecret(webhook.id) }
+                                    .controlSize(.small)
+                                    .disabled((secretInputs[webhook.id] ?? "").isEmpty)
+                            }
+                        }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 6)
                     .padding(.horizontal, 8)
                     .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
                 }
@@ -1233,21 +1252,13 @@ private struct FeishuBotTab: View {
                         .textFieldStyle(UnderlineTextFieldStyle())
                     Button("添加") {
                         let url = newWebhookURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !url.isEmpty, !store.feishuBotConfig.webhookURLs.contains(url) else { return }
-                        store.feishuBotConfig.webhookURLs.append(url)
+                        guard !url.isEmpty, !store.feishuBotConfig.webhooks.contains(where: { $0.url == url }) else { return }
+                        store.feishuBotConfig.webhooks.append(FeishuWebhook(url: url))
                         newWebhookURL = ""
                         saveState.triggerSave()
                     }
                     .controlSize(.small)
                     .disabled(newWebhookURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-
-                Toggle("签名校验", isOn: Bindable(store).feishuBotConfig.signEnabled)
-                    .onChange(of: store.feishuBotConfig.signEnabled) { _, _ in saveState.triggerSave() }
-
-                if store.feishuBotConfig.signEnabled {
-                    autoSaveSecureField("Secret", text: $secretInput, saved: $secretSaved,
-                                        focused: $isSecretFocused, onSave: saveSecret)
                 }
 
                 HStack {
@@ -1256,7 +1267,7 @@ private struct FeishuBotTab: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(sending || store.feishuBotConfig.webhookURLs.isEmpty)
+                    .disabled(sending || store.feishuBotConfig.webhooks.isEmpty)
 
                     if let result = sendResult {
                         Text(result)
@@ -1460,19 +1471,23 @@ private struct FeishuBotTab: View {
         .formStyle(.grouped)
         .autoSaveIndicator(saveState)
         .onAppear {
-            if let secret = FeishuBotService.loadSecret() {
-                secretInput = secret
+            for webhook in store.feishuBotConfig.webhooks where webhook.signEnabled {
+                if let secret = FeishuBotService.loadSecret(for: webhook.id) {
+                    secretInputs[webhook.id] = secret
+                }
             }
         }
     }
 
-    private func saveSecret() {
-        FeishuBotService.saveSecret(secretInput)
+    private func saveWebhookSecret(_ id: UUID) {
+        guard let secret = secretInputs[id], !secret.isEmpty else { return }
+        FeishuBotService.saveSecret(for: id, secret: secret)
     }
 
     private func testSend() {
-        if store.feishuBotConfig.signEnabled && !secretInput.isEmpty {
-            saveSecret()
+        // 保存所有有输入的 secret
+        for webhook in store.feishuBotConfig.webhooks where webhook.signEnabled {
+            saveWebhookSecret(webhook.id)
         }
         sending = true
         sendResult = nil

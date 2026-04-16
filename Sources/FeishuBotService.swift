@@ -15,7 +15,20 @@ final class FeishuBotService {
 
     func setup(store: DataStore) {
         self.store = store
+        migrateSecrets(store: store)
         observeSystemWake()
+    }
+
+    /// 一次性迁移：旧全局 secret → 复制到所有 signEnabled 的 webhook
+    private func migrateSecrets(store: DataStore) {
+        guard let secret = Self.loadLegacySecret(), !secret.isEmpty else { return }
+        for webhook in store.feishuBotConfig.webhooks where webhook.signEnabled {
+            if Self.loadSecret(for: webhook.id) == nil {
+                Self.saveSecret(for: webhook.id, secret: secret)
+            }
+        }
+        Self.deleteLegacySecret()
+        DevLog.shared.info("FeishuBot", "已迁移全局 Secret 到 \(store.feishuBotConfig.webhooks.filter { $0.signEnabled }.count) 个 Webhook")
     }
 
     // MARK: - System Wake
@@ -35,7 +48,7 @@ final class FeishuBotService {
     private func handleSystemWake() {
         DevLog.shared.info("FeishuBot", "系统唤醒，检查是否有错过的定时发送")
         guard let store, store.feishuBotConfig.enabled,
-              !store.feishuBotConfig.webhookURLs.isEmpty else { return }
+              !store.feishuBotConfig.webhooks.isEmpty else { return }
 
         Task { [weak self] in
             await self?.catchUpMissedSends()
@@ -101,7 +114,7 @@ final class FeishuBotService {
 
     private func checkAndSend() async {
         guard let store, store.feishuBotConfig.enabled,
-              !store.feishuBotConfig.webhookURLs.isEmpty else { return }
+              !store.feishuBotConfig.webhooks.isEmpty else { return }
 
         let config = store.feishuBotConfig
         let now = Date()
@@ -130,7 +143,7 @@ final class FeishuBotService {
 
     /// 手动发送当天报告（不重试，即时反馈）
     func sendNow(store: DataStore) async -> (success: Bool, message: String) {
-        guard !store.feishuBotConfig.webhookURLs.isEmpty else {
+        guard !store.feishuBotConfig.webhooks.isEmpty else {
             return (false, "Webhook URL 为空")
         }
         let result = await sendReportOnce(store: store)
@@ -172,38 +185,40 @@ final class FeishuBotService {
 
     private func sendReportOnce(store: DataStore) async -> (success: Bool, message: String) {
         let payload = generateDailyReport(store: store)
-        let config = store.feishuBotConfig
-        let webhookURLs = config.webhookURLs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        let webhooks = store.feishuBotConfig.webhooks.filter {
+            !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
 
-        guard !webhookURLs.isEmpty else {
+        guard !webhooks.isEmpty else {
             return (false, "Webhook URL 为空")
-        }
-
-        var body = payload
-        if config.signEnabled {
-            guard let secret = Self.loadSecret(), !secret.isEmpty else {
-                DevLog.shared.error("FeishuBot", "签名已启用但 Secret 未配置")
-                return (false, "签名 Secret 未配置")
-            }
-            let timestamp = String(Int(Date().timeIntervalSince1970))
-            let sign = Self.generateSign(timestamp: timestamp, secret: secret)
-            body["timestamp"] = timestamp
-            body["sign"] = sign
-        }
-
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
-            DevLog.shared.error("FeishuBot", "JSON 序列化失败")
-            return (false, "JSON 序列化失败")
         }
 
         var successCount = 0
         var failureMessages: [String] = []
 
-        for webhookURL in webhookURLs {
-            guard let url = URL(string: webhookURL) else {
-                DevLog.shared.error("FeishuBot", "Webhook URL 无效: \(webhookURL)")
+        for webhook in webhooks {
+            let trimmedURL = webhook.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: trimmedURL) else {
+                DevLog.shared.error("FeishuBot", "Webhook URL 无效: \(trimmedURL)")
                 failureMessages.append("无效 URL")
+                continue
+            }
+
+            var body = payload
+            if webhook.signEnabled {
+                guard let secret = Self.loadSecret(for: webhook.id), !secret.isEmpty else {
+                    DevLog.shared.error("FeishuBot", "签名已启用但 Secret 未配置: \(trimmedURL)")
+                    failureMessages.append("Secret 未配置")
+                    continue
+                }
+                let timestamp = String(Int(Date().timeIntervalSince1970))
+                let sign = Self.generateSign(timestamp: timestamp, secret: secret)
+                body["timestamp"] = timestamp
+                body["sign"] = sign
+            }
+
+            guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
+                failureMessages.append("JSON 序列化失败")
                 continue
             }
 
@@ -219,7 +234,7 @@ final class FeishuBotService {
                     continue
                 }
                 guard http.statusCode == 200 else {
-                    DevLog.shared.error("FeishuBot", "HTTP \(http.statusCode): \(webhookURL)")
+                    DevLog.shared.error("FeishuBot", "HTTP \(http.statusCode): \(trimmedURL)")
                     failureMessages.append("HTTP \(http.statusCode)")
                     continue
                 }
@@ -227,28 +242,28 @@ final class FeishuBotService {
                     let code = json["StatusCode"] as? Int ?? json["code"] as? Int
                     if code == 0 {
                         successCount += 1
-                        DevLog.shared.info("FeishuBot", "日报发送成功: \(webhookURL)")
+                        DevLog.shared.info("FeishuBot", "日报发送成功: \(trimmedURL)")
                         continue
                     }
                     let msg = json["StatusMessage"] as? String ?? json["msg"] as? String ?? "未知错误"
-                    DevLog.shared.error("FeishuBot", "飞书返回错误: \(msg) [\(webhookURL)]")
+                    DevLog.shared.error("FeishuBot", "飞书返回错误: \(msg) [\(trimmedURL)]")
                     failureMessages.append(msg)
                     continue
                 }
                 let text = String(data: data, encoding: .utf8) ?? "unknown"
-                DevLog.shared.error("FeishuBot", "飞书返回错误: \(text) [\(webhookURL)]")
+                DevLog.shared.error("FeishuBot", "飞书返回错误: \(text) [\(trimmedURL)]")
                 failureMessages.append("响应解析失败")
             } catch {
-                DevLog.shared.error("FeishuBot", "发送失败: \(error.localizedDescription) [\(webhookURL)]")
+                DevLog.shared.error("FeishuBot", "发送失败: \(error.localizedDescription) [\(trimmedURL)]")
                 failureMessages.append("网络错误: \(error.localizedDescription)")
             }
         }
 
-        if successCount == webhookURLs.count {
+        if successCount == webhooks.count {
             return (true, successCount == 1 ? "发送成功" : "发送成功（\(successCount) 个地址）")
         }
         if successCount > 0 {
-            return (true, "部分发送成功（\(successCount)/\(webhookURLs.count)）")
+            return (true, "部分发送成功（\(successCount)/\(webhooks.count)）")
         }
         return (false, failureMessages.first ?? "发送失败")
     }
@@ -705,14 +720,28 @@ final class FeishuBotService {
 
     // MARK: - Keychain
 
-    static func saveSecret(_ secret: String) {
+    static func saveSecret(for webhookID: UUID, secret: String) {
         if let data = secret.data(using: .utf8) {
-            KeychainHelper.save(service: keychainService, account: keychainAccount, data: data)
+            KeychainHelper.save(service: keychainService, account: "webhook-secret-\(webhookID.uuidString)", data: data)
         }
     }
 
-    static func loadSecret() -> String? {
+    static func loadSecret(for webhookID: UUID) -> String? {
+        guard let data = KeychainHelper.load(service: keychainService, account: "webhook-secret-\(webhookID.uuidString)") else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func deleteSecret(for webhookID: UUID) {
+        KeychainHelper.delete(service: keychainService, account: "webhook-secret-\(webhookID.uuidString)")
+    }
+
+    // 旧全局 secret（仅用于迁移）
+    private static func loadLegacySecret() -> String? {
         guard let data = KeychainHelper.load(service: keychainService, account: keychainAccount) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    private static func deleteLegacySecret() {
+        KeychainHelper.delete(service: keychainService, account: keychainAccount)
     }
 }

@@ -22,6 +22,12 @@ struct ScheduleTime: Codable, Sendable, Identifiable, Equatable {
     var key: String { String(format: "%02d:%02d", hour, minute) }
 }
 
+struct FeishuWebhook: Codable, Sendable, Identifiable, Equatable {
+    var id = UUID()
+    var url: String
+    var signEnabled: Bool = false
+}
+
 struct FeishuBotConfig: Codable, Sendable {
     static let defaultTemplate = """
 📊 **项目支持：**{{项目统计}}（共 {{今日总数}} 次）
@@ -42,8 +48,7 @@ struct FeishuBotConfig: Codable, Sendable {
 """
 
     var enabled: Bool = false
-    var webhookURLs: [String] = []
-    var signEnabled: Bool = false
+    var webhooks: [FeishuWebhook] = []
     var sendTimes: [ScheduleTime] = []
     var lastSentTimes: [String: String] = [:]  // key="HH:mm", value=dateKey of last send
     var lastSentDateTime: String = ""
@@ -73,7 +78,7 @@ struct FeishuBotConfig: Codable, Sendable {
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, webhookURL, webhookURLs, signEnabled
+        case enabled, webhookURL, webhookURLs, webhooks, signEnabled
         case sendTimes, lastSentTimes, lastSentDateTime
         case sendHour, sendMinute, lastSentDate  // legacy
         case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle
@@ -84,14 +89,17 @@ struct FeishuBotConfig: Codable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
-        webhookURLs = try c.decodeIfPresent([String].self, forKey: .webhookURLs) ?? []
-        if webhookURLs.isEmpty {
-            let legacyWebhookURL = try c.decodeIfPresent(String.self, forKey: .webhookURL) ?? ""
-            if !legacyWebhookURL.isEmpty {
-                webhookURLs = [legacyWebhookURL]
+        webhooks = try c.decodeIfPresent([FeishuWebhook].self, forKey: .webhooks) ?? []
+        if webhooks.isEmpty {
+            // 迁移：从 webhookURLs 或 webhookURL 迁移
+            var urls = try c.decodeIfPresent([String].self, forKey: .webhookURLs) ?? []
+            if urls.isEmpty {
+                let legacy = try c.decodeIfPresent(String.self, forKey: .webhookURL) ?? ""
+                if !legacy.isEmpty { urls = [legacy] }
             }
+            let oldSignEnabled = try c.decodeIfPresent(Bool.self, forKey: .signEnabled) ?? false
+            webhooks = urls.map { FeishuWebhook(url: $0, signEnabled: oldSignEnabled) }
         }
-        signEnabled = try c.decodeIfPresent(Bool.self, forKey: .signEnabled) ?? false
         lastSentDateTime = try c.decodeIfPresent(String.self, forKey: .lastSentDateTime) ?? ""
         messageFormat = try c.decodeIfPresent(FeishuMessageFormat.self, forKey: .messageFormat) ?? .card
         customTemplate = try c.decodeIfPresent(String.self, forKey: .customTemplate) ?? Self.defaultTemplate
@@ -134,8 +142,8 @@ struct FeishuBotConfig: Codable, Sendable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(enabled, forKey: .enabled)
-        try c.encode(webhookURLs, forKey: .webhookURLs)
-        try c.encode(signEnabled, forKey: .signEnabled)
+        try c.encode(webhooks, forKey: .webhooks)
+        try c.encode(webhooks.map { $0.url }, forKey: .webhookURLs)  // 向后兼容
         try c.encode(sendTimes, forKey: .sendTimes)
         try c.encode(lastSentTimes, forKey: .lastSentTimes)
         try c.encode(lastSentDateTime, forKey: .lastSentDateTime)
