@@ -35,7 +35,7 @@ final class FeishuBotService {
     private func handleSystemWake() {
         DevLog.shared.info("FeishuBot", "系统唤醒，检查是否有错过的定时发送")
         guard let store, store.feishuBotConfig.enabled,
-              !store.feishuBotConfig.webhookURL.isEmpty else { return }
+              !store.feishuBotConfig.webhookURLs.isEmpty else { return }
 
         Task { [weak self] in
             await self?.catchUpMissedSends()
@@ -101,7 +101,7 @@ final class FeishuBotService {
 
     private func checkAndSend() async {
         guard let store, store.feishuBotConfig.enabled,
-              !store.feishuBotConfig.webhookURL.isEmpty else { return }
+              !store.feishuBotConfig.webhookURLs.isEmpty else { return }
 
         let config = store.feishuBotConfig
         let now = Date()
@@ -130,7 +130,7 @@ final class FeishuBotService {
 
     /// 手动发送当天报告（不重试，即时反馈）
     func sendNow(store: DataStore) async -> (success: Bool, message: String) {
-        guard !store.feishuBotConfig.webhookURL.isEmpty else {
+        guard !store.feishuBotConfig.webhookURLs.isEmpty else {
             return (false, "Webhook URL 为空")
         }
         let result = await sendReportOnce(store: store)
@@ -173,10 +173,11 @@ final class FeishuBotService {
     private func sendReportOnce(store: DataStore) async -> (success: Bool, message: String) {
         let payload = generateDailyReport(store: store)
         let config = store.feishuBotConfig
+        let webhookURLs = config.webhookURLs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
 
-        guard let url = URL(string: config.webhookURL) else {
-            DevLog.shared.error("FeishuBot", "Webhook URL 无效: \(config.webhookURL)")
-            return (false, "Webhook URL 无效")
+        guard !webhookURLs.isEmpty else {
+            return (false, "Webhook URL 为空")
         }
 
         var body = payload
@@ -196,37 +197,60 @@ final class FeishuBotService {
             return (false, "JSON 序列化失败")
         }
 
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = jsonData
+        var successCount = 0
+        var failureMessages: [String] = []
 
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                return (false, "无效的响应")
+        for webhookURL in webhookURLs {
+            guard let url = URL(string: webhookURL) else {
+                DevLog.shared.error("FeishuBot", "Webhook URL 无效: \(webhookURL)")
+                failureMessages.append("无效 URL")
+                continue
             }
-            guard http.statusCode == 200 else {
-                DevLog.shared.error("FeishuBot", "HTTP \(http.statusCode)")
-                return (false, "HTTP \(http.statusCode)")
-            }
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let code = json["StatusCode"] as? Int ?? json["code"] as? Int
-                if code == 0 {
-                    DevLog.shared.info("FeishuBot", "日报发送成功")
-                    return (true, "发送成功")
+
+            var request = URLRequest(url: url, timeoutInterval: 15)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = jsonData
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    failureMessages.append("无效的响应")
+                    continue
                 }
-                let msg = json["StatusMessage"] as? String ?? json["msg"] as? String ?? "未知错误"
-                DevLog.shared.error("FeishuBot", "飞书返回错误: \(msg)")
-                return (false, msg)
+                guard http.statusCode == 200 else {
+                    DevLog.shared.error("FeishuBot", "HTTP \(http.statusCode): \(webhookURL)")
+                    failureMessages.append("HTTP \(http.statusCode)")
+                    continue
+                }
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let code = json["StatusCode"] as? Int ?? json["code"] as? Int
+                    if code == 0 {
+                        successCount += 1
+                        DevLog.shared.info("FeishuBot", "日报发送成功: \(webhookURL)")
+                        continue
+                    }
+                    let msg = json["StatusMessage"] as? String ?? json["msg"] as? String ?? "未知错误"
+                    DevLog.shared.error("FeishuBot", "飞书返回错误: \(msg) [\(webhookURL)]")
+                    failureMessages.append(msg)
+                    continue
+                }
+                let text = String(data: data, encoding: .utf8) ?? "unknown"
+                DevLog.shared.error("FeishuBot", "飞书返回错误: \(text) [\(webhookURL)]")
+                failureMessages.append("响应解析失败")
+            } catch {
+                DevLog.shared.error("FeishuBot", "发送失败: \(error.localizedDescription) [\(webhookURL)]")
+                failureMessages.append("网络错误: \(error.localizedDescription)")
             }
-            let text = String(data: data, encoding: .utf8) ?? "unknown"
-            DevLog.shared.error("FeishuBot", "飞书返回错误: \(text)")
-            return (false, "响应解析失败")
-        } catch {
-            DevLog.shared.error("FeishuBot", "发送失败: \(error.localizedDescription)")
-            return (false, "网络错误: \(error.localizedDescription)")
         }
+
+        if successCount == webhookURLs.count {
+            return (true, successCount == 1 ? "发送成功" : "发送成功（\(successCount) 个地址）")
+        }
+        if successCount > 0 {
+            return (true, "部分发送成功（\(successCount)/\(webhookURLs.count)）")
+        }
+        return (false, failureMessages.first ?? "发送失败")
     }
 
     private func addHistory(store: DataStore, success: Bool, message: String, retryCount: Int) {

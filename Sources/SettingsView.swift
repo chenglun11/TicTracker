@@ -1149,6 +1149,7 @@ private struct FeishuBotTab: View {
     @State private var secretSaved = false
     @FocusState private var isSecretFocused: Bool
     @State private var saveState = AutoSaveState()
+    @State private var newWebhookURL = ""
     @State private var sending = false
     @State private var sendResult: String?
     @State private var sendSuccess = false
@@ -1205,10 +1206,41 @@ private struct FeishuBotTab: View {
                         .onChange(of: store.feishuBotConfig.cardTitle) { _, _ in saveState.debouncedSave() }
                 }
 
-                TextField("Webhook URL", text: Bindable(store).feishuBotConfig.webhookURL,
-                          prompt: Text("https://open.feishu.cn/open-apis/bot/v2/hook/..."))
-                    .textFieldStyle(UnderlineTextFieldStyle())
-                    .onChange(of: store.feishuBotConfig.webhookURL) { _, _ in saveState.debouncedSave() }
+                ForEach(Array(store.feishuBotConfig.webhookURLs.enumerated()), id: \.element) { index, url in
+                    HStack(spacing: 8) {
+                        Text(url)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button {
+                            store.feishuBotConfig.webhookURLs.remove(at: index)
+                            saveState.triggerSave()
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                                .foregroundStyle(.red.opacity(0.7))
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+                }
+                HStack(spacing: 8) {
+                    TextField("Webhook URL", text: $newWebhookURL,
+                              prompt: Text("https://open.feishu.cn/open-apis/bot/v2/hook/..."))
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                    Button("添加") {
+                        let url = newWebhookURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !url.isEmpty, !store.feishuBotConfig.webhookURLs.contains(url) else { return }
+                        store.feishuBotConfig.webhookURLs.append(url)
+                        newWebhookURL = ""
+                        saveState.triggerSave()
+                    }
+                    .controlSize(.small)
+                    .disabled(newWebhookURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
 
                 Toggle("签名校验", isOn: Bindable(store).feishuBotConfig.signEnabled)
                     .onChange(of: store.feishuBotConfig.signEnabled) { _, _ in saveState.triggerSave() }
@@ -1224,7 +1256,7 @@ private struct FeishuBotTab: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(sending || store.feishuBotConfig.webhookURL.isEmpty)
+                    .disabled(sending || store.feishuBotConfig.webhookURLs.isEmpty)
 
                     if let result = sendResult {
                         Text(result)

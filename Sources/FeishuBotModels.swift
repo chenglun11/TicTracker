@@ -42,7 +42,7 @@ struct FeishuBotConfig: Codable, Sendable {
 """
 
     var enabled: Bool = false
-    var webhookURL: String = ""
+    var webhookURLs: [String] = []
     var signEnabled: Bool = false
     var sendTimes: [ScheduleTime] = []
     var lastSentTimes: [String: String] = [:]  // key="HH:mm", value=dateKey of last send
@@ -73,7 +73,7 @@ struct FeishuBotConfig: Codable, Sendable {
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, webhookURL, signEnabled
+        case enabled, webhookURL, webhookURLs, signEnabled
         case sendTimes, lastSentTimes, lastSentDateTime
         case sendHour, sendMinute, lastSentDate  // legacy
         case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle
@@ -84,7 +84,13 @@ struct FeishuBotConfig: Codable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
-        webhookURL = try c.decodeIfPresent(String.self, forKey: .webhookURL) ?? ""
+        webhookURLs = try c.decodeIfPresent([String].self, forKey: .webhookURLs) ?? []
+        if webhookURLs.isEmpty {
+            let legacyWebhookURL = try c.decodeIfPresent(String.self, forKey: .webhookURL) ?? ""
+            if !legacyWebhookURL.isEmpty {
+                webhookURLs = [legacyWebhookURL]
+            }
+        }
         signEnabled = try c.decodeIfPresent(Bool.self, forKey: .signEnabled) ?? false
         lastSentDateTime = try c.decodeIfPresent(String.self, forKey: .lastSentDateTime) ?? ""
         messageFormat = try c.decodeIfPresent(FeishuMessageFormat.self, forKey: .messageFormat) ?? .card
@@ -128,7 +134,7 @@ struct FeishuBotConfig: Codable, Sendable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(enabled, forKey: .enabled)
-        try c.encode(webhookURL, forKey: .webhookURL)
+        try c.encode(webhookURLs, forKey: .webhookURLs)
         try c.encode(signEnabled, forKey: .signEnabled)
         try c.encode(sendTimes, forKey: .sendTimes)
         try c.encode(lastSentTimes, forKey: .lastSentTimes)

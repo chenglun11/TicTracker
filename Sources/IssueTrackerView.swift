@@ -821,6 +821,7 @@ struct IssueTrackerView: View {
         case .pending: return .orange
         case .inProgress: return .orange
         case .testing: return .purple
+        case .scheduled: return .teal
         case .observing: return .blue
         case .fixed: return .green
         case .ignored: return .secondary
