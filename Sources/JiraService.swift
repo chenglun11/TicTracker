@@ -245,7 +245,9 @@ final class JiraService {
 
             // --- Status sync ---
             let newStatus = mapJiraStatus(ji.statusCategoryKey, statusName: ji.status)
-            if newStatus != issue.status && issue.status != .observing && issue.status != .scheduled {
+            // 已排期 / 观测中 属于人工推进的状态，禁止 Jira 自动回退到"待处理"（但允许向前推进到处理中/测试中/已修复等）
+            let blockRegressToPending = (issue.status == .scheduled || issue.status == .observing) && newStatus == .pending
+            if newStatus != issue.status && !blockRegressToPending {
                 // 如果有开发活动且 Jira 想改回"待处理"，跳过（GitLab 活动优先）
                 let skipDowngrade = issue.hasDevActivity && newStatus == .pending && issue.status == .inProgress
                 if !skipDowngrade {
