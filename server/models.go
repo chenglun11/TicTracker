@@ -3,18 +3,19 @@ package main
 import "encoding/json"
 
 type SyncPayload struct {
-	LastModified   float64                          `json:"lastModified"`
-	Departments    []string                         `json:"departments,omitempty"`
-	Records        map[string]map[string]int        `json:"records,omitempty"`
-	DailyNotes     map[string]string                `json:"dailyNotes,omitempty"`
-	TapTimestamps  map[string]map[string][]string   `json:"tapTimestamps,omitempty"`
-	TrackedIssues  []TrackedIssue                   `json:"trackedIssues,omitempty"`
-	BugTeamMembers []string                         `json:"bugTeamMembers,omitempty"`
-	JiraConfig     json.RawMessage                  `json:"jiraConfig,omitempty"`
-	FeishuBotConfig *FeishuBotConfig                `json:"feishuBotConfig,omitempty"`
-	AIConfig       json.RawMessage                  `json:"aiConfig,omitempty"`
-	RSSFeeds       json.RawMessage                  `json:"rssFeeds,omitempty"`
-	TodoTasks      json.RawMessage                  `json:"todoTasks,omitempty"`
+	LastModified         float64                          `json:"lastModified"`
+	Departments          []string                         `json:"departments,omitempty"`
+	Records              map[string]map[string]int        `json:"records,omitempty"`
+	DailyNotes           map[string]string                `json:"dailyNotes,omitempty"`
+	TapTimestamps        map[string]map[string][]string   `json:"tapTimestamps,omitempty"`
+	TrackedIssues        []TrackedIssue                   `json:"trackedIssues,omitempty"`
+	BugTeamMembers       []string                         `json:"bugTeamMembers,omitempty"`
+	JiraConfig           json.RawMessage                  `json:"jiraConfig,omitempty"`
+	FeishuBotConfig      *FeishuBotConfig                 `json:"feishuBotConfig,omitempty"`
+	FeishuWebhookSecrets map[string]string                `json:"feishuWebhookSecrets,omitempty"`
+	AIConfig             json.RawMessage                  `json:"aiConfig,omitempty"`
+	RSSFeeds             json.RawMessage                  `json:"rssFeeds,omitempty"`
+	TodoTasks            json.RawMessage                  `json:"todoTasks,omitempty"`
 }
 
 type TrackedIssue struct {
@@ -44,9 +45,16 @@ type IssueComment struct {
 	JiraCommentID *string `json:"jiraCommentId,omitempty"`
 }
 
+type FeishuWebhook struct {
+	ID          string `json:"id"`
+	URL         string `json:"url"`
+	SignEnabled bool   `json:"signEnabled"`
+}
+
 type FeishuBotConfig struct {
 	Enabled             bool              `json:"enabled"`
-	WebhookURL          string            `json:"webhookURL"`
+	WebhookURL          string            `json:"webhookURL"` // 保留向后兼容
+	Webhooks            []FeishuWebhook   `json:"webhooks"`
 	SignEnabled         bool              `json:"signEnabled"`
 	SendTimes           []ScheduleTime    `json:"sendTimes"`
 	LastSentTimes       map[string]string `json:"lastSentTimes"`
@@ -71,7 +79,8 @@ type FeishuBotConfig struct {
 }
 
 type ScheduleTime struct {
-	ID     string `json:"id"`
-	Hour   int    `json:"hour"`
-	Minute int    `json:"minute"`
+	ID       string `json:"id"`
+	Hour     int    `json:"hour"`
+	Minute   int    `json:"minute"`
+	Weekdays []int  `json:"weekdays"` // 1=Mon, 7=Sun; empty=every day
 }

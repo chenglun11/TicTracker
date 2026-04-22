@@ -8,6 +8,9 @@ struct IssueTrackerView: View {
     @State private var selectedIssueID: UUID?
     @State private var jiraSyncing = false
     @State private var newCommentText = ""
+    @State private var sendingFeishu = false
+    @State private var sendResult: String?
+    @State private var sendSuccess = false
     @State private var editingTitle = ""
     @State private var isEditingTitle = false
     @State private var isEditingTime = false
@@ -89,6 +92,17 @@ struct IssueTrackerView: View {
                         statBadge(title: "未解决", value: unresolvedCount, color: unresolvedCount > 0 ? .orange : .green)
                     }
                     Spacer()
+                    Button {
+                        sendToFeishu()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "paperplane.fill")
+                            Text(sendingFeishu ? "发送中…" : "发送完整日报")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .disabled(sendingFeishu || store.feishuBotConfig.webhooks.isEmpty)
                     if store.jiraConfig.enabled {
                         Button {
                             jiraSyncing = true
@@ -118,6 +132,17 @@ struct IssueTrackerView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
+
+                if let result = sendResult {
+                    HStack {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundStyle(sendSuccess ? .green : .red)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+                }
 
                 Divider()
 
@@ -217,6 +242,7 @@ struct IssueTrackerView: View {
             isEditingTitle = false
             isEditingTime = false
             newCommentText = ""
+            sendResult = nil
         }
         .onChange(of: searchText) {
             if let id = selectedIssueID, !filteredIssues.contains(where: { $0.id == id }) {
@@ -814,6 +840,23 @@ struct IssueTrackerView: View {
             selectedIssueID = newIssue.id
         }
         saveState.triggerSave()
+    }
+
+    private func sendToFeishu() {
+        sendingFeishu = true
+        sendResult = nil
+        Task {
+            let result = await FeishuBotService.shared.sendDirectNow(store: store)
+            sendResult = result.message
+            sendSuccess = result.success
+            if result.success {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                store.feishuBotConfig.lastSentDateTime = fmt.string(from: Date())
+                saveState.triggerSave()
+            }
+            sendingFeishu = false
+        }
     }
 
     private func statusColor(_ status: IssueStatus) -> Color {

@@ -1,4 +1,6 @@
-port: "8080"
-token: "your-secret-token-here"
+port: "9999"
+token: "your-legacy-token"  # 兼容旧配置；未设置 sync_token / web_token 时回退使用
+sync_token: "your-sync-token"
+web_token: "your-web-token"
 data_dir: "./data"
 feishu_secret: ""  # 飞书签名 secret，不用签名留空

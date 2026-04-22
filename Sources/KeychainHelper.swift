@@ -1,9 +1,38 @@
 import Foundation
 import Security
 
+private final class KeychainCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String: Data] = [:]
+
+    func get(_ key: String) -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage[key]
+    }
+
+    func set(_ key: String, data: Data) {
+        lock.lock()
+        storage[key] = data
+        lock.unlock()
+    }
+
+    func remove(_ key: String) {
+        lock.lock()
+        storage.removeValue(forKey: key)
+        lock.unlock()
+    }
+}
+
 enum KeychainHelper {
     static let service = "com.tictracker.keychain"
     static let account = "api-token"
+    private static let migrationFlagKey = "keychainMigrationDone"
+    private static let cache = KeychainCache()
+
+    private static func cacheKey(service: String, account: String) -> String {
+        "\(service)::\(account)"
+    }
 
     @discardableResult
     static func save(service: String = service, account: String = account, data: Data) -> Bool {
@@ -14,10 +43,19 @@ enum KeychainHelper {
             kSecAttrAccount as String: account,
             kSecValueData as String: data,
         ]
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        let success = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        if success {
+            cache.set(cacheKey(service: service, account: account), data: data)
+        }
+        return success
     }
 
     static func load(service: String = service, account: String = account) -> Data? {
+        let key = cacheKey(service: service, account: account)
+        if let cached = cache.get(key) {
+            return cached
+        }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -26,8 +64,10 @@ enum KeychainHelper {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        cache.set(key, data: data)
+        return data
     }
 
     static func loadAll(service: String) -> [String: Data] {
@@ -46,6 +86,7 @@ enum KeychainHelper {
             if let account = item[kSecAttrAccount as String] as? String,
                let data = item[kSecValueData as String] as? Data {
                 dict[account] = data
+                cache.set(cacheKey(service: service, account: account), data: data)
             }
         }
         return dict
@@ -58,21 +99,26 @@ enum KeychainHelper {
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(query as CFDictionary)
+        cache.remove(cacheKey(service: service, account: account))
     }
 
     /// 将旧 service 下所有 account 迁移到新 service，只在首次启动时调用
     static func migrateIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: migrationFlagKey) else { return }
+
+        let existingAccounts = Set(loadAll(service: service).keys)
         let legacyServices = ["com.tictracker.jira", "com.tictracker.ai", "com.tictracker.feishu-bot"]
         for legacy in legacyServices {
             let items = loadAll(service: legacy)
             for (account, data) in items {
-                // 只在新 service 下不存在时迁移
-                if load(service: service, account: account) == nil {
+                if !existingAccounts.contains(account) {
                     let ok = save(service: service, account: account, data: data)
-                    guard ok else { continue }  // save 失败则保留旧数据，不删
+                    guard ok else { continue }
                 }
                 delete(service: legacy, account: account)
             }
         }
+
+        UserDefaults.standard.set(true, forKey: migrationFlagKey)
     }
 }

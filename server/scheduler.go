@@ -1,24 +1,21 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"time"
 )
 
 type Scheduler struct {
 	cfg      *Config
-	dataDir  string
+	store    *Store
 	lastSent map[string]string // "HH:MM" -> "YYYY-MM-DD"
 }
 
-func NewScheduler(cfg *Config, dataDir string) *Scheduler {
+func NewScheduler(cfg *Config, store *Store) *Scheduler {
 	return &Scheduler{
 		cfg:      cfg,
-		dataDir:  dataDir,
+		store:    store,
 		lastSent: make(map[string]string),
 	}
 }
@@ -32,15 +29,8 @@ func (s *Scheduler) Start() {
 }
 
 func (s *Scheduler) check() {
-	path := filepath.Join(s.dataDir, "sync.json")
-	data, err := os.ReadFile(path)
+	payload, err := s.store.Load()
 	if err != nil {
-		return
-	}
-
-	var payload SyncPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		log.Printf("[scheduler] failed to parse sync.json: %v", err)
 		return
 	}
 
@@ -53,10 +43,27 @@ func (s *Scheduler) check() {
 	today := now.Format("2006-01-02")
 	curHour := now.Hour()
 	curMinute := now.Minute()
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7 // Sunday: 0 -> 7
+	}
 
 	for _, st := range cfg.SendTimes {
 		if st.Hour != curHour || st.Minute != curMinute {
 			continue
+		}
+		// 检查星期限制
+		if len(st.Weekdays) > 0 {
+			allowed := false
+			for _, wd := range st.Weekdays {
+				if wd == weekday {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
 		}
 		key := fmt.Sprintf("%02d:%02d", st.Hour, st.Minute)
 		if s.lastSent[key] == today {
@@ -64,7 +71,7 @@ func (s *Scheduler) check() {
 		}
 
 		log.Printf("[scheduler] sending feishu report for %s", key)
-		if err := sendFeishuReport(payload, s.cfg.FeishuSecret); err != nil {
+		if err := sendFeishuReport(*payload); err != nil {
 			log.Printf("[scheduler] send failed: %v", err)
 			continue
 		}
@@ -72,28 +79,20 @@ func (s *Scheduler) check() {
 		s.lastSent[key] = today
 		log.Printf("[scheduler] sent successfully for %s", key)
 
-		// 更新 sync.json 中的 lastSentTimes 和 lastSentDateTime
-		if cfg.LastSentTimes == nil {
-			cfg.LastSentTimes = make(map[string]string)
-		}
-		cfg.LastSentTimes[key] = today
-		cfg.LastSentDateTime = now.Format("2006-01-02 15:04:05")
-		payload.FeishuBotConfig = cfg
-
-		updated, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			log.Printf("[scheduler] failed to marshal updated payload: %v", err)
-			continue
-		}
-
-		tmpPath := path + ".tmp"
-		if err := os.WriteFile(tmpPath, updated, 0644); err != nil {
-			log.Printf("[scheduler] failed to write tmp file: %v", err)
-			continue
-		}
-		if err := os.Rename(tmpPath, path); err != nil {
-			log.Printf("[scheduler] failed to rename tmp file: %v", err)
-			os.Remove(tmpPath)
+		// 原子更新 lastSentTimes 和 lastSentDateTime
+		sentTime := now.Format("2006-01-02 15:04:05")
+		if err := s.store.Update(func(p *SyncPayload) error {
+			if p.FeishuBotConfig == nil {
+				return nil
+			}
+			if p.FeishuBotConfig.LastSentTimes == nil {
+				p.FeishuBotConfig.LastSentTimes = make(map[string]string)
+			}
+			p.FeishuBotConfig.LastSentTimes[key] = today
+			p.FeishuBotConfig.LastSentDateTime = sentTime
+			return nil
+		}); err != nil {
+			log.Printf("[scheduler] failed to update sync.json: %v", err)
 		}
 	}
 }

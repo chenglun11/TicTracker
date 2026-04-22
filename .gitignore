@@ -7,3 +7,7 @@ DerivedData/
 *.app/
 AppIcon_1024.png
 *.zip
+server/config.yaml
+server/data/
+server/tictacker-server
+web/node_modules/

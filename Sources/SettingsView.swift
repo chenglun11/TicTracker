@@ -50,8 +50,22 @@ private func autoSaveSecureField(
         }
 }
 
+private enum SettingsTab: Hashable {
+    case department
+    case general
+    case rss
+    case issueTracker
+    case jira
+    case feishu
+    case ai
+    case data
+    case sync
+    case about
+}
+
 struct SettingsView: View {
     @Bindable var store: DataStore
+    @State private var selectedTab: SettingsTab = .department
 
     var body: some View {
         tabContent
@@ -63,27 +77,37 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var tabContent: some View {
-        let tabs = TabView {
+        let tabs = TabView(selection: $selectedTab) {
             DepartmentTab(store: store)
                 .tabItem { Label("项目", systemImage: "building.2") }
+                .tag(SettingsTab.department)
             GeneralTab(store: store)
                 .tabItem { Label("通用", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             RSSTab(store: store)
                 .tabItem { Label("RSS", systemImage: "dot.radiowaves.up.forward") }
+                .tag(SettingsTab.rss)
             IssueTrackerTab(store: store)
                 .tabItem { Label("问题追踪", systemImage: "ladybug.fill") }
-            JiraTab(store: store)
+                .tag(SettingsTab.issueTracker)
+            JiraTab(store: store, isActive: selectedTab == .jira)
                 .tabItem { Label("Jira", systemImage: "server.rack") }
-            FeishuBotTab(store: store)
+                .tag(SettingsTab.jira)
+            FeishuBotTab(store: store, isActive: selectedTab == .feishu)
                 .tabItem { Label("飞书 Bot", systemImage: "paperplane.fill") }
-            AITab(store: store)
+                .tag(SettingsTab.feishu)
+            AITab(store: store, isActive: selectedTab == .ai)
                 .tabItem { Label("AI", systemImage: "sparkles") }
+                .tag(SettingsTab.ai)
             DataTab(store: store)
                 .tabItem { Label("数据", systemImage: "externaldrive") }
-            SyncTab(store: store)
+                .tag(SettingsTab.data)
+            SyncTab(store: store, isActive: selectedTab == .sync)
                 .tabItem { Label("同步", systemImage: "arrow.triangle.2.circlepath.icloud") }
+                .tag(SettingsTab.sync)
             AboutTab()
                 .tabItem { Label("关于", systemImage: "info.circle") }
+                .tag(SettingsTab.about)
         }
         if #available(macOS 15, *) {
             tabs.tabViewStyle(.sidebarAdaptable)
@@ -803,6 +827,7 @@ private struct RSSTab: View {
 
 private struct JiraTab: View {
     @Bindable var store: DataStore
+    let isActive: Bool
     @State private var tokenInput = ""
     @State private var tokenSaved = false
     @State private var newJiraStatusName = ""
@@ -812,6 +837,7 @@ private struct JiraTab: View {
     @State private var testSuccess = false
     @FocusState private var isTokenFocused: Bool
     @State private var saveState = AutoSaveState()
+    @State private var didLoadToken = false
 
     private let jqlPresets: [(label: String, jql: String)] = [
         ("待处理", "assignee=currentUser() AND resolution=Unresolved ORDER BY updated DESC"),
@@ -1104,10 +1130,19 @@ private struct JiraTab: View {
         }
         .formStyle(.grouped)
         .autoSaveIndicator(saveState)
-        .onAppear {
-            if let data = KeychainHelper.load(), let str = String(data: data, encoding: .utf8) {
-                tokenInput = str
-            }
+        .onChange(of: isActive) { _, active in
+            if active { loadTokenIfNeeded() }
+        }
+        .task {
+            if isActive { loadTokenIfNeeded() }
+        }
+    }
+
+    private func loadTokenIfNeeded() {
+        guard !didLoadToken else { return }
+        didLoadToken = true
+        if let data = KeychainHelper.load(), let str = String(data: data, encoding: .utf8) {
+            tokenInput = str
         }
     }
 
@@ -1145,12 +1180,14 @@ private struct JiraTab: View {
 
 private struct FeishuBotTab: View {
     @Bindable var store: DataStore
+    let isActive: Bool
     @State private var saveState = AutoSaveState()
     @State private var newWebhookURL = ""
     @State private var secretInputs: [UUID: String] = [:]
     @State private var sending = false
     @State private var sendResult: String?
     @State private var sendSuccess = false
+    @State private var didLoadSecrets = false
 
     private let templateVariables: [(String, String)] = [
         ("{{日期}}", "当天日期，如 2026-04-07"),
@@ -1160,9 +1197,13 @@ private struct FeishuBotTab: View {
         ("{{解决数量}}", "今日解决问题数"),
         ("{{待处理数量}}", "当前待处理问题数"),
         ("{{观测中数量}}", "当前观测中问题数"),
+        ("{{已排期数量}}", "当前已排期问题数"),
+        ("{{测试中数量}}", "当前测试中问题数"),
         ("{{待处理列表}}", "待处理问题列表"),
         ("{{已解决列表}}", "今日已解决问题列表"),
         ("{{观测中列表}}", "观测中问题列表"),
+        ("{{已排期列表}}", "已排期问题列表"),
+        ("{{测试中列表}}", "测试中问题列表"),
         ("{{日报内容}}", "日报文字内容"),
         ("{{当前时间}}", "发送时的时间戳"),
     ]
@@ -1287,38 +1328,69 @@ private struct FeishuBotTab: View {
 
             Section("定时发送") {
                 ForEach(Array(store.feishuBotConfig.sendTimes.enumerated()), id: \.element.id) { i, scheduleTime in
-                    HStack {
-                        Picker("", selection: Bindable(store).feishuBotConfig.sendTimes[i].hour) {
-                            ForEach(0..<24, id: \.self) { h in
-                                Text(String(format: "%02d", h)).tag(h)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Picker("", selection: Bindable(store).feishuBotConfig.sendTimes[i].hour) {
+                                ForEach(0..<24, id: \.self) { h in
+                                    Text(String(format: "%02d", h)).tag(h)
+                                }
                             }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 60)
-                        Text(":")
-                            .foregroundStyle(.tertiary)
-                        Picker("", selection: Bindable(store).feishuBotConfig.sendTimes[i].minute) {
-                            ForEach(0..<60, id: \.self) { m in
-                                Text(String(format: "%02d", m)).tag(m)
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 60)
+                            Text(":")
+                                .foregroundStyle(.tertiary)
+                            Picker("", selection: Bindable(store).feishuBotConfig.sendTimes[i].minute) {
+                                ForEach(0..<60, id: \.self) { m in
+                                    Text(String(format: "%02d", m)).tag(m)
+                                }
                             }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 60)
+                            Spacer()
+                            Button {
+                                let key = store.feishuBotConfig.sendTimes[i].key
+                                store.feishuBotConfig.sendTimes.remove(at: i)
+                                store.feishuBotConfig.lastSentTimes.removeValue(forKey: key)
+                                FeishuBotService.shared.restartScheduler()
+                                saveState.triggerSave()
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                                    .foregroundStyle(.red.opacity(0.7))
+                            }
+                            .buttonStyle(.borderless)
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 60)
-                        Spacer()
-                        Button {
-                            let key = store.feishuBotConfig.sendTimes[i].key
-                            store.feishuBotConfig.sendTimes.remove(at: i)
-                            store.feishuBotConfig.lastSentTimes.removeValue(forKey: key)
-                            FeishuBotService.shared.restartScheduler()
-                            saveState.triggerSave()
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(.caption)
-                                .foregroundStyle(.red.opacity(0.7))
+                        HStack(spacing: 4) {
+                            let weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"]
+                            ForEach(1...7, id: \.self) { wd in
+                                let isSelected = store.feishuBotConfig.sendTimes[i].weekdays.contains(wd)
+                                Button {
+                                    if isSelected {
+                                        // 至少保留一天
+                                        guard store.feishuBotConfig.sendTimes[i].weekdays.count > 1 else { return }
+                                        store.feishuBotConfig.sendTimes[i].weekdays.remove(wd)
+                                    } else {
+                                        store.feishuBotConfig.sendTimes[i].weekdays.insert(wd)
+                                    }
+                                    FeishuBotService.shared.restartScheduler()
+                                    saveState.triggerSave()
+                                } label: {
+                                    Text(weekdayLabels[wd - 1])
+                                        .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
+                                        .frame(width: 22, height: 18)
+                                        .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+                                        .cornerRadius(4)
+                                        .foregroundStyle(isSelected ? .primary : .secondary)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                            Spacer()
+                            Text(weekdaySummary(store.feishuBotConfig.sendTimes[i].weekdays))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.borderless)
                     }
                     .onChange(of: store.feishuBotConfig.sendTimes[i].hour) { _, _ in
                         store.feishuBotConfig.lastSentTimes.removeValue(forKey: scheduleTime.key)
@@ -1401,6 +1473,10 @@ private struct FeishuBotTab: View {
                     .onChange(of: store.feishuBotConfig.showPending) { _, _ in saveState.triggerSave() }
                 Toggle("观测中问题列表", isOn: Bindable(store).feishuBotConfig.showObserving)
                     .onChange(of: store.feishuBotConfig.showObserving) { _, _ in saveState.triggerSave() }
+                Toggle("已排期问题列表", isOn: Bindable(store).feishuBotConfig.showScheduled)
+                    .onChange(of: store.feishuBotConfig.showScheduled) { _, _ in saveState.triggerSave() }
+                Toggle("测试中问题列表", isOn: Bindable(store).feishuBotConfig.showTesting)
+                    .onChange(of: store.feishuBotConfig.showTesting) { _, _ in saveState.triggerSave() }
                 Toggle("今日已解决列表", isOn: Bindable(store).feishuBotConfig.showResolved)
                     .onChange(of: store.feishuBotConfig.showResolved) { _, _ in saveState.triggerSave() }
                 Toggle("日报文字", isOn: Bindable(store).feishuBotConfig.showDailyNote)
@@ -1470,12 +1546,21 @@ private struct FeishuBotTab: View {
         }
         .formStyle(.grouped)
         .autoSaveIndicator(saveState)
-        .onAppear {
-            for webhook in store.feishuBotConfig.webhooks where webhook.signEnabled {
-                if let secret = FeishuBotService.loadSecret(for: webhook.id) {
-                    secretInputs[webhook.id] = secret
-                }
-            }
+        .onChange(of: isActive) { _, active in
+            if active { loadSecretsIfNeeded() }
+        }
+        .task {
+            if isActive { loadSecretsIfNeeded() }
+        }
+    }
+
+    private func loadSecretsIfNeeded() {
+        guard !didLoadSecrets else { return }
+        didLoadSecrets = true
+        let ids = store.feishuBotConfig.webhooks.filter(\.signEnabled).map(\.id)
+        let loaded = FeishuBotService.loadSecrets(for: ids)
+        for (id, secret) in loaded where secretInputs[id] == nil {
+            secretInputs[id] = secret
         }
     }
 
@@ -1510,12 +1595,21 @@ private struct FeishuBotTab: View {
         fmt.dateFormat = "MM-dd HH:mm:ss"
         return fmt.string(from: date)
     }
+
+    private func weekdaySummary(_ weekdays: Set<Int>) -> String {
+        if weekdays.count == 7 { return "每天" }
+        if weekdays == [1, 2, 3, 4, 5] { return "工作日" }
+        if weekdays == [6, 7] { return "周末" }
+        let labels = ["一", "二", "三", "四", "五", "六", "日"]
+        return "周" + weekdays.sorted().map { labels[$0 - 1] }.joined(separator: "、")
+    }
 }
 
 // MARK: - AI Tab
 
 private struct AITab: View {
     @Bindable var store: DataStore
+    let isActive: Bool
     @State private var apiKeyInput = ""
     @State private var baseURLInput = ""
     @State private var modelInput = ""
@@ -1525,6 +1619,7 @@ private struct AITab: View {
     @FocusState private var isBaseURLFocused: Bool
     @FocusState private var isModelFocused: Bool
     @State private var saveState = AutoSaveState()
+    @State private var didLoadAIConfig = false
 
     // 周报 Prompt 编辑状态
     @State private var customPromptDraft = ""
@@ -1744,15 +1839,11 @@ private struct AITab: View {
         }
         .formStyle(.grouped)
         .autoSaveIndicator(saveState)
-        .onAppear {
-            let stored = AIService.shared.loadAll()
-            apiKeyInput = stored.apiKey
-            baseURLInput = stored.baseURL.isEmpty ? store.aiConfig.baseURL : stored.baseURL
-            modelInput = stored.model.isEmpty ? store.aiConfig.model : stored.model
-
-            // 初始化 draft 状态
-            customPromptDraft = store.aiConfig.customPrompt
-            chatSystemPromptDraft = store.aiConfig.chatSystemPrompt
+        .onChange(of: isActive) { _, active in
+            if active { loadAIConfigIfNeeded() }
+        }
+        .task {
+            if isActive { loadAIConfigIfNeeded() }
         }
         .alert("确认清空所有 AI 配置？", isPresented: $showClearAlert) {
             Button("取消", role: .cancel) {}
@@ -1760,6 +1851,17 @@ private struct AITab: View {
         } message: {
             Text("将清除 API Key、Base URL、模型和自定义 Prompt")
         }
+    }
+
+    private func loadAIConfigIfNeeded() {
+        guard !didLoadAIConfig else { return }
+        didLoadAIConfig = true
+        let stored = AIService.shared.loadAll()
+        apiKeyInput = stored.apiKey
+        baseURLInput = stored.baseURL.isEmpty ? store.aiConfig.baseURL : stored.baseURL
+        modelInput = stored.model.isEmpty ? store.aiConfig.model : stored.model
+        customPromptDraft = store.aiConfig.customPrompt
+        chatSystemPromptDraft = store.aiConfig.chatSystemPrompt
     }
 
     private func clearAll() {
@@ -1964,15 +2066,19 @@ private struct AboutTab: View {
 
 private struct SyncTab: View {
     @Bindable var store: DataStore
+    let isActive: Bool
     @State private var syncManager = SyncManager.shared
     @State private var credentialInput = ""
+    @State private var webPortalTokenInput = ""
     @State private var testing = false
     @State private var testResult: String?
     @State private var testSuccess = false
     @State private var syncing = false
+    @State private var didLoadSyncSecrets = false
 
     var body: some View {
         Form {
+            let webPortalURL = syncManager.makeWebPortalURL(token: webPortalTokenInput)
             Section("云端同步") {
                 Toggle(isOn: $syncManager.config.enabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -2017,12 +2123,15 @@ private struct SyncTab: View {
                         .textFieldStyle(UnderlineTextFieldStyle())
                         .onChange(of: credentialInput) { _, _ in saveCredential() }
                 case .httpAPI:
-                    TextField("API URL", text: $syncManager.config.serverURL,
-                              prompt: Text("https://api.example.com"))
+                    TextField("同步服务器 URL", text: $syncManager.config.serverURL,
+                              prompt: Text("https://sync.example.com"))
                         .textFieldStyle(UnderlineTextFieldStyle())
-                    SecureField("Token", text: $credentialInput)
+                    SecureField("同步 Token", text: $credentialInput)
                         .textFieldStyle(UnderlineTextFieldStyle())
                         .onChange(of: credentialInput) { _, _ in saveCredential() }
+                    Text("这里只用于 /sync 数据同步，不再承担网页后台登录。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 HStack {
@@ -2037,6 +2146,31 @@ private struct SyncTab: View {
                             .font(.caption)
                             .foregroundStyle(testSuccess ? .green : .red)
                     }
+                }
+            }
+
+            Section("网页面板") {
+                TextField("网页地址", text: $syncManager.config.webPortalURL,
+                          prompt: Text("留空则默认使用同步服务器地址"))
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                SecureField("网页访问 Token", text: $webPortalTokenInput)
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .onChange(of: webPortalTokenInput) { _, _ in
+                        syncManager.saveWebPortalToken(webPortalTokenInput)
+                    }
+                Text("用于访问 /api 管理页面，可与同步 Token 分开配置。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("在浏览器中打开") {
+                        if let url = webPortalURL {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(webPortalURL == nil)
+
+                    Spacer()
                 }
             }
 
@@ -2083,9 +2217,19 @@ private struct SyncTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear {
-            credentialInput = syncManager.loadCredential()
+        .onChange(of: isActive) { _, active in
+            if active { loadSyncSecretsIfNeeded() }
         }
+        .task {
+            if isActive { loadSyncSecretsIfNeeded() }
+        }
+    }
+
+    private func loadSyncSecretsIfNeeded() {
+        guard !didLoadSyncSecrets else { return }
+        didLoadSyncSecrets = true
+        credentialInput = syncManager.loadCredential()
+        webPortalTokenInput = syncManager.loadWebPortalToken()
     }
 
     @ViewBuilder

@@ -316,12 +316,30 @@ func buildTemplateMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]
 	}
 }
 
-func sendFeishuReport(payload SyncPayload, secret string) error {
+func sendFeishuReport(payload SyncPayload) error {
 	cfg := payload.FeishuBotConfig
-	if cfg == nil || !cfg.Enabled || cfg.WebhookURL == "" {
+	if cfg == nil || !cfg.Enabled {
 		return fmt.Errorf("feishu bot not configured or disabled")
 	}
 
+	// 获取 webhook 列表（支持新旧格式）
+	webhooks := cfg.Webhooks
+	if len(webhooks) == 0 && cfg.WebhookURL != "" {
+		// 向后兼容：使用旧的 WebhookURL
+		webhooks = []FeishuWebhook{
+			{
+				ID:          "default",
+				URL:         cfg.WebhookURL,
+				SignEnabled: cfg.SignEnabled,
+			},
+		}
+	}
+
+	if len(webhooks) == 0 {
+		return fmt.Errorf("no webhooks configured")
+	}
+
+	// 构建消息体
 	var body map[string]interface{}
 	switch cfg.MessageFormat {
 	case "富文本":
@@ -332,44 +350,83 @@ func sendFeishuReport(payload SyncPayload, secret string) error {
 		body = buildCardMessage(payload, cfg)
 	}
 
-	if cfg.SignEnabled {
-		ts := fmt.Sprintf("%d", time.Now().Unix())
-		body["timestamp"] = ts
-		body["sign"] = generateSign(ts, secret)
-	}
-
-	data, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-
 	maxRetries := cfg.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 1
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	var lastErr error
-	for i := 0; i < maxRetries; i++ {
-		if i > 0 {
-			time.Sleep(5 * time.Second)
+	successCount := 0
+	failCount := 0
+
+	// 遍历每个 webhook 发送
+	for _, webhook := range webhooks {
+		// 为每个 webhook 准备独立的消息体（需要独立签名）
+		webhookBody := make(map[string]interface{})
+		for k, v := range body {
+			webhookBody[k] = v
 		}
-		resp, err := client.Post(cfg.WebhookURL, "application/json", bytes.NewReader(data))
+
+		// 如果该 webhook 启用签名，添加签名
+		if webhook.SignEnabled {
+			secret := ""
+			if payload.FeishuWebhookSecrets != nil {
+				secret = payload.FeishuWebhookSecrets[webhook.ID]
+			}
+			if secret != "" {
+				ts := fmt.Sprintf("%d", time.Now().Unix())
+				webhookBody["timestamp"] = ts
+				webhookBody["sign"] = generateSign(ts, secret)
+			}
+			// 如果找不到 secret，跳过签名但不阻止发送
+		}
+
+		data, err := json.Marshal(webhookBody)
 		if err != nil {
-			lastErr = err
+			failCount++
 			continue
 		}
-		var result struct {
-			Code int    `json:"code"`
-			Msg  string `json:"msg"`
+
+		// 重试逻辑
+		var lastErr error
+		sent := false
+		for i := 0; i < maxRetries; i++ {
+			if i > 0 {
+				time.Sleep(5 * time.Second)
+			}
+			resp, err := client.Post(webhook.URL, "application/json", bytes.NewReader(data))
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			var result struct {
+				Code int    `json:"code"`
+				Msg  string `json:"msg"`
+			}
+			json.NewDecoder(resp.Body).Decode(&result)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || result.Code != 0 {
+				lastErr = fmt.Errorf("feishu error: status=%d code=%d msg=%s", resp.StatusCode, result.Code, result.Msg)
+				continue
+			}
+			sent = true
+			break
 		}
-		json.NewDecoder(resp.Body).Decode(&result)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK || result.Code != 0 {
-			lastErr = fmt.Errorf("feishu error: status=%d code=%d msg=%s", resp.StatusCode, result.Code, result.Msg)
-			continue
+
+		if sent {
+			successCount++
+		} else {
+			failCount++
+			fmt.Printf("[feishu] failed to send to webhook %s: %v\n", webhook.ID, lastErr)
 		}
-		return nil
 	}
-	return lastErr
+
+	// 返回结果
+	if successCount == 0 {
+		return fmt.Errorf("all webhooks failed")
+	}
+	if failCount > 0 {
+		fmt.Printf("[feishu] warning: %d/%d webhooks failed\n", failCount, len(webhooks))
+	}
+	return nil
 }

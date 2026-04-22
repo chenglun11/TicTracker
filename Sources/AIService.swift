@@ -77,6 +77,7 @@ final class AIService {
     private let keychainAccount = "api-key"
     private let keychainBaseURLAccount = "base-url"
     private let keychainModelAccount = "model"
+    private var cachedConfig: StoredConfig?
 
     struct StoredConfig {
         var apiKey: String
@@ -85,12 +86,15 @@ final class AIService {
     }
 
     func loadAll() -> StoredConfig {
+        if let cachedConfig { return cachedConfig }
         let all = KeychainHelper.loadAll(service: keychainService)
-        return StoredConfig(
+        let stored = StoredConfig(
             apiKey: all[keychainAccount].flatMap { String(data: $0, encoding: .utf8) } ?? "",
             baseURL: all[keychainBaseURLAccount].flatMap { String(data: $0, encoding: .utf8) } ?? "",
             model: all[keychainModelAccount].flatMap { String(data: $0, encoding: .utf8) } ?? ""
         )
+        cachedConfig = stored
+        return stored
     }
 
     func saveAll(apiKey: String, baseURL: String, model: String) {
@@ -112,17 +116,35 @@ final class AIService {
         for account in [keychainAccount, keychainBaseURLAccount, keychainModelAccount] {
             KeychainHelper.delete(service: keychainService, account: account)
         }
+        cachedConfig = StoredConfig(apiKey: "", baseURL: "", model: "")
     }
 
     private func save(_ account: String, value: String) {
         if let data = value.data(using: .utf8) {
             KeychainHelper.save(service: keychainService, account: account, data: data)
         }
+        var current = loadAll()
+        switch account {
+        case keychainAccount:
+            current.apiKey = value
+        case keychainBaseURLAccount:
+            current.baseURL = value
+        case keychainModelAccount:
+            current.model = value
+        default:
+            break
+        }
+        cachedConfig = current
     }
 
     private func load(_ account: String) -> String? {
-        guard let data = KeychainHelper.load(service: keychainService, account: account) else { return nil }
-        return String(data: data, encoding: .utf8)
+        let current = loadAll()
+        switch account {
+        case keychainAccount: return current.apiKey
+        case keychainBaseURLAccount: return current.baseURL
+        case keychainModelAccount: return current.model
+        default: return nil
+        }
     }
 
     enum AIError: LocalizedError {

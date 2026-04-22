@@ -18,8 +18,32 @@ struct ScheduleTime: Codable, Sendable, Identifiable, Equatable {
     var id = UUID()
     var hour: Int = 18
     var minute: Int = 0
+    var weekdays: Set<Int> = [1, 2, 3, 4, 5]  // 1=周一, 7=周日, 空集表示每天
 
     var key: String { String(format: "%02d:%02d", hour, minute) }
+
+    func shouldSendOn(weekday: Int) -> Bool {
+        weekdays.contains(weekday)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, hour, minute, weekdays
+    }
+
+    init(id: UUID = UUID(), hour: Int = 18, minute: Int = 0, weekdays: Set<Int> = [1, 2, 3, 4, 5]) {
+        self.id = id
+        self.hour = hour
+        self.minute = minute
+        self.weekdays = weekdays
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        hour = try c.decodeIfPresent(Int.self, forKey: .hour) ?? 18
+        minute = try c.decodeIfPresent(Int.self, forKey: .minute) ?? 0
+        weekdays = try c.decodeIfPresent(Set<Int>.self, forKey: .weekdays) ?? [1, 2, 3, 4, 5]
+    }
 }
 
 struct FeishuWebhook: Codable, Sendable, Identifiable, Equatable {
@@ -66,6 +90,8 @@ struct FeishuBotConfig: Codable, Sendable {
     var showObserving: Bool = true      // 观测中列表
     var showResolved: Bool = true       // 今日已解决列表
     var showDailyNote: Bool = true      // 日报文字
+    var showScheduled: Bool = true      // 已排期列表
+    var showTesting: Bool = true        // 测试中列表
     var showComments: Bool = true       // 问题评论
 
     // issue 显示字段
@@ -82,7 +108,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case sendTimes, lastSentTimes, lastSentDateTime
         case sendHour, sendMinute, lastSentDate  // legacy
         case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle
-        case showSupportStats, showOverview, showPending, showObserving, showResolved, showDailyNote, showComments
+        case showSupportStats, showOverview, showPending, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showComments
         case fieldType, fieldDepartment, fieldJiraKey, fieldStatus, fieldAssignee
     }
 
@@ -128,6 +154,8 @@ struct FeishuBotConfig: Codable, Sendable {
         showOverview = try c.decodeIfPresent(Bool.self, forKey: .showOverview) ?? true
         showPending = try c.decodeIfPresent(Bool.self, forKey: .showPending) ?? true
         showObserving = try c.decodeIfPresent(Bool.self, forKey: .showObserving) ?? true
+        showScheduled = try c.decodeIfPresent(Bool.self, forKey: .showScheduled) ?? true
+        showTesting = try c.decodeIfPresent(Bool.self, forKey: .showTesting) ?? true
         showResolved = try c.decodeIfPresent(Bool.self, forKey: .showResolved) ?? true
         showDailyNote = try c.decodeIfPresent(Bool.self, forKey: .showDailyNote) ?? true
         showComments = try c.decodeIfPresent(Bool.self, forKey: .showComments) ?? true
@@ -158,6 +186,8 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(showOverview, forKey: .showOverview)
         try c.encode(showPending, forKey: .showPending)
         try c.encode(showObserving, forKey: .showObserving)
+        try c.encode(showScheduled, forKey: .showScheduled)
+        try c.encode(showTesting, forKey: .showTesting)
         try c.encode(showResolved, forKey: .showResolved)
         try c.encode(showDailyNote, forKey: .showDailyNote)
         try c.encode(showComments, forKey: .showComments)

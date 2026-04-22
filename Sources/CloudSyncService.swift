@@ -23,6 +23,7 @@ struct SyncConfig: Codable {
     var lastSyncDate: Date? = nil
     var serverURL: String = ""
     var username: String = ""  // WebDAV Basic Auth
+    var webPortalURL: String = ""
 }
 
 // MARK: - Status
@@ -49,10 +50,14 @@ final class SyncManager {
     private var periodicTask: Task<Void, Never>?
     private static let configKey = "syncConfig"
     private static let keychainService = "com.tictracker.sync"
+    private var credentialCache: [SyncConfig.Backend: String] = [:]
+    private var webPortalTokenCache: String?
 
-    private var keychainAccount: String {
-        "credential-\(config.backend.rawValue)"
+    private var syncCredentialAccount: String {
+        "sync-credential-\(config.backend.rawValue)"
     }
+
+    private let webPortalCredentialAccount = "web-portal-token"
 
     private init() {
         if let data = UserDefaults.standard.data(forKey: Self.configKey),
@@ -72,14 +77,48 @@ final class SyncManager {
     // MARK: - Credential (Keychain)
 
     func saveCredential(_ value: String) {
+        credentialCache[config.backend] = value
         if let data = value.data(using: .utf8) {
-            KeychainHelper.save(service: Self.keychainService, account: keychainAccount, data: data)
+            KeychainHelper.save(service: Self.keychainService, account: syncCredentialAccount, data: data)
         }
     }
 
     func loadCredential() -> String {
-        guard let data = KeychainHelper.load(service: Self.keychainService, account: keychainAccount) else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
+        if let cached = credentialCache[config.backend] {
+            return cached
+        }
+        if let data = KeychainHelper.load(service: Self.keychainService, account: syncCredentialAccount) {
+            let value = String(data: data, encoding: .utf8) ?? ""
+            credentialCache[config.backend] = value
+            return value
+        }
+        if let legacy = KeychainHelper.load(service: Self.keychainService, account: "credential-\(config.backend.rawValue)") {
+            let value = String(data: legacy, encoding: .utf8) ?? ""
+            credentialCache[config.backend] = value
+            return value
+        }
+        credentialCache[config.backend] = ""
+        return ""
+    }
+
+    func saveWebPortalToken(_ value: String) {
+        webPortalTokenCache = value
+        if let data = value.data(using: .utf8) {
+            KeychainHelper.save(service: Self.keychainService, account: webPortalCredentialAccount, data: data)
+        }
+    }
+
+    func loadWebPortalToken() -> String {
+        if let cached = webPortalTokenCache {
+            return cached
+        }
+        guard let data = KeychainHelper.load(service: Self.keychainService, account: webPortalCredentialAccount) else {
+            webPortalTokenCache = ""
+            return ""
+        }
+        let value = String(data: data, encoding: .utf8) ?? ""
+        webPortalTokenCache = value
+        return value
     }
 
     // MARK: - Service Factory
@@ -162,6 +201,22 @@ final class SyncManager {
                 await self?.sync(store: store)
             }
         }
+    }
+
+    func makeWebPortalURL(token: String? = nil) -> URL? {
+        let portal = config.webPortalURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = portal.isEmpty ? config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) : portal
+        guard !base.isEmpty else { return nil }
+        guard var components = URLComponents(string: base) else { return nil }
+
+        let resolvedToken = (token ?? loadWebPortalToken()).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !resolvedToken.isEmpty {
+            var fragmentItems = URLComponents()
+            fragmentItems.queryItems = [URLQueryItem(name: "token", value: resolvedToken)]
+            components.fragment = fragmentItems.percentEncodedQuery
+        }
+
+        return components.url
     }
 
     func stopPeriodicSync() {

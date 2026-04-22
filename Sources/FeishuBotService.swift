@@ -15,7 +15,6 @@ final class FeishuBotService {
 
     func setup(store: DataStore) {
         self.store = store
-        migrateSecrets(store: store)
         observeSystemWake()
     }
 
@@ -58,16 +57,27 @@ final class FeishuBotService {
     /// 唤醒后检查今天是否有已过时间但未发送的定时任务，如有则补发
     private func catchUpMissedSends() async {
         guard let store else { return }
+
+        // httpAPI 模式下由服务器负责
+        if SyncManager.shared.config.enabled && SyncManager.shared.config.backend == .httpAPI {
+            return
+        }
+
         let config = store.feishuBotConfig
         let now = Date()
         let calendar = Calendar.current
         let currentHour = calendar.component(.hour, from: now)
         let currentMinute = calendar.component(.minute, from: now)
         let todayKey = DataStore.dateKey(from: now)
+        let isoWeekday = calendar.component(.weekday, from: now)
+        let weekday = isoWeekday == 1 ? 7 : isoWeekday - 1
 
         for scheduleTime in config.sendTimes {
             // 已经发过了，跳过
             guard config.lastSentTimes[scheduleTime.key] != todayKey else { continue }
+
+            // 检查星期限制
+            guard scheduleTime.shouldSendOn(weekday: weekday) else { continue }
 
             // 只补发已过去的时间点（当前时间 > 计划时间）
             let isPast = currentHour > scheduleTime.hour
@@ -116,16 +126,25 @@ final class FeishuBotService {
         guard let store, store.feishuBotConfig.enabled,
               !store.feishuBotConfig.webhooks.isEmpty else { return }
 
+        // 新增：httpAPI 模式下由服务器 scheduler 负责定时发送
+        if SyncManager.shared.config.enabled && SyncManager.shared.config.backend == .httpAPI {
+            return
+        }
+
         let config = store.feishuBotConfig
         let now = Date()
         let calendar = Calendar.current
         let hour = calendar.component(.hour, from: now)
         let minute = calendar.component(.minute, from: now)
         let todayKey = DataStore.dateKey(from: now)
+        let isoWeekday = calendar.component(.weekday, from: now)
+        // Calendar.weekday: 1=Sun, 2=Mon..7=Sat → ISO: 1=Mon..7=Sun
+        let weekday = isoWeekday == 1 ? 7 : isoWeekday - 1
 
         for scheduleTime in config.sendTimes {
             guard hour == scheduleTime.hour,
                   minute == scheduleTime.minute,
+                  scheduleTime.shouldSendOn(weekday: weekday),
                   config.lastSentTimes[scheduleTime.key] != todayKey else { continue }
 
             let result = await sendReport(store: store)
@@ -143,12 +162,96 @@ final class FeishuBotService {
 
     /// 手动发送当天报告（不重试，即时反馈）
     func sendNow(store: DataStore) async -> (success: Bool, message: String) {
+        // httpAPI 模式优先委托服务器；服务不可用时回退到本地直发
+        if SyncManager.shared.config.enabled && SyncManager.shared.config.backend == .httpAPI {
+            let serverResult = await self.sendViaServer()
+            if serverResult.success { return serverResult }
+
+            let lowered = serverResult.message.lowercased()
+            let shouldFallback = serverResult.message.contains("网络错误") ||
+                serverResult.message.contains("无效的服务器 URL") ||
+                serverResult.message.contains("无效的响应") ||
+                lowered.contains("could not connect to the server") ||
+                lowered.contains("cannot connect to host") ||
+                lowered.contains("network is unreachable") ||
+                lowered.contains("timed out")
+
+            if shouldFallback {
+                let localResult = await sendDirectNow(store: store)
+                if localResult.success {
+                    return (true, "服务器不可用，已切换本地直发")
+                }
+                return (false, "服务器不可用；本地直发也失败：\(localResult.message)")
+            }
+
+            return serverResult
+        }
+        return await sendDirectNow(store: store)
+    }
+
+    /// 本地直发飞书，不依赖同步服务器
+    func sendDirectNow(store: DataStore) async -> (success: Bool, message: String) {
         guard !store.feishuBotConfig.webhooks.isEmpty else {
             return (false, "Webhook URL 为空")
         }
         let result = await sendReportOnce(store: store)
         addHistory(store: store, success: result.success, message: result.message, retryCount: 0)
         return result
+    }
+
+    private func ensureSecretsMigrated(store: DataStore) {
+        migrateSecrets(store: store)
+    }
+
+    private func sendViaServer() async -> (success: Bool, message: String) {
+        let syncConfig = SyncManager.shared.config
+        let serverURL = syncConfig.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(serverURL)/api/feishu/send") else {
+            return (false, "无效的服务器 URL")
+        }
+
+        let webToken = SyncManager.shared.loadWebPortalToken().trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = webToken.isEmpty ? SyncManager.shared.loadCredential() : webToken
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return (false, "无效的响应")
+            }
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let success = json["success"] as? Bool ?? false
+                let message = json["message"] as? String ?? "未知响应"
+
+                if http.statusCode == 429 {
+                    return (false, message)  // 冷却中
+                }
+
+                if success {
+                    // 更新本地状态（让 UI 及时反映）
+                    if let store = self.store {
+                        let fmt = DateFormatter()
+                        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                        store.feishuBotConfig.lastSentDateTime = fmt.string(from: Date())
+                        addHistory(store: store, success: true, message: "通过服务器发送成功", retryCount: 0)
+                    }
+                    DevLog.shared.info("FeishuBot", "通过服务器 API 发送成功")
+                    return (true, message)
+                } else {
+                    if let store = self.store {
+                        addHistory(store: store, success: false, message: message, retryCount: 0)
+                    }
+                    return (false, message)
+                }
+            }
+            return (false, "响应解析失败")
+        } catch {
+            return (false, "网络错误: \(error.localizedDescription)")
+        }
     }
 
     private func sendReport(store: DataStore) async -> (success: Bool, message: String) {
@@ -184,6 +287,7 @@ final class FeishuBotService {
     }
 
     private func sendReportOnce(store: DataStore) async -> (success: Bool, message: String) {
+        ensureSecretsMigrated(store: store)
         let payload = generateDailyReport(store: store)
         let webhooks = store.feishuBotConfig.webhooks.filter {
             !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -296,6 +400,8 @@ final class FeishuBotService {
         let newIssues: [TrackedIssue]
         let resolvedToday: [TrackedIssue]
         let pending: [TrackedIssue]
+        let scheduled: [TrackedIssue]
+        let testing: [TrackedIssue]
         let observing: [TrackedIssue]
         let todayRecords: [String: Int]
         let todayTotal: Int
@@ -315,7 +421,9 @@ final class FeishuBotService {
                 guard issue.status.isResolved, let resolvedAt = issue.resolvedAt else { return false }
                 return DataStore.dateKey(from: resolvedAt) == todayKey
             },
-            pending: allIssues.filter { !$0.status.isResolved && $0.status != .observing },
+            pending: allIssues.filter { !$0.status.isResolved && $0.status != .observing && $0.status != .scheduled && $0.status != .testing },
+            scheduled: allIssues.filter { $0.status == .scheduled },
+            testing: allIssues.filter { $0.status == .testing },
             observing: allIssues.filter { $0.status == .observing },
             todayRecords: store.todayRecords,
             todayTotal: store.todayTotal,
@@ -375,6 +483,36 @@ final class FeishuBotService {
         if d.config.showObserving && !d.observing.isEmpty {
             lines.append([text("👁 观测中问题：")])
             for issue in d.observing {
+                lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
+                if d.config.showComments {
+                    for comment in issue.comments.suffix(2) {
+                        let time = commentFmt.string(from: comment.createdAt)
+                        lines.append([text("      ↳ [\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))")])
+                    }
+                }
+            }
+            lines.append([text("")])
+        }
+
+        // === 已排期问题 ===
+        if d.config.showScheduled && !d.scheduled.isEmpty {
+            lines.append([text("📅 已排期问题：")])
+            for issue in d.scheduled {
+                lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
+                if d.config.showComments {
+                    for comment in issue.comments.suffix(2) {
+                        let time = commentFmt.string(from: comment.createdAt)
+                        lines.append([text("      ↳ [\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))")])
+                    }
+                }
+            }
+            lines.append([text("")])
+        }
+
+        // === 测试中问题 ===
+        if d.config.showTesting && !d.testing.isEmpty {
+            lines.append([text("🧪 测试中问题：")])
+            for issue in d.testing {
                 lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
                 if d.config.showComments {
                     for comment in issue.comments.suffix(2) {
@@ -485,9 +623,13 @@ final class FeishuBotService {
             "解决数量": "\(d.resolvedToday.count)",
             "待处理数量": "\(d.pending.count)",
             "观测中数量": "\(d.observing.count)",
+            "已排期数量": "\(d.scheduled.count)",
+            "测试中数量": "\(d.testing.count)",
             "待处理列表": formatIssueListMd(d.pending, showStatus: true, config: d.config, jiraServerURL: d.jiraServerURL),
             "已解决列表": formatIssueListMd(d.resolvedToday, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
             "观测中列表": formatIssueListMd(d.observing, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
+            "已排期列表": formatIssueListMd(d.scheduled, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
+            "测试中列表": formatIssueListMd(d.testing, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
             "日报内容": d.dailyNote.isEmpty ? "无" : d.dailyNote,
             "当前时间": timeFmt.string(from: Date()),
         ]
@@ -591,6 +733,38 @@ final class FeishuBotService {
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
 
+        // 已排期问题列表 + 评论
+        if d.config.showScheduled && !d.scheduled.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**📅 已排期问题：**"
+            for issue in d.scheduled {
+                content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
+                if d.config.showComments {
+                    for comment in issue.comments.suffix(2) {
+                        let time = commentFmt.string(from: comment.createdAt)
+                        content += "\n    *[\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))*"
+                    }
+                }
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
+        // 测试中问题列表 + 评论
+        if d.config.showTesting && !d.testing.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**🧪 测试中问题：**"
+            for issue in d.testing {
+                content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
+                if d.config.showComments {
+                    for comment in issue.comments.suffix(2) {
+                        let time = commentFmt.string(from: comment.createdAt)
+                        content += "\n    *[\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))*"
+                    }
+                }
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
         // 今日已解决列表 + 评论
         if d.config.showResolved && !d.resolvedToday.isEmpty {
             elements.append(["tag": "hr"])
@@ -618,6 +792,8 @@ final class FeishuBotService {
             || d.config.showOverview
             || (d.config.showPending && !d.pending.isEmpty)
             || (d.config.showObserving && !d.observing.isEmpty)
+            || (d.config.showScheduled && !d.scheduled.isEmpty)
+            || (d.config.showTesting && !d.testing.isEmpty)
             || (d.config.showResolved && !d.resolvedToday.isEmpty)
         if !hasContent {
             elements.append(["tag": "hr"])
@@ -729,6 +905,19 @@ final class FeishuBotService {
     static func loadSecret(for webhookID: UUID) -> String? {
         guard let data = KeychainHelper.load(service: keychainService, account: "webhook-secret-\(webhookID.uuidString)") else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    static func loadSecrets(for webhookIDs: [UUID]) -> [UUID: String] {
+        let accounts = KeychainHelper.loadAll(service: keychainService)
+        var secrets: [UUID: String] = [:]
+        let wanted = Set(webhookIDs)
+        for id in wanted {
+            let account = "webhook-secret-\(id.uuidString)"
+            if let data = accounts[account], let secret = String(data: data, encoding: .utf8) {
+                secrets[id] = secret
+            }
+        }
+        return secrets
     }
 
     static func deleteSecret(for webhookID: UUID) {

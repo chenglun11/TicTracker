@@ -355,11 +355,6 @@ final class DataStore {
         }
         aiEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? false
 
-        // Restore base URL / model from Keychain (survives reinstall)
-        let stored = AIService.shared.loadAll()
-        if !stored.baseURL.isEmpty { aiConfig.baseURL = stored.baseURL }
-        if !stored.model.isEmpty { aiConfig.model = stored.model }
-
         // Migrate legacy hotkeyModifier → per-project bindings
         if hotkeyBindings.isEmpty, UserDefaults.standard.string(forKey: "hotkeyModifier") != nil {
             let legacyMod = UserDefaults.standard.string(forKey: "hotkeyModifier") ?? "ctrl_shift"
@@ -695,6 +690,16 @@ final class DataStore {
            let feishuObj = try? JSONSerialization.jsonObject(with: feishuData) {
             payload["feishuBotConfig"] = feishuObj
         }
+        // 导出 webhook secrets（供服务器发送时使用）
+        var webhookSecrets: [String: String] = [:]
+        for webhook in feishuBotConfig.webhooks where webhook.signEnabled {
+            if let secret = FeishuBotService.loadSecret(for: webhook.id), !secret.isEmpty {
+                webhookSecrets[webhook.id.uuidString] = secret
+            }
+        }
+        if !webhookSecrets.isEmpty {
+            payload["feishuWebhookSecrets"] = webhookSecrets
+        }
         if let aiData = try? JSONEncoder().encode(aiConfig),
            let aiObj = try? JSONSerialization.jsonObject(with: aiData) {
             payload["aiConfig"] = aiObj
@@ -778,6 +783,7 @@ final class DataStore {
 
     func importSyncData(_ data: Data) -> Bool {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        // 注意：feishuWebhookSecrets 字段仅用于服务器端，导入时不处理（不回写 Keychain）
         // 核心数据
         if let depts = obj["departments"] as? [String] {
             departments = depts
