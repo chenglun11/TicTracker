@@ -133,6 +133,18 @@ final class DataStore {
     var issueTrackerEnabled: Bool {
         didSet { UserDefaults.standard.set(issueTrackerEnabled, forKey: "issueTrackerEnabled") }
     }
+    var issueSourceManualEnabled: Bool {
+        didSet { UserDefaults.standard.set(issueSourceManualEnabled, forKey: "issueSourceManualEnabled") }
+    }
+    var issueSourceJiraEnabled: Bool {
+        didSet { UserDefaults.standard.set(issueSourceJiraEnabled, forKey: "issueSourceJiraEnabled") }
+    }
+    var issueSourceMetaEnabled: Bool {
+        didSet { UserDefaults.standard.set(issueSourceMetaEnabled, forKey: "issueSourceMetaEnabled") }
+    }
+    var issueSourceFeishuDocEnabled: Bool {
+        didSet { UserDefaults.standard.set(issueSourceFeishuDocEnabled, forKey: "issueSourceFeishuDocEnabled") }
+    }
     var diaryShowAllPending: Bool {
         didSet { UserDefaults.standard.set(diaryShowAllPending, forKey: "diaryShowAllPending") }
     }
@@ -345,6 +357,10 @@ final class DataStore {
             UserDefaults.standard.set(unified, forKey: "issueTrackerEnabled")
         }
         jiraSourceMode = UserDefaults.standard.object(forKey: "jiraSourceMode") as? Int ?? 2 // default: all
+        issueSourceManualEnabled = UserDefaults.standard.object(forKey: "issueSourceManualEnabled") as? Bool ?? true
+        issueSourceJiraEnabled = UserDefaults.standard.object(forKey: "issueSourceJiraEnabled") as? Bool ?? true
+        issueSourceMetaEnabled = UserDefaults.standard.object(forKey: "issueSourceMetaEnabled") as? Bool ?? true
+        issueSourceFeishuDocEnabled = UserDefaults.standard.object(forKey: "issueSourceFeishuDocEnabled") as? Bool ?? true
 
         // AI
         if let data = UserDefaults.standard.data(forKey: "aiConfig"),
@@ -966,12 +982,16 @@ final class DataStore {
 
     func allTasksForDate(_ date: Date) -> [TodoTask] {
         let key = Self.dateKey(from: date)
-        let byDateKey = todoTasks.filter { $0.dateKey == key }
-        let byDueDate = todoTasks.filter { task in
-            guard let dueDate = task.dueDate else { return false }
-            return Calendar.current.isDate(dueDate, inSameDayAs: date) && task.dateKey != key
+        let calendar = Calendar.current
+        let selectedDay = calendar.startOfDay(for: date)
+        return todoTasks.filter { task in
+            if task.dateKey == key { return true }
+            guard task.dueDate != nil, !task.isCompleted else { return false }
+            let createdKey = task.dateKey.isEmpty ? Self.dateKey(from: task.createdAt) : task.dateKey
+            let createdDay = Self.dateFormatter.date(from: createdKey).map { calendar.startOfDay(for: $0) }
+                ?? calendar.startOfDay(for: task.createdAt)
+            return createdDay <= selectedDay
         }
-        return byDateKey + byDueDate
     }
 
     func addTask(_ task: TodoTask, forKey key: String) {
@@ -1004,13 +1024,30 @@ final class DataStore {
 
     // MARK: - Tracked Issue Helpers
 
+    func isIssueSourceEnabled(_ source: IssueSource) -> Bool {
+        switch source {
+        case .manual:
+            issueSourceManualEnabled
+        case .jira:
+            issueSourceJiraEnabled
+        case .meta:
+            issueSourceMetaEnabled
+        case .feishu:
+            issueSourceFeishuDocEnabled
+        }
+    }
+
+    var visibleTrackedIssues: [TrackedIssue] {
+        trackedIssues.filter { isIssueSourceEnabled($0.source) }
+    }
+
     func issuesForKey(_ key: String) -> [TrackedIssue] {
-        trackedIssues.filter { $0.dateKey == key }
+        visibleTrackedIssues.filter { $0.dateKey == key }
     }
 
     /// Issues that have activity on a given date (created or commented that day)
     func issuesActiveForKey(_ key: String) -> [TrackedIssue] {
-        trackedIssues.filter { issue in
+        visibleTrackedIssues.filter { issue in
             if issue.dateKey == key { return true }
             return issue.comments.contains { Self.dateKey(from: $0.createdAt) == key }
         }
@@ -1020,7 +1057,7 @@ final class DataStore {
     func issuesVisibleForKey(_ key: String) -> [TrackedIssue] {
         let active = issuesActiveForKey(key)
         let activeIDs = Set(active.map(\.id))
-        let carryOver = trackedIssues.filter {
+        let carryOver = visibleTrackedIssues.filter {
             !activeIDs.contains($0.id) && $0.dateKey < key && !$0.status.isResolved
         }
         return active + carryOver
@@ -1042,6 +1079,25 @@ final class DataStore {
         entry.department = department
         trackedIssues.append(entry)
         logOperation(module: "问题", action: "新增", detail: "#\(entry.issueNumber) [\(type.rawValue)] \(title)")
+    }
+
+    @discardableResult
+    func addIssueFromFeishuTask(_ task: FeishuTaskCandidate, forKey key: String) -> Bool {
+        guard !task.guid.isEmpty,
+              !trackedIssues.contains(where: { $0.feishuTaskGuid == task.guid }) else { return false }
+        let title = task.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "飞书任务 \(task.guid)" : task.summary
+        let completedAt = (task.completedAt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var entry = TrackedIssue(title: title, type: .issue)
+        entry.issueNumber = nextIssueNumber
+        nextIssueNumber += 1
+        entry.dateKey = key
+        entry.source = .feishu
+        entry.feishuTaskGuid = task.guid
+        entry.status = completedAt.isEmpty || completedAt == "0" ? .pending : .fixed
+        entry.resolvedAt = entry.status.isResolved ? Date() : nil
+        trackedIssues.append(entry)
+        logOperation(module: "问题", action: "飞书同步新增", detail: "#\(entry.issueNumber) \(title) [guid=\(task.guid)]")
+        return true
     }
 
     /// Apply mutations to a tracked issue via copy-modify-writeback to reliably trigger didSet.
@@ -1115,6 +1171,26 @@ final class DataStore {
 
     func updateIssueTicketURL(id: UUID, ticketURL: String?) {
         mutateIssue(id: id) { $0.ticketURL = ticketURL }
+    }
+
+    func updateIssueFeishuTaskGuid(id: UUID, guid: String?) {
+        mutateIssue(id: id) { $0.feishuTaskGuid = guid }
+    }
+
+    func markIssueFeishuTaskDeleted(id: UUID, guid: String) {
+        mutateIssue(id: id) { issue in
+            issue.feishuTaskGuid = nil
+            issue.status = .ignored
+            issue.resolvedAt = Date()
+            let marker = "飞书任务已删除"
+            if !issue.comments.contains(where: { $0.text.contains(marker) && $0.text.contains(guid) }) {
+                issue.comments.append(IssueComment(text: "\(marker)：\(guid)。本地记录已保留并标记为已忽略。"))
+            }
+        }
+    }
+
+    func updateBotTasklistGUID(_ guid: String) {
+        feishuBotConfig.botTasklistGUID = guid
     }
 
     func updateIssueTitle(id: UUID, title: String) {

@@ -1,6 +1,20 @@
 port: "9999"
-token: "your-legacy-token"  # 兼容旧配置；未设置 sync_token / web_token 时回退使用
+bind: "127.0.0.1"            # 默认仅本机访问；设为 "0.0.0.0" 允许 LAN 访问（需自行评估安全风险）
+token: "your-legacy-token"   # 兼容旧配置；未设置 sync_token / web_token 时回退使用
 sync_token: "your-sync-token"
 web_token: "your-web-token"
 data_dir: "./data"
-feishu_secret: ""  # 飞书签名 secret，不用签名留空
+max_body_bytes: 10485760     # 请求体上限：10MB（防止 OOM DoS）
+
+# 飞书自定义机器人签名 secret（如果开启签名校验，每个 webhook 在客户端单独配置 secret，这里仅为兼容旧版）
+feishu_secret: ""
+
+# 飞书应用平台凭证（用于 tenant_access_token、Tasks API、卡片回调）
+feishu_app_id: ""
+feishu_app_secret: ""
+
+# 飞书事件订阅安全配置（强烈建议配置，否则 /feishu/event 与 /feishu/card 暴露在网络上无任何校验）
+# - verification_token：在飞书开发者后台「事件与回调」页面查看
+# - encrypt_key：开启「事件加密推送」时生成；启用后服务端会校验 X-Lark-Signature 并解密 encrypt 字段
+feishu_verification_token: ""
+feishu_encrypt_key: ""

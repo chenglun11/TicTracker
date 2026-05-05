@@ -159,7 +159,11 @@ final class SyncManager {
                     }
                 } else if localTS > remoteTS {
                     try await service.upload(localData)
-                    DevLog.shared.info("Sync", "本地数据更新，已上传")
+                    // 上传后重新下载服务端合并结果（包含 Web 端修改）
+                    if let mergedData = try await service.download() {
+                        _ = store.importSyncData(mergedData)
+                    }
+                    DevLog.shared.info("Sync", "本地数据更新，已上传并回同步")
                 } else {
                     DevLog.shared.info("Sync", "本地与云端数据一致，无需同步")
                 }

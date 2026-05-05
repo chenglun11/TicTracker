@@ -17,6 +17,16 @@ struct IssueTrackerView: View {
     @State private var saveState = AutoSaveState()
     @State private var showJiraPicker = false
     @State private var jiraSearchText = ""
+    @State private var showFeishuTaskPicker = false
+    @State private var feishuTaskSearchText = ""
+    @State private var feishuTaskCandidates: [FeishuTaskCandidate] = []
+    @State private var feishuTasklists: [FeishuVisibleTasklist] = []
+    @State private var selectedFeishuTasklist = ""
+    @State private var feishuTaskLoading = false
+    @State private var feishuTaskError: String?
+    @State private var creatingFeishuTaskIssueID: UUID?
+    @State private var feishuSyncInProgress = false
+    @State private var syncTimer: Timer?
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -43,7 +53,7 @@ struct IssueTrackerView: View {
     }
 
     private var filteredIssues: [TrackedIssue] {
-        var issues = store.trackedIssues
+        var issues = store.visibleTrackedIssues
 
         if let type = typeFilter.issueType {
             issues = issues.filter { $0.type == type }
@@ -72,12 +82,22 @@ struct IssueTrackerView: View {
     }
 
     private var unresolvedCount: Int {
-        store.trackedIssues.filter { !$0.status.isResolved && $0.status != .observing }.count
+        store.visibleTrackedIssues.filter { !$0.status.isResolved && $0.status != .observing }.count
     }
 
     private var selectedIssue: TrackedIssue? {
         guard let id = selectedIssueID else { return nil }
-        return store.trackedIssues.first { $0.id == id }
+        return store.visibleTrackedIssues.first { $0.id == id }
+    }
+
+    private var canSyncFeishuTasks: Bool {
+        switch store.feishuBotConfig.taskAuthMode {
+        case .botTenant:
+            return !store.feishuBotConfig.appID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && FeishuBotService.loadAppSecret()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        case .userOAuth:
+            return FeishuOAuthService.shared.isAuthorized
+        }
     }
 
     var body: some View {
@@ -88,10 +108,27 @@ struct IssueTrackerView: View {
                 HStack(spacing: 12) {
                     // Stats
                     HStack(spacing: 8) {
-                        statBadge(title: "总计", value: store.trackedIssues.count, color: .blue)
+                        statBadge(title: "总计", value: store.visibleTrackedIssues.count, color: .blue)
                         statBadge(title: "未解决", value: unresolvedCount, color: unresolvedCount > 0 ? .orange : .green)
                     }
                     Spacer()
+                    if feishuSyncInProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                            .help("正在同步飞书任务状态…")
+                    }
+                    Button {
+                        syncFeishuBoundTasks()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("同步任务")
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.regular)
+                    .disabled(feishuSyncInProgress || !canSyncFeishuTasks)
+                    .help(store.feishuBotConfig.taskAuthMode == .botTenant ? "使用 Bot / 应用身份同步飞书任务" : "使用用户 OAuth 同步飞书任务")
                     Button {
                         sendToFeishu()
                     } label: {
@@ -234,9 +271,15 @@ struct IssueTrackerView: View {
             }
         }
         .onAppear {
+            syncFeishuBoundTasks()
+            startSyncTimer()
             if selectedIssueID == nil, let first = filteredIssues.first {
                 selectedIssueID = first.id
             }
+        }
+        .onDisappear {
+            stopSyncTimer()
+            NSApp.setActivationPolicy(.accessory)
         }
         .onChange(of: selectedIssueID) {
             isEditingTitle = false
@@ -244,13 +287,13 @@ struct IssueTrackerView: View {
             newCommentText = ""
             sendResult = nil
         }
+        .onChange(of: store.feishuBotConfig.taskPollingInterval) { _, _ in
+            startSyncTimer()
+        }
         .onChange(of: searchText) {
             if let id = selectedIssueID, !filteredIssues.contains(where: { $0.id == id }) {
                 selectedIssueID = filteredIssues.first?.id
             }
-        }
-        .onDisappear {
-            NSApp.setActivationPolicy(.accessory)
         }
         .autoSaveIndicator(saveState)
     }
@@ -317,6 +360,8 @@ struct IssueTrackerView: View {
 
     @ViewBuilder
     private func issueDetail(_ issue: TrackedIssue) -> some View {
+        let isReadOnly = issue.source.isReadOnly
+        let isStatusLocked = issue.feishuTaskGuid != nil
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Title
@@ -348,6 +393,7 @@ struct IssueTrackerView: View {
                         }
                         .frame(maxHeight: 100)
                         .onTapGesture {
+                            guard !isReadOnly else { return }
                             editingTitle = issue.title
                             isEditingTitle = true
                         }
@@ -385,6 +431,7 @@ struct IssueTrackerView: View {
                     }
                     .labelsHidden()
                     .frame(width: 100)
+                    .disabled(isReadOnly || isStatusLocked)
 
                     Menu {
                         ForEach(IssueStatus.allCases, id: \.self) { status in
@@ -405,6 +452,7 @@ struct IssueTrackerView: View {
                         .padding(.vertical, 4)
                         .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                     }
+                    .disabled(isReadOnly)
 
                     if !store.bugTeamMembers.isEmpty {
                         Menu {
@@ -429,6 +477,7 @@ struct IssueTrackerView: View {
                             .padding(.vertical, 4)
                             .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                         }
+                        .disabled(isReadOnly)
                     }
 
                     if issue.type == .issue {
@@ -446,6 +495,7 @@ struct IssueTrackerView: View {
                         }
                         .labelsHidden()
                         .frame(width: 120)
+                        .disabled(isReadOnly)
                     }
                 }
 
@@ -468,6 +518,7 @@ struct IssueTrackerView: View {
                         }
                         .labelsHidden()
                         .frame(width: 160)
+                        .disabled(isReadOnly)
                     }
 
                     switch issue.source {
@@ -568,6 +619,8 @@ struct IssueTrackerView: View {
                     case .manual:
                         EmptyView()
                     }
+
+                    linkedTaskControl(issue)
                 }
 
                 Divider()
@@ -612,13 +665,15 @@ struct IssueTrackerView: View {
                                     .font(.callout)
                             }
                         }
-                        Button {
-                            isEditingTime = true
-                        } label: {
-                            Image(systemName: "pencil")
-                                .font(.caption)
+                        if !isReadOnly {
+                            Button {
+                                isEditingTime = true
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
                         }
-                        .buttonStyle(.borderless)
                     }
                 }
 
@@ -647,7 +702,7 @@ struct IssueTrackerView: View {
                                         .font(.callout)
                                 }
                                 Spacer()
-                                if comment.jiraCommentId == nil {
+                                if comment.jiraCommentId == nil && !isReadOnly {
                                     Button {
                                         store.deleteIssueComment(issueID: issue.id, commentID: comment.id)
                                         saveState.triggerSave()
@@ -665,10 +720,19 @@ struct IssueTrackerView: View {
                 }
 
                 // Add comment
-                HStack(spacing: 8) {
-                    TextField("添加备注…", text: $newCommentText)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
+                if !isReadOnly {
+                    HStack(spacing: 8) {
+                        TextField("添加备注…", text: $newCommentText)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit {
+                                let text = newCommentText.trimmingCharacters(in: .whitespaces)
+                                if !text.isEmpty {
+                                    store.addIssueComment(id: issue.id, text: text)
+                                    newCommentText = ""
+                                    saveState.triggerSave()
+                                }
+                            }
+                        Button("提交") {
                             let text = newCommentText.trimmingCharacters(in: .whitespaces)
                             if !text.isEmpty {
                                 store.addIssueComment(id: issue.id, text: text)
@@ -676,36 +740,100 @@ struct IssueTrackerView: View {
                                 saveState.triggerSave()
                             }
                         }
-                    Button("提交") {
-                        let text = newCommentText.trimmingCharacters(in: .whitespaces)
-                        if !text.isEmpty {
-                            store.addIssueComment(id: issue.id, text: text)
-                            newCommentText = ""
-                            saveState.triggerSave()
-                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(newCommentText.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(newCommentText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
                 Divider()
 
                 // Delete button
-                Button {
-                    store.deleteIssue(id: issue.id)
-                    selectedIssueID = filteredIssues.first?.id
-                    saveState.triggerSave()
-                } label: {
-                    HStack {
-                        Image(systemName: "trash")
-                        Text("删除问题")
+                if !isReadOnly {
+                    Button {
+                        store.deleteIssue(id: issue.id)
+                        selectedIssueID = filteredIssues.first?.id
+                        saveState.triggerSave()
+                    } label: {
+                        HStack {
+                            Image(systemName: "trash")
+                            Text("删除问题")
+                        }
+                        .foregroundStyle(.red)
                     }
-                    .foregroundStyle(.red)
+                    .buttonStyle(.bordered)
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                        Text("此问题来源于飞书任务，平台仅做同步与状态监测，不支持直接编辑或删除。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .buttonStyle(.bordered)
             }
             .padding(20)
+        }
+    }
+
+    @ViewBuilder
+    private func linkedTaskControl(_ issue: TrackedIssue) -> some View {
+        HStack(spacing: 8) {
+            Text("飞书任务")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextField("飞书任务 GUID", text: Binding(
+                get: { issue.feishuTaskGuid ?? "" },
+                set: {
+                    let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    store.updateIssueFeishuTaskGuid(id: issue.id, guid: trimmed.isEmpty ? nil : trimmed)
+                    saveState.debouncedSave()
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .frame(minWidth: 320, maxWidth: 520)
+
+            Button {
+                loadFeishuTasks()
+                showFeishuTaskPicker = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "link")
+                    Text(issue.feishuTaskGuid?.isEmpty == false ? "更换任务" : "关联任务")
+                }
+                .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .popover(isPresented: $showFeishuTaskPicker, arrowEdge: .bottom) {
+                feishuTaskPickerPopover(issue: issue)
+            }
+
+            if let guid = issue.feishuTaskGuid, !guid.isEmpty {
+                Text("状态由飞书同步")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Button {
+                    openFeishuTask(guid: guid)
+                } label: {
+                    Image(systemName: "arrow.up.forward.square")
+                }
+                .buttonStyle(.borderless)
+                .help("在飞书中打开任务")
+                Button("解绑") {
+                    store.updateIssueFeishuTaskGuid(id: issue.id, guid: nil)
+                    saveState.triggerSave()
+                }
+                .controlSize(.small)
+            } else {
+                Button(creatingFeishuTaskIssueID == issue.id ? "创建中…" : "创建飞书任务") {
+                    createFeishuTask(for: issue)
+                }
+                .controlSize(.small)
+                .disabled(creatingFeishuTaskIssueID != nil)
+                .help("用 Bot / 应用身份创建飞书任务；如未配置 Bot 清单 GUID，会自动创建 Bot 专用清单")
+            }
         }
     }
 
@@ -821,6 +949,233 @@ struct IssueTrackerView: View {
             .frame(maxHeight: 240)
         }
         .frame(width: 340)
+    }
+
+    @ViewBuilder
+    private func feishuTaskPickerPopover(issue: TrackedIssue) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("任务清单")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("任务清单", selection: $selectedFeishuTasklist) {
+                    ForEach(visibleFeishuTasklists(), id: \.guid) { tl in
+                        Text("\(tl.name)  ·  \(tl.guid)").tag(tl.guid)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(8)
+            .onChange(of: selectedFeishuTasklist) { _, value in
+                loadFeishuTasks(tasklistGUID: value)
+            }
+
+            TextField("搜索飞书任务…", text: $feishuTaskSearchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(8)
+
+            if let feishuTaskError {
+                Text(feishuTaskError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
+            }
+
+            let query = feishuTaskSearchText.lowercased()
+            let filtered = feishuTaskCandidates.filter { task in
+                query.isEmpty ||
+                task.guid.lowercased().contains(query) ||
+                task.summary.lowercased().contains(query)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(filtered) { task in
+                        Button {
+                            store.updateIssueFeishuTaskGuid(id: issue.id, guid: task.guid)
+                            applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
+                            saveState.triggerSave()
+                            showFeishuTaskPicker = false
+                        } label: {
+                            HStack(alignment: .top, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(task.summary.isEmpty ? task.guid : task.summary)
+                                        .lineLimit(2)
+                                    Text(task.guid)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .textSelection(.enabled)
+                                }
+                                Spacer()
+                                if let completedAt = task.completedAt, completedAt != "0", !completedAt.isEmpty {
+                                    Text("已完成")
+                                        .font(.caption2)
+                                        .foregroundStyle(.green)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if feishuTaskLoading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    } else if filtered.isEmpty {
+                        Text("无匹配任务")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                }
+            }
+            .frame(maxHeight: 360)
+        }
+        .frame(width: 760)
+        .task {
+            if feishuTaskCandidates.isEmpty {
+                loadFeishuTasks(tasklistGUID: selectedFeishuTasklist.isEmpty ? nil : selectedFeishuTasklist)
+            }
+        }
+    }
+
+    private func visibleFeishuTasklists() -> [FeishuVisibleTasklist] {
+        if !feishuTasklists.isEmpty { return feishuTasklists }
+        let guid = store.feishuBotConfig.tasklistGUID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return guid.isEmpty ? [] : [FeishuVisibleTasklist(guid: guid, name: "默认清单")]
+    }
+
+    private func loadFeishuTasks(tasklistGUID: String? = nil) {
+        feishuTaskLoading = true
+        feishuTaskError = nil
+        Task {
+            do {
+                if feishuTasklists.isEmpty {
+                    let visible = try await FeishuTaskService.shared.listVisibleTasklistsForPicker(store: store)
+                    let fallback = store.feishuBotConfig.tasklistGUID.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if visible.isEmpty, !fallback.isEmpty {
+                        feishuTasklists = [FeishuVisibleTasklist(guid: fallback, name: "默认清单")]
+                    } else {
+                        feishuTasklists = visible
+                    }
+                    if selectedFeishuTasklist.isEmpty {
+                        selectedFeishuTasklist = feishuTasklists.first?.guid ?? ""
+                    }
+                }
+                let target = tasklistGUID?.isEmpty == false ? tasklistGUID : (selectedFeishuTasklist.isEmpty ? nil : selectedFeishuTasklist)
+                let result = try await FeishuTaskService.shared.listTasks(store: store, tasklistGUID: target)
+                if selectedFeishuTasklist.isEmpty {
+                    selectedFeishuTasklist = result.selected
+                }
+                feishuTaskCandidates = result.tasks
+                feishuTaskLoading = false
+            } catch {
+                feishuTaskError = error.localizedDescription
+                feishuTaskCandidates = []
+                feishuTaskLoading = false
+            }
+        }
+    }
+
+    private func createFeishuTask(for issue: TrackedIssue) {
+        creatingFeishuTaskIssueID = issue.id
+        Task {
+            do {
+                let task = try await FeishuTaskService.shared.createTaskForIssue(store: store, issue: issue)
+                store.updateIssueFeishuTaskGuid(id: issue.id, guid: task.guid)
+                applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
+                saveState.triggerSave()
+            } catch {
+                DevLog.shared.error("IssueTracker", "创建飞书任务失败 #\(issue.issueNumber): \(error.localizedDescription)")
+            }
+            creatingFeishuTaskIssueID = nil
+        }
+    }
+
+    private func openFeishuTask(guid: String) {
+        guard let url = URL(string: "https://applink.feishu.cn/client/todo/detail?guid=\(guid)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func applyFeishuTaskCompletionStatus(issueID: UUID, candidate: FeishuTaskCandidate) {
+        let isCompleted = (candidate.completedAt ?? "").trimmingCharacters(in: .whitespaces).isEmpty == false
+            && candidate.completedAt != "0"
+        if isCompleted {
+            store.updateIssueStatus(id: issueID, status: .fixed)
+        } else if let issue = store.trackedIssues.first(where: { $0.id == issueID }), issue.status.isResolved {
+            store.updateIssueStatus(id: issueID, status: .pending)
+        }
+    }
+
+    private func syncFeishuBoundTasks() {
+        guard canSyncFeishuTasks else { return }
+        let boundGUIDs = store.trackedIssues.compactMap { issue -> String? in
+            guard let guid = issue.feishuTaskGuid, !guid.isEmpty else { return nil }
+            return guid
+        }
+        feishuSyncInProgress = true
+        Task {
+            do {
+                let boundResult = try await FeishuTaskService.shared.syncBoundTasks(store: store, boundGUIDs: boundGUIDs)
+                for guid in boundResult.deletedGUIDs {
+                    if let issue = store.trackedIssues.first(where: { $0.feishuTaskGuid == guid }) {
+                        store.markIssueFeishuTaskDeleted(id: issue.id, guid: guid)
+                        DevLog.shared.info("IssueTracker", "飞书任务不存在，已保留本地问题并标记已忽略 #\(issue.issueNumber) [guid=\(guid)]")
+                    }
+                }
+                for (guid, task) in boundResult.tasks {
+                    if let issue = store.trackedIssues.first(where: { $0.feishuTaskGuid == guid }) {
+                        applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
+                    }
+                }
+
+                do {
+                    let tasklistResult = try await FeishuTaskService.shared.listTasks(store: store)
+                    var importedCount = 0
+                    for task in tasklistResult.tasks {
+                        if store.addIssueFromFeishuTask(task, forKey: store.todayKey) {
+                            importedCount += 1
+                        }
+                    }
+                    DevLog.shared.info("IssueTracker", "飞书任务清单同步完成：检查 \(tasklistResult.tasks.count) 个任务，新增 \(importedCount) 个本地问题")
+                } catch {
+                    DevLog.shared.error("IssueTracker", "同步飞书任务清单失败: \(error.localizedDescription)")
+                }
+                saveState.triggerSave()
+            } catch {
+                DevLog.shared.error("IssueTracker", "同步飞书任务失败: \(error.localizedDescription)")
+            }
+            feishuSyncInProgress = false
+        }
+    }
+
+    private func startSyncTimer() {
+        stopSyncTimer()
+        let minutes = max(store.feishuBotConfig.taskPollingInterval, 1)
+        DevLog.shared.info("IssueTracker", "飞书任务单向同步定时器已启动，每 \(minutes) 分钟检查一次")
+        syncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(minutes * 60), repeats: true) { _ in
+            Task { @MainActor in
+                guard NSApp.isActive, !NSApp.isHidden else { return }
+                syncFeishuBoundTasks()
+            }
+        }
+    }
+
+    private func stopSyncTimer() {
+        if syncTimer != nil {
+            DevLog.shared.info("IssueTracker", "飞书任务单向同步定时器已停止")
+        }
+        syncTimer?.invalidate()
+        syncTimer = nil
     }
 
     private func openJiraInBrowser(_ key: String) {

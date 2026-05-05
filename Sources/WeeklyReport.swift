@@ -85,7 +85,7 @@ struct WeeklyReport {
         }
 
         // Tracked issues for the week (unified)
-        let weekTracked = store.trackedIssues.filter { (entry: TrackedIssue) -> Bool in
+        let weekTracked = store.visibleTrackedIssues.filter { (entry: TrackedIssue) -> Bool in
             guard let entryDate = fmt.date(from: entry.dateKey) else { return false }
             return entryDate >= monday && entryDate <= today
         }

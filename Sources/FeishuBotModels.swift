@@ -49,7 +49,33 @@ struct ScheduleTime: Codable, Sendable, Identifiable, Equatable {
 struct FeishuWebhook: Codable, Sendable, Identifiable, Equatable {
     var id = UUID()
     var url: String
+    var enabled: Bool = true
     var signEnabled: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case id, url, enabled, signEnabled
+    }
+
+    init(id: UUID = UUID(), url: String, enabled: Bool = true, signEnabled: Bool = false) {
+        self.id = id
+        self.url = url
+        self.enabled = enabled
+        self.signEnabled = signEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        signEnabled = try c.decodeIfPresent(Bool.self, forKey: .signEnabled) ?? false
+    }
+}
+
+
+enum FeishuTaskAuthMode: String, Codable, Sendable, CaseIterable {
+    case userOAuth = "用户 OAuth"
+    case botTenant = "Bot / 应用身份"
 }
 
 struct FeishuBotConfig: Codable, Sendable {
@@ -83,6 +109,19 @@ struct FeishuBotConfig: Codable, Sendable {
     var sendHistory: [SendHistory] = []
     var maxRetries: Int = 3
 
+    // 飞书应用（双向交互）
+    var appID: String = ""
+    var appSecret: String = ""
+    var verificationToken: String = ""
+    var encryptKey: String = ""
+    var allowedChatIDs: [String] = []
+    var tasklistGUID: String = ""
+    var taskPollingInterval: Int = 5
+    var taskAuthMode: FeishuTaskAuthMode = .userOAuth
+    var taskDefaultCollaboratorOpenID: String = ""
+    var botTasklistGUID: String = ""
+    var botTasklistName: String = "TicTracker Issues"
+
     // 卡片模块开关
     var showSupportStats: Bool = true   // 项目支持统计
     var showOverview: Bool = true       // 统计概览（新建/解决/待处理）
@@ -108,6 +147,16 @@ struct FeishuBotConfig: Codable, Sendable {
         case sendTimes, lastSentTimes, lastSentDateTime
         case sendHour, sendMinute, lastSentDate  // legacy
         case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle
+        case appID
+        case appSecret
+        case verificationToken
+        case encryptKey
+        case allowedChatIDs
+        case tasklistGUID
+        case taskPollingInterval
+        case taskAuthMode
+        case taskDefaultCollaboratorOpenID
+        case botTasklistGUID, botTasklistName
         case showSupportStats, showOverview, showPending, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showComments
         case fieldType, fieldDepartment, fieldJiraKey, fieldStatus, fieldAssignee
     }
@@ -133,6 +182,17 @@ struct FeishuBotConfig: Codable, Sendable {
         cardTitle = try c.decodeIfPresent(String.self, forKey: .cardTitle) ?? "每日工单报告"
         sendHistory = try c.decodeIfPresent([SendHistory].self, forKey: .sendHistory) ?? []
         maxRetries = try c.decodeIfPresent(Int.self, forKey: .maxRetries) ?? 3
+        appID = try c.decodeIfPresent(String.self, forKey: .appID) ?? ""
+        appSecret = try c.decodeIfPresent(String.self, forKey: .appSecret) ?? ""
+        verificationToken = try c.decodeIfPresent(String.self, forKey: .verificationToken) ?? ""
+        encryptKey = try c.decodeIfPresent(String.self, forKey: .encryptKey) ?? ""
+        allowedChatIDs = try c.decodeIfPresent([String].self, forKey: .allowedChatIDs) ?? []
+        tasklistGUID = try c.decodeIfPresent(String.self, forKey: .tasklistGUID) ?? ""
+        taskPollingInterval = max(try c.decodeIfPresent(Int.self, forKey: .taskPollingInterval) ?? 5, 1)
+        taskAuthMode = try c.decodeIfPresent(FeishuTaskAuthMode.self, forKey: .taskAuthMode) ?? .userOAuth
+        taskDefaultCollaboratorOpenID = try c.decodeIfPresent(String.self, forKey: .taskDefaultCollaboratorOpenID) ?? ""
+        botTasklistGUID = try c.decodeIfPresent(String.self, forKey: .botTasklistGUID) ?? ""
+        botTasklistName = try c.decodeIfPresent(String.self, forKey: .botTasklistName) ?? "TicTracker Issues"
 
         // 新格式
         sendTimes = try c.decodeIfPresent([ScheduleTime].self, forKey: .sendTimes) ?? []
@@ -181,6 +241,39 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(cardTitle, forKey: .cardTitle)
         try c.encode(sendHistory, forKey: .sendHistory)
         try c.encode(maxRetries, forKey: .maxRetries)
+        if !appID.isEmpty {
+            try c.encode(appID, forKey: .appID)
+        }
+        if !appSecret.isEmpty {
+            try c.encode(appSecret, forKey: .appSecret)
+        }
+        if !verificationToken.isEmpty {
+            try c.encode(verificationToken, forKey: .verificationToken)
+        }
+        if !encryptKey.isEmpty {
+            try c.encode(encryptKey, forKey: .encryptKey)
+        }
+        if !allowedChatIDs.isEmpty {
+            try c.encode(allowedChatIDs, forKey: .allowedChatIDs)
+        }
+        if !tasklistGUID.isEmpty {
+            try c.encode(tasklistGUID, forKey: .tasklistGUID)
+        }
+        if taskPollingInterval != 5 {
+            try c.encode(taskPollingInterval, forKey: .taskPollingInterval)
+        }
+        if taskAuthMode != .userOAuth {
+            try c.encode(taskAuthMode, forKey: .taskAuthMode)
+        }
+        if !taskDefaultCollaboratorOpenID.isEmpty {
+            try c.encode(taskDefaultCollaboratorOpenID, forKey: .taskDefaultCollaboratorOpenID)
+        }
+        if !botTasklistGUID.isEmpty {
+            try c.encode(botTasklistGUID, forKey: .botTasklistGUID)
+        }
+        if botTasklistName != "TicTracker Issues" {
+            try c.encode(botTasklistName, forKey: .botTasklistName)
+        }
 
         try c.encode(showSupportStats, forKey: .showSupportStats)
         try c.encode(showOverview, forKey: .showOverview)

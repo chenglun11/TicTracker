@@ -88,6 +88,10 @@ enum IssueSource: String, Codable, Sendable, CaseIterable {
     case jira = "Jira"
     case meta = "Meta Direct Support"
     case feishu = "飞书文档"
+
+    var isReadOnly: Bool {
+        false
+    }
 }
 
 enum DiaryBadge: String, Codable, Sendable, CaseIterable {
@@ -116,6 +120,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     var resolvedAt: Date?
     var hasDevActivity: Bool = false     // 检测到 GitLab bot 等开发活动
     var isEscalated: Bool = false        // Meta Support 是否已 Escalate
+    var feishuTaskGuid: String?          // 对应飞书任务 GUID（新 issue 自动创建）
 
     init(title: String, type: IssueType = .bug) {
         self.title = title
@@ -125,7 +130,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     // MARK: - Custom Codable for migration
 
     private enum CodingKeys: String, CodingKey {
-        case id, issueNumber, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt, hasDevActivity, isEscalated
+        case id, issueNumber, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt, hasDevActivity, isEscalated, feishuTaskGuid
         case note       // legacy single-note field
         case isFixed    // legacy BugEntry field
         case fixedAt    // legacy BugEntry field
@@ -204,6 +209,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
 
         hasDevActivity = (try? container.decodeIfPresent(Bool.self, forKey: .hasDevActivity)) ?? false
         isEscalated = (try? container.decodeIfPresent(Bool.self, forKey: .isEscalated)) ?? false
+        feishuTaskGuid = try? container.decodeIfPresent(String.self, forKey: .feishuTaskGuid)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -236,5 +242,6 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         if isEscalated {
             try container.encode(isEscalated, forKey: .isEscalated)
         }
+        try container.encodeIfPresent(feishuTaskGuid, forKey: .feishuTaskGuid)
     }
 }

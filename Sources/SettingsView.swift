@@ -517,6 +517,25 @@ private struct IssueTrackerTab: View {
             }
 
             if store.issueTrackerEnabled {
+                Section {
+                    Toggle("手动", isOn: Bindable(store).issueSourceManualEnabled)
+                        .onChange(of: store.issueSourceManualEnabled) { _, _ in saveState.triggerSave() }
+                    Toggle("Jira", isOn: Bindable(store).issueSourceJiraEnabled)
+                        .onChange(of: store.issueSourceJiraEnabled) { _, _ in saveState.triggerSave() }
+                    Toggle("Meta Direct Support", isOn: Bindable(store).issueSourceMetaEnabled)
+                        .onChange(of: store.issueSourceMetaEnabled) { _, _ in saveState.triggerSave() }
+                    Toggle("飞书文档", isOn: Bindable(store).issueSourceFeishuDocEnabled)
+                        .onChange(of: store.issueSourceFeishuDocEnabled) { _, _ in saveState.triggerSave() }
+                } header: {
+                    Text("反馈来源")
+                } footer: {
+                    Text("关闭某来源后，问题追踪列表与统计将不再展示该来源的 issue；不会删除已同步数据。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if store.issueTrackerEnabled {
                 Section("团队成员") {
                     ForEach(store.bugTeamMembers, id: \.self) { member in
                         HStack {
@@ -550,8 +569,8 @@ private struct IssueTrackerTab: View {
                 }
 
                 Section("统计") {
-                    let total = store.trackedIssues.count
-                    let unresolved = store.trackedIssues.filter { !$0.status.isResolved && $0.status != .observing }.count
+                    let total = store.visibleTrackedIssues.count
+                    let unresolved = store.visibleTrackedIssues.filter { !$0.status.isResolved && $0.status != .observing }.count
                     HStack {
                         Text("总数")
                         Spacer()
@@ -567,7 +586,7 @@ private struct IssueTrackerTab: View {
                             .foregroundStyle(unresolved > 0 ? .red : .green)
                     }
                     ForEach(IssueType.allCases, id: \.self) { type in
-                        let count = store.trackedIssues.filter { $0.type == type }.count
+                        let count = store.visibleTrackedIssues.filter { $0.type == type }.count
                         if count > 0 {
                             HStack {
                                 Image(systemName: type.icon)
@@ -1188,6 +1207,7 @@ private struct FeishuBotTab: View {
     @State private var sendResult: String?
     @State private var sendSuccess = false
     @State private var didLoadSecrets = false
+    @State private var appSecretInput = ""
 
     private let templateVariables: [(String, String)] = [
         ("{{日期}}", "当天日期，如 2026-04-07"),
@@ -1209,8 +1229,9 @@ private struct FeishuBotTab: View {
     ]
 
     var body: some View {
-        Form {
-            Section("飞书 Bot") {
+        NavigationStack {
+            Form {
+                Section("飞书 Bot") {
                 Toggle(isOn: Bindable(store).feishuBotConfig.enabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("启用飞书 Bot 日报推送")
@@ -1264,11 +1285,19 @@ private struct FeishuBotTab: View {
                             }
                             .buttonStyle(.borderless)
                         }
-                        Toggle("签名校验", isOn: Binding(
-                            get: { store.feishuBotConfig.webhooks[index].signEnabled },
-                            set: { store.feishuBotConfig.webhooks[index].signEnabled = $0; saveState.triggerSave() }
-                        ))
-                        .controlSize(.small)
+                        HStack(spacing: 12) {
+                            Toggle("发送", isOn: Binding(
+                                get: { store.feishuBotConfig.webhooks[index].enabled },
+                                set: { store.feishuBotConfig.webhooks[index].enabled = $0; saveState.triggerSave() }
+                            ))
+                            .controlSize(.small)
+
+                            Toggle("签名校验", isOn: Binding(
+                                get: { store.feishuBotConfig.webhooks[index].signEnabled },
+                                set: { store.feishuBotConfig.webhooks[index].signEnabled = $0; saveState.triggerSave() }
+                            ))
+                            .controlSize(.small)
+                        }
                         if webhook.signEnabled {
                             HStack(spacing: 6) {
                                 SecureField("Secret", text: Binding(
@@ -1308,7 +1337,9 @@ private struct FeishuBotTab: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(sending || store.feishuBotConfig.webhooks.isEmpty)
+                    .disabled(sending || !store.feishuBotConfig.webhooks.contains { webhook in
+                        webhook.enabled && !webhook.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    })
 
                     if let result = sendResult {
                         Text(result)
@@ -1491,12 +1522,47 @@ private struct FeishuBotTab: View {
                     .onChange(of: store.feishuBotConfig.fieldType) { _, _ in saveState.triggerSave() }
                 Toggle("部门", isOn: Bindable(store).feishuBotConfig.fieldDepartment)
                     .onChange(of: store.feishuBotConfig.fieldDepartment) { _, _ in saveState.triggerSave() }
-                Toggle("Jira Key", isOn: Bindable(store).feishuBotConfig.fieldJiraKey)
+                Toggle("工单链接", isOn: Bindable(store).feishuBotConfig.fieldJiraKey)
                     .onChange(of: store.feishuBotConfig.fieldJiraKey) { _, _ in saveState.triggerSave() }
                 Toggle("状态", isOn: Bindable(store).feishuBotConfig.fieldStatus)
                     .onChange(of: store.feishuBotConfig.fieldStatus) { _, _ in saveState.triggerSave() }
                 Toggle("负责人", isOn: Bindable(store).feishuBotConfig.fieldAssignee)
                     .onChange(of: store.feishuBotConfig.fieldAssignee) { _, _ in saveState.triggerSave() }
+            }
+
+            Section("飞书应用（双向交互）") {
+                TextField("App ID", text: Bindable(store).feishuBotConfig.appID,
+                          prompt: Text("cli_xxxx"))
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .onChange(of: store.feishuBotConfig.appID) { _, _ in saveState.debouncedSave() }
+
+                HStack(spacing: 6) {
+                    SecureField("App Secret", text: Binding(
+                        get: { appSecretInput },
+                        set: { appSecretInput = $0 }
+                    ))
+                    .textFieldStyle(UnderlineTextFieldStyle())
+                    .onSubmit { saveAppSecret() }
+                    Button("保存") { saveAppSecret() }
+                        .controlSize(.small)
+                        .disabled(appSecretInput.isEmpty)
+                }
+
+                Text("配置后服务端可接收飞书消息和卡片交互回调")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                NavigationLink {
+                    FeishuTaskSyncSettingsView(store: store)
+                } label: {
+                    HStack {
+                        Text("飞书任务同步")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Section("发送历史") {
@@ -1552,21 +1618,32 @@ private struct FeishuBotTab: View {
         .task {
             if isActive { loadSecretsIfNeeded() }
         }
+        }
     }
 
     private func loadSecretsIfNeeded() {
         guard !didLoadSecrets else { return }
         didLoadSecrets = true
-        let ids = store.feishuBotConfig.webhooks.filter(\.signEnabled).map(\.id)
+        FeishuBotService.migrateLegacySecretIfNeeded(for: store.feishuBotConfig.webhooks)
+        let ids = store.feishuBotConfig.webhooks.map(\.id)
         let loaded = FeishuBotService.loadSecrets(for: ids)
+        DevLog.shared.info("FeishuBot", "设置页已加载 \(loaded.count)/\(ids.count) 个 Webhook Secret")
         for (id, secret) in loaded where secretInputs[id] == nil {
             secretInputs[id] = secret
+        }
+        if let secret = FeishuBotService.loadAppSecret() {
+            appSecretInput = secret
         }
     }
 
     private func saveWebhookSecret(_ id: UUID) {
         guard let secret = secretInputs[id], !secret.isEmpty else { return }
         FeishuBotService.saveSecret(for: id, secret: secret)
+    }
+
+    private func saveAppSecret() {
+        guard !appSecretInput.isEmpty else { return }
+        FeishuBotService.saveAppSecret(appSecretInput)
     }
 
     private func testSend() {

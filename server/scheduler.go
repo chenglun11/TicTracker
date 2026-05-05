@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"sync"
 	"time"
 )
 
 type Scheduler struct {
 	cfg      *Config
 	store    *Store
+	mu       sync.Mutex
 	lastSent map[string]string // "HH:MM" -> "YYYY-MM-DD"
 }
 
@@ -20,16 +23,42 @@ func NewScheduler(cfg *Config, store *Store) *Scheduler {
 	}
 }
 
-func (s *Scheduler) Start() {
-	log.Println("[scheduler] started, checking every 30s")
+// Run 启动调度器；ctx 取消时优雅退出
+func (s *Scheduler) Run(ctx context.Context) {
+	slog.Info("scheduler started", "interval_sec", 30)
+	s.primeLastSent(ctx) // 恢复启动前的发送记录，避免重启后重复发送
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	// 立即检查一次再等
+	s.check(ctx)
 	for {
-		s.check()
-		time.Sleep(30 * time.Second)
+		select {
+		case <-ctx.Done():
+			slog.Info("scheduler stopped")
+			return
+		case <-ticker.C:
+			s.check(ctx)
+		}
 	}
 }
 
-func (s *Scheduler) check() {
-	payload, err := s.store.Load()
+// primeLastSent 启动时从持久化的 LastSentTimes 恢复，避免 crash 重启后重复发送
+func (s *Scheduler) primeLastSent(ctx context.Context) {
+	payload, err := s.store.Load(ctx)
+	if err != nil || payload.FeishuBotConfig == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, date := range payload.FeishuBotConfig.LastSentTimes {
+		s.lastSent[key] = date
+	}
+}
+
+func (s *Scheduler) check(ctx context.Context) {
+	payload, err := s.store.Load(ctx)
 	if err != nil {
 		return
 	}
@@ -52,7 +81,6 @@ func (s *Scheduler) check() {
 		if st.Hour != curHour || st.Minute != curMinute {
 			continue
 		}
-		// 检查星期限制
 		if len(st.Weekdays) > 0 {
 			allowed := false
 			for _, wd := range st.Weekdays {
@@ -66,22 +94,27 @@ func (s *Scheduler) check() {
 			}
 		}
 		key := fmt.Sprintf("%02d:%02d", st.Hour, st.Minute)
+		s.mu.Lock()
 		if s.lastSent[key] == today {
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
+
+		slog.Info("scheduler sending feishu report", "slot", key)
+		if err := sendFeishuReport(ctx, *payload); err != nil {
+			slog.Warn("scheduler send failed", "slot", key, "err", err)
 			continue
 		}
 
-		log.Printf("[scheduler] sending feishu report for %s", key)
-		if err := sendFeishuReport(*payload); err != nil {
-			log.Printf("[scheduler] send failed: %v", err)
-			continue
-		}
-
+		s.mu.Lock()
 		s.lastSent[key] = today
-		log.Printf("[scheduler] sent successfully for %s", key)
+		s.mu.Unlock()
 
-		// 原子更新 lastSentTimes 和 lastSentDateTime
+		slog.Info("scheduler sent successfully", "slot", key)
+
 		sentTime := now.Format("2006-01-02 15:04:05")
-		if err := s.store.Update(func(p *SyncPayload) error {
+		if err := s.store.Update(ctx, func(p *SyncPayload) error {
 			if p.FeishuBotConfig == nil {
 				return nil
 			}
@@ -92,7 +125,7 @@ func (s *Scheduler) check() {
 			p.FeishuBotConfig.LastSentDateTime = sentTime
 			return nil
 		}); err != nil {
-			log.Printf("[scheduler] failed to update sync.json: %v", err)
+			slog.Warn("scheduler update sync.json failed", "err", err)
 		}
 	}
 }

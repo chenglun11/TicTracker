@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -8,6 +9,7 @@ import (
 )
 
 func AuthMiddleware(token string) gin.HandlerFunc {
+	expected := []byte(token)
 	return func(c *gin.Context) {
 		if token == "" {
 			c.Next()
@@ -15,12 +17,13 @@ func AuthMiddleware(token string) gin.HandlerFunc {
 		}
 
 		auth := c.GetHeader("Authorization")
-		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+		if !strings.HasPrefix(auth, "Bearer ") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
 
-		if strings.TrimPrefix(auth, "Bearer ") != token {
+		got := []byte(strings.TrimPrefix(auth, "Bearer "))
+		if subtle.ConstantTimeCompare(got, expected) != 1 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}

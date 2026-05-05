@@ -18,16 +18,9 @@ final class FeishuBotService {
         observeSystemWake()
     }
 
-    /// 一次性迁移：旧全局 secret → 复制到所有 signEnabled 的 webhook
+    /// 一次性迁移：旧全局 secret → 复制到当前所有 webhook，避免旧签名 key 在设置页丢失。
     private func migrateSecrets(store: DataStore) {
-        guard let secret = Self.loadLegacySecret(), !secret.isEmpty else { return }
-        for webhook in store.feishuBotConfig.webhooks where webhook.signEnabled {
-            if Self.loadSecret(for: webhook.id) == nil {
-                Self.saveSecret(for: webhook.id, secret: secret)
-            }
-        }
-        Self.deleteLegacySecret()
-        DevLog.shared.info("FeishuBot", "已迁移全局 Secret 到 \(store.feishuBotConfig.webhooks.filter { $0.signEnabled }.count) 个 Webhook")
+        Self.migrateLegacySecretIfNeeded(for: store.feishuBotConfig.webhooks)
     }
 
     // MARK: - System Wake
@@ -45,12 +38,16 @@ final class FeishuBotService {
     }
 
     private func handleSystemWake() {
-        DevLog.shared.info("FeishuBot", "系统唤醒，检查是否有错过的定时发送")
-        guard let store, store.feishuBotConfig.enabled,
-              !store.feishuBotConfig.webhooks.isEmpty else { return }
+        DevLog.shared.info("FeishuBot", "系统唤醒，检查飞书授权与错过的定时发送")
+        guard let store else { return }
 
-        Task { [weak self] in
-            await self?.catchUpMissedSends()
+        Task { [weak self, store] in
+            let appID = store.feishuBotConfig.appID
+            let appSecret = FeishuBotService.loadAppSecret() ?? ""
+            await FeishuOAuthService.shared.refreshIfNeededOnWake(appID: appID, appSecret: appSecret)
+            if store.feishuBotConfig.enabled, !store.feishuBotConfig.webhooks.isEmpty {
+                await self?.catchUpMissedSends()
+            }
         }
     }
 
@@ -207,11 +204,24 @@ final class FeishuBotService {
         let syncConfig = SyncManager.shared.config
         let serverURL = syncConfig.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: "\(serverURL)/api/feishu/send") else {
+            DevLog.shared.error("FeishuBot", "服务端发送失败：无效的服务器 URL [raw=\(syncConfig.serverURL)]")
             return (false, "无效的服务器 URL")
         }
 
         let webToken = SyncManager.shared.loadWebPortalToken().trimmingCharacters(in: .whitespacesAndNewlines)
         let token = webToken.isEmpty ? SyncManager.shared.loadCredential() : webToken
+        let tokenSource = webToken.isEmpty ? "sync-token" : "web-token"
+        let maskedToken: String = {
+            guard !token.isEmpty else { return "<empty>" }
+            if token.count <= 8 { return String(repeating: "*", count: token.count) }
+            return "\(token.prefix(4))...\(token.suffix(4))"
+        }()
+
+        DevLog.shared.info(
+            "FeishuBot",
+            "准备通过服务器发送日报 [backend=\(syncConfig.backend.rawValue), url=\(url.absoluteString), tokenSource=\(tokenSource), token=\(maskedToken)]"
+        )
+
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -220,19 +230,26 @@ final class FeishuBotService {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
+                DevLog.shared.error("FeishuBot", "服务端发送失败：无效的响应对象 [url=\(url.absoluteString)]")
                 return (false, "无效的响应")
             }
+
+            let responseText = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            DevLog.shared.info(
+                "FeishuBot",
+                "服务端发送响应 [status=\(http.statusCode), url=\(url.absoluteString), body=\(responseText.prefix(300))]"
+            )
 
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 let success = json["success"] as? Bool ?? false
                 let message = json["message"] as? String ?? "未知响应"
 
                 if http.statusCode == 429 {
-                    return (false, message)  // 冷却中
+                    DevLog.shared.error("FeishuBot", "服务端发送被限流：\(message)")
+                    return (false, message)
                 }
 
                 if success {
-                    // 更新本地状态（让 UI 及时反映）
                     if let store = self.store {
                         let fmt = DateFormatter()
                         fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -245,11 +262,21 @@ final class FeishuBotService {
                     if let store = self.store {
                         addHistory(store: store, success: false, message: message, retryCount: 0)
                     }
+                    DevLog.shared.error("FeishuBot", "服务端发送返回失败：\(message) [status=\(http.statusCode)]")
                     return (false, message)
                 }
             }
+            DevLog.shared.error("FeishuBot", "服务端发送失败：响应解析失败 [status=\(http.statusCode), body=\(responseText.prefix(300))]")
             return (false, "响应解析失败")
         } catch {
+            let nsError = error as NSError
+            DevLog.shared.error(
+                "FeishuBot",
+                "服务端发送网络错误 [url=\(url.absoluteString), domain=\(nsError.domain), code=\(nsError.code), desc=\(nsError.localizedDescription)]"
+            )
+            if let underlying = nsError.userInfo[NSUnderlyingErrorKey] {
+                DevLog.shared.error("FeishuBot", "底层错误: \(underlying)")
+            }
             return (false, "网络错误: \(error.localizedDescription)")
         }
     }
@@ -290,11 +317,11 @@ final class FeishuBotService {
         ensureSecretsMigrated(store: store)
         let payload = generateDailyReport(store: store)
         let webhooks = store.feishuBotConfig.webhooks.filter {
-            !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            $0.enabled && !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
         guard !webhooks.isEmpty else {
-            return (false, "Webhook URL 为空")
+            return (false, "没有启用的 Webhook")
         }
 
         var successCount = 0
@@ -554,9 +581,7 @@ final class FeishuBotService {
         }
 
         // 底部
-        let timeFmt = DateFormatter()
-        timeFmt.dateFormat = "yyyy-MM-dd HH:mm"
-        lines.append([text("—— 由 TicTracker 自动生成 | \(timeFmt.string(from: Date()))")])
+        lines.append([text(Self.footerNoteText())])
 
         return [
             "msg_type": "post",
@@ -573,7 +598,7 @@ final class FeishuBotService {
 
     /// 富文本: 单个 issue 行（含可选链接）
     private func richTextIssueLine(_ issue: TrackedIssue, showStatus: Bool, config: FeishuBotConfig, jiraServerURL: String) -> [[String: Any]] {
-        let title = Self.truncateTitle(issue.title)
+        let title = (issue.issueNumber > 0 ? "#\(issue.issueNumber) " : "") + Self.truncateTitle(issue.title)
         var parts: [[String: Any]] = []
 
         let statusStr = showStatus ? "[\(issue.status.rawValue)] " : ""
@@ -583,7 +608,6 @@ final class FeishuBotService {
         if config.fieldAssignee, let a = issue.assignee, !a.isEmpty { tagParts.append(a) }
         let tagStr = tagParts.isEmpty ? "" : " (\(tagParts.joined(separator: " · ")))"
 
-        // Jira key 作为超链接
         if config.fieldJiraKey, let jira = issue.jiraKey, !jira.isEmpty {
             let (key, url) = Self.jiraKeyAndURL(jira, serverURL: jiraServerURL)
             parts.append(text("· \(statusStr)\(title)\(tagStr) "))
@@ -592,6 +616,9 @@ final class FeishuBotService {
             } else {
                 parts.append(text(key))
             }
+        } else if config.fieldJiraKey, let ticketURL = issue.ticketURL, !ticketURL.isEmpty {
+            parts.append(text("· \(statusStr)\(title)\(tagStr) "))
+            parts.append(link("链接", href: ticketURL))
         } else {
             parts.append(text("· \(statusStr)\(title)\(tagStr)"))
         }
@@ -653,7 +680,7 @@ final class FeishuBotService {
         }
 
         // 底部备注
-        elements.append(["tag": "note", "elements": [["tag": "plain_text", "content": "由 TicTracker 自动生成 | \(timeFmt.string(from: Date()))"]]])
+        elements.append(["tag": "note", "elements": Self.footerNoteElements()])
 
         return [
             "msg_type": "interactive",
@@ -801,9 +828,7 @@ final class FeishuBotService {
         }
 
         // 底部备注
-        let timeFmt = DateFormatter()
-        timeFmt.dateFormat = "yyyy-MM-dd HH:mm"
-        elements.append(["tag": "note", "elements": [["tag": "plain_text", "content": "由 TicTracker 自动生成 | \(timeFmt.string(from: Date()))"]]])
+        elements.append(["tag": "note", "elements": Self.footerNoteElements()])
 
         return [
             "msg_type": "interactive",
@@ -816,6 +841,34 @@ final class FeishuBotService {
     }
 
     // MARK: - Issue Formatting
+
+    private static var webPortalURL: String {
+        let url = SyncManager.shared.config.webPortalURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return url.isEmpty ? "" : url
+    }
+
+    private static func footerNoteElements() -> [[String: Any]] {
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "yyyy-MM-dd HH:mm"
+        let portal = webPortalURL
+        let content: String
+        if portal.isEmpty {
+            content = "由 TicTracker 自动生成 | \(timeFmt.string(from: Date()))"
+        } else {
+            content = "由 TicTracker 自动生成 | \(timeFmt.string(from: Date())) | 查看详情: \(portal)"
+        }
+        return [["tag": "plain_text", "content": content]]
+    }
+
+    private static func footerNoteText() -> String {
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "yyyy-MM-dd HH:mm"
+        let portal = webPortalURL
+        if !portal.isEmpty {
+            return "—— 由 TicTracker 自动生成 | \(timeFmt.string(from: Date())) | 查看详情: \(portal)"
+        }
+        return "—— 由 TicTracker 自动生成 | \(timeFmt.string(from: Date()))"
+    }
 
     /// 将 jiraKey 转为 [KEY](url) 超链接
     private static func formatJiraKey(_ jiraKey: String, serverURL: String) -> String {
@@ -842,11 +895,17 @@ final class FeishuBotService {
 
     /// 格式化单个 issue 为一行 markdown
     private static func formatIssue(_ issue: TrackedIssue, showStatus: Bool, config: FeishuBotConfig, jiraServerURL: String = "") -> String {
-        let title = truncateTitle(issue.title)
+        let title = (issue.issueNumber > 0 ? "#\(issue.issueNumber) " : "") + truncateTitle(issue.title)
         var tags: [String] = []
         if config.fieldType { tags.append(issue.type.rawValue) }
         if config.fieldDepartment, let dept = issue.department, !dept.isEmpty { tags.append(dept) }
-        if config.fieldJiraKey, let jira = issue.jiraKey, !jira.isEmpty { tags.append(formatJiraKey(jira, serverURL: jiraServerURL)) }
+        if config.fieldJiraKey {
+            if let jira = issue.jiraKey, !jira.isEmpty {
+                tags.append(formatJiraKey(jira, serverURL: jiraServerURL))
+            } else if let url = issue.ticketURL, !url.isEmpty {
+                tags.append(url)
+            }
+        }
         if config.fieldAssignee, let assignee = issue.assignee, !assignee.isEmpty { tags.append(assignee) }
         let tagPart = tags.isEmpty ? "" : " (\(tags.joined(separator: " · ")))"
         let statusPrefix = showStatus ? "[\(issue.status.rawValue)] " : ""
@@ -896,32 +955,128 @@ final class FeishuBotService {
 
     // MARK: - Keychain
 
-    static func saveSecret(for webhookID: UUID, secret: String) {
-        if let data = secret.data(using: .utf8) {
-            KeychainHelper.save(service: keychainService, account: "webhook-secret-\(webhookID.uuidString)", data: data)
-        }
+    private static let credentialsLock = NSLock()
+    nonisolated(unsafe) private static var cachedAppSecret: String?
+    nonisolated(unsafe) private static var cachedWebhookSecrets: [UUID: String] = [:]
+    nonisolated(unsafe) private static var didLoadCredentials = false
+    nonisolated(unsafe) private static var didCheckLegacySecret = false
+
+    static func saveAppSecret(_ secret: String) {
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        var creds = FeishuCredentials.load()
+        creds.appSecret = secret
+        guard FeishuCredentials.save(creds) else { return }
+        cachedAppSecret = secret
+        didLoadCredentials = true
+    }
+
+    static func loadAppSecret() -> String? {
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        ensureCredentialsLoaded()
+        return cachedAppSecret
     }
 
     static func loadSecret(for webhookID: UUID) -> String? {
-        guard let data = KeychainHelper.load(service: keychainService, account: "webhook-secret-\(webhookID.uuidString)") else { return nil }
-        return String(data: data, encoding: .utf8)
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        ensureCredentialsLoaded()
+        return cachedWebhookSecrets[webhookID]
     }
 
     static func loadSecrets(for webhookIDs: [UUID]) -> [UUID: String] {
-        let accounts = KeychainHelper.loadAll(service: keychainService)
-        var secrets: [UUID: String] = [:]
-        let wanted = Set(webhookIDs)
-        for id in wanted {
-            let account = "webhook-secret-\(id.uuidString)"
-            if let data = accounts[account], let secret = String(data: data, encoding: .utf8) {
-                secrets[id] = secret
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        ensureCredentialsLoaded()
+        var out: [UUID: String] = [:]
+        for id in webhookIDs {
+            if let s = cachedWebhookSecrets[id] { out[id] = s }
+        }
+        return out
+    }
+
+    static func migrateLegacySecretIfNeeded(for webhooks: [FeishuWebhook]) {
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        ensureCredentialsLoaded()
+        guard let legacySecret = loadLegacySecret(), !legacySecret.isEmpty else {
+            if !didCheckLegacySecret {
+                didCheckLegacySecret = true
+                Task { @MainActor in
+                    DevLog.shared.info("FeishuBot", "未发现旧版全局 Webhook Secret")
+                }
+            }
+            return
+        }
+        didCheckLegacySecret = true
+
+        var creds = FeishuCredentials.load()
+        var migratedCount = 0
+        for webhook in webhooks {
+            guard creds.webhookSecrets[webhook.id.uuidString]?.isEmpty ?? true else { continue }
+            creds.webhookSecrets[webhook.id.uuidString] = legacySecret
+            cachedWebhookSecrets[webhook.id] = legacySecret
+            migratedCount += 1
+        }
+
+        guard migratedCount > 0 else {
+            deleteLegacySecret()
+            Task { @MainActor in
+                DevLog.shared.info("FeishuBot", "旧版全局 Webhook Secret 已存在于当前 Webhook")
+            }
+            return
+        }
+
+        if FeishuCredentials.save(creds) {
+            deleteLegacySecret()
+            Task { @MainActor in
+                DevLog.shared.info("FeishuBot", "已恢复旧版全局 Webhook Secret 到 \(migratedCount) 个 Webhook")
+            }
+        } else {
+            Task { @MainActor in
+                DevLog.shared.error("FeishuBot", "恢复旧版全局 Webhook Secret 失败：凭据保存失败")
             }
         }
-        return secrets
     }
 
     static func deleteSecret(for webhookID: UUID) {
-        KeychainHelper.delete(service: keychainService, account: "webhook-secret-\(webhookID.uuidString)")
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        var creds = FeishuCredentials.load()
+        creds.webhookSecrets.removeValue(forKey: webhookID.uuidString)
+        guard FeishuCredentials.save(creds) else { return }
+        cachedWebhookSecrets.removeValue(forKey: webhookID)
+    }
+
+    static func saveSecret(for webhookID: UUID, secret: String) {
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        var creds = FeishuCredentials.load()
+        creds.webhookSecrets[webhookID.uuidString] = secret
+        guard FeishuCredentials.save(creds) else { return }
+        cachedWebhookSecrets[webhookID] = secret
+    }
+
+    static func warmUpSecrets() {
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        ensureCredentialsLoaded()
+    }
+
+    private static func ensureCredentialsLoaded() {
+        guard !didLoadCredentials else { return }
+        didLoadCredentials = true
+        let creds = FeishuCredentials.load()
+        cachedAppSecret = creds.appSecret
+        for (uuidStr, secret) in creds.webhookSecrets {
+            if let id = UUID(uuidString: uuidStr) {
+                cachedWebhookSecrets[id] = secret
+            }
+        }
+        if let bundleData = creds.oauthBundle {
+            FeishuOAuthService.shared.warmUpFromBatch(bundleData)
+        }
     }
 
     // 旧全局 secret（仅用于迁移）

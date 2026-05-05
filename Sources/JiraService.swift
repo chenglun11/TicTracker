@@ -111,7 +111,7 @@ final class JiraService {
 
         let base = config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard var components = URLComponents(string: "\(base)/rest/api/2/search") else { return "URL 无效" }
-        let jql = "reporter=currentUser() AND resolution=Unresolved ORDER BY updated DESC"
+        let jql = "reporter=currentUser() AND (resolution=Unresolved OR updated >= -14d) ORDER BY updated DESC"
         components.queryItems = [
             URLQueryItem(name: "jql", value: jql),
             URLQueryItem(name: "fields", value: "summary,status,priority,issuetype,assignee"),

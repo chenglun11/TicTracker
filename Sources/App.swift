@@ -110,6 +110,9 @@ struct TicTrackerApp: App {
                     if appDelegate.store == nil {
                         appDelegate.store = store
                         DevLog.shared.info("App", "启动 TicTracker")
+                        KeychainHelper.warmUpAccess()
+                        FeishuBotService.warmUpSecrets()
+                        DevLog.shared.info("App", "已完成 Keychain 预热")
                         HotkeyManager.shared.setup(store: store)
                         NotificationManager.shared.refreshReminderIfNeeded()
                         NotificationManager.shared.sendWelcome()

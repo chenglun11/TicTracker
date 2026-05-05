@@ -30,6 +30,43 @@ enum KeychainHelper {
     private static let migrationFlagKey = "keychainMigrationDone"
     private static let cache = KeychainCache()
 
+    private static func mirrorDirectoryURL() -> URL? {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let dir = appSupport.appendingPathComponent("TicTracker/keychain-mirror", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private static func mirrorURL(service: String, account: String) -> URL? {
+        guard let dir = mirrorDirectoryURL() else { return nil }
+        let safeService = service.replacingOccurrences(of: "/", with: "_")
+        let safeAccount = account.replacingOccurrences(of: "/", with: "_")
+        return dir.appendingPathComponent("\(safeService)__\(safeAccount).bin")
+    }
+
+    @discardableResult
+    private static func saveMirror(service: String, account: String, data: Data) -> Bool {
+        guard let url = mirrorURL(service: service, account: account) else { return false }
+        do {
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func loadMirror(service: String, account: String) -> Data? {
+        guard let url = mirrorURL(service: service, account: account) else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    private static func deleteMirror(service: String, account: String) {
+        guard let url = mirrorURL(service: service, account: account) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
     private static func cacheKey(service: String, account: String) -> String {
         "\(service)::\(account)"
     }
@@ -43,11 +80,12 @@ enum KeychainHelper {
             kSecAttrAccount as String: account,
             kSecValueData as String: data,
         ]
-        let success = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
-        if success {
+        let keychainSuccess = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        let mirrorSuccess = saveMirror(service: service, account: account, data: data)
+        if keychainSuccess || mirrorSuccess {
             cache.set(cacheKey(service: service, account: account), data: data)
         }
-        return success
+        return keychainSuccess || mirrorSuccess
     }
 
     static func load(service: String = service, account: String = account) -> Data? {
@@ -64,10 +102,19 @@ enum KeychainHelper {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        cache.set(key, data: data)
-        return data
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data {
+            cache.set(key, data: data)
+            _ = saveMirror(service: service, account: account, data: data)
+            return data
+        }
+
+        if let mirrored = loadMirror(service: service, account: account) {
+            _ = save(service: service, account: account, data: mirrored)
+            cache.set(key, data: mirrored)
+            return mirrored
+        }
+        return nil
     }
 
     static func loadAll(service: String) -> [String: Data] {
@@ -78,18 +125,36 @@ enum KeychainHelper {
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitAll,
         ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let items = result as? [[String: Any]] else { return [:] }
         var dict: [String: Data] = [:]
-        for item in items {
-            if let account = item[kSecAttrAccount as String] as? String,
-               let data = item[kSecValueData as String] as? Data {
-                dict[account] = data
-                cache.set(cacheKey(service: service, account: account), data: data)
+        var result: AnyObject?
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+           let items = result as? [[String: Any]] {
+            for item in items {
+                if let account = item[kSecAttrAccount as String] as? String,
+                   let data = item[kSecValueData as String] as? Data {
+                    dict[account] = data
+                    cache.set(cacheKey(service: service, account: account), data: data)
+                    _ = saveMirror(service: service, account: account, data: data)
+                }
+            }
+        }
+        if let dir = mirrorDirectoryURL(),
+           let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            let safeService = service.replacingOccurrences(of: "/", with: "_")
+            let prefix = "\(safeService)__"
+            for file in files where file.lastPathComponent.hasPrefix(prefix) && file.pathExtension == "bin" {
+                let raw = String(file.lastPathComponent.dropFirst(prefix.count).dropLast(".bin".count))
+                guard dict[raw] == nil, let data = try? Data(contentsOf: file) else { continue }
+                dict[raw] = data
+                cache.set(cacheKey(service: service, account: raw), data: data)
             }
         }
         return dict
+    }
+
+    static func warmUpAccess() {
+        _ = loadAll(service: service)
+        _ = loadAll(service: "com.tictracker.sync")
     }
 
     static func delete(service: String = service, account: String = account) {
@@ -100,6 +165,7 @@ enum KeychainHelper {
         ]
         SecItemDelete(query as CFDictionary)
         cache.remove(cacheKey(service: service, account: account))
+        deleteMirror(service: service, account: account)
     }
 
     /// 将旧 service 下所有 account 迁移到新 service，只在首次启动时调用

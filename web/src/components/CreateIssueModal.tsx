@@ -5,9 +5,10 @@ import { createIssue } from '../api/client'
 interface CreateIssueModalProps {
   open: boolean
   onClose: () => void
+  departments?: string[]
 }
 
-function CreateIssueModal({ open, onClose }: CreateIssueModalProps) {
+function CreateIssueModal({ open, onClose, departments }: CreateIssueModalProps) {
   const [form] = Form.useForm()
   const queryClient = useQueryClient()
 
@@ -56,8 +57,20 @@ function CreateIssueModal({ open, onClose }: CreateIssueModalProps) {
           />
         </Form.Item>
 
-        <Form.Item name="department" label="部门">
-          <Input placeholder="可选" />
+        <Form.Item name="department" label="项目">
+          {departments && departments.length > 0 ? (
+            <Select
+              allowClear
+              placeholder="选择项目"
+              options={departments.map(d => ({ label: d, value: d }))}
+            />
+          ) : (
+            <Input placeholder="可选" />
+          )}
+        </Form.Item>
+
+        <Form.Item name="ticketURL" label="链接">
+          <Input placeholder="可选，填写相关链接" />
         </Form.Item>
       </Form>
     </Modal>

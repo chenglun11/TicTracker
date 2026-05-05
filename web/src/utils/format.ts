@@ -5,16 +5,26 @@ import 'dayjs/locale/zh-cn'
 dayjs.extend(customParseFormat)
 dayjs.locale('zh-cn')
 
-export const formatDate = (date: string | undefined): string => {
-  if (!date) return '-'
-  const d = dayjs(date)
-  return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : date
+const APPLE_EPOCH = 978307200
+
+export function parseDate(date: string | number | undefined): dayjs.Dayjs {
+  if (!date) return dayjs(NaN)
+  if (typeof date === 'number') {
+    return dayjs.unix(date + APPLE_EPOCH)
+  }
+  return dayjs(date)
 }
 
-export const formatRelativeTime = (date: string | undefined): string => {
+export const formatDate = (date: string | number | undefined): string => {
+  if (!date) return '-'
+  const d = parseDate(date)
+  return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : String(date)
+}
+
+export const formatRelativeTime = (date: string | number | undefined): string => {
   if (!date) return '-'
   const now = dayjs()
-  const target = dayjs(date)
+  const target = parseDate(date)
   const diffMinutes = now.diff(target, 'minute')
 
   if (diffMinutes < 1) return '刚刚'

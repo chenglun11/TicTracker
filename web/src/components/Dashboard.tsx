@@ -44,7 +44,7 @@ function Dashboard() {
       <Row gutter={24} style={{ marginTop: 24 }}>
         <Col span={18}>
           <Card>
-            <IssueList issues={issuesData?.issues || []} />
+            <IssueList issues={issuesData?.issues || []} departments={status?.departments} />
           </Card>
         </Col>
 
