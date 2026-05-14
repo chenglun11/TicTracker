@@ -14,8 +14,21 @@ final class HTTPAPISyncService: CloudSyncService, Sendable {
             guard let url = URL(string: "\(serverURL)/sync") else {
                 throw SyncError.invalidResponse("无效的 API URL")
             }
+            try Self.validateSecureURL(url)
             return url
         }
+    }
+
+    private static func validateSecureURL(_ url: URL) throws {
+        guard url.scheme?.lowercased() == "https" || isLocalHTTP(url) else {
+            throw SyncError.notAvailable("API 同步地址必须使用 HTTPS（本机 localhost/127.0.0.1 除外）")
+        }
+    }
+
+    private static func isLocalHTTP(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "http",
+              let host = url.host?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 
     private func authHeader() -> String { "Bearer \(token)" }

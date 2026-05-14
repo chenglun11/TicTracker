@@ -8,6 +8,17 @@ final class UpdateChecker {
     private let repo = "chenglun11/TicTracker"
     private let checkInterval: TimeInterval = 24 * 60 * 60
 
+    private enum UpdateVerificationError: LocalizedError {
+        case unsignedOrInvalid
+
+        var errorDescription: String? {
+            switch self {
+            case .unsignedOrInvalid:
+                return "新版本签名验证失败，已取消安装。"
+            }
+        }
+    }
+
     private var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
     }
@@ -146,6 +157,8 @@ final class UpdateChecker {
                     return
                 }
 
+                try await self.verifyCodeSignature(for: newApp)
+
                 // 移除 quarantine 属性，防止 Gatekeeper 拦截
                 let xattr = Process()
                 xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
@@ -195,6 +208,19 @@ final class UpdateChecker {
             } catch {
                 await MainActor.run { progressWindow.close(); self.showError("更新失败：\(error.localizedDescription)") }
             }
+        }
+    }
+
+    private nonisolated func verifyCodeSignature(for appURL: URL) async throws {
+        let verify = Process()
+        verify.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        verify.arguments = ["--verify", "--deep", "--strict", appURL.path]
+        try verify.run()
+        verify.waitUntilExit()
+
+        guard verify.terminationStatus == 0 else {
+            try? FileManager.default.removeItem(at: appURL)
+            throw UpdateVerificationError.unsignedOrInvalid
         }
     }
 

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Tabs, Table, Tag, Empty, Select, Typography, Button, message, Popconfirm, Space } from 'antd'
+import { Tabs, Table, Tag, Empty, Select, Typography, Button, message, Popconfirm, Space, Descriptions, Divider, Row, Col } from 'antd'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -79,6 +79,16 @@ function IssueList({ issues, departments }: IssueListProps) {
     i => i.resolvedAt && parseDate(i.resolvedAt).format('YYYY-MM-DD') === today
   )
 
+  const renderExternalLink = (record: TrackedIssue) => {
+    const url = record.ticketURL || record.jiraKey
+    if (!url) return '-'
+    if (url.startsWith('http')) {
+      const label = url.replace(/^https?:\/\//, '').split('/').pop() || url
+      return <a href={url} target="_blank" rel="noopener noreferrer">{label}</a>
+    }
+    return <Text code>{url}</Text>
+  }
+
   const columns: ColumnsType<TrackedIssue> = [
     {
       title: '编号',
@@ -131,23 +141,6 @@ function IssueList({ issues, departments }: IssueListProps) {
         )
       }
     },
-    {
-      title: '来源',
-      dataIndex: 'source',
-      key: 'source',
-      width: 140,
-      render: (source: string, record: TrackedIssue) => {
-        if (!source) return '-'
-        return (
-          <Space size={4} wrap>
-            <Tag>
-              {source}
-            </Tag>
-            {record.feishuTaskGuid ? <Tag color="cyan">已绑定飞书任务</Tag> : null}
-          </Space>
-        )
-      }
-    },
     /* PLACEHOLDER_COLUMNS */
     {
       title: '负责人',
@@ -170,20 +163,6 @@ function IssueList({ issues, departments }: IssueListProps) {
             {assignee || ''}
           </Text>
         )
-      }
-    },
-    {
-      title: '链接',
-      key: 'ticketURL',
-      width: 110,
-      render: (_: unknown, record: TrackedIssue) => {
-        const url = record.ticketURL || record.jiraKey
-        if (!url) return '-'
-        if (url.startsWith('http')) {
-          const label = url.replace(/^https?:\/\//, '').split('/').pop() || url
-          return <a href={url} target="_blank" rel="noopener noreferrer">{label}</a>
-        }
-        return url
       }
     },
     {
@@ -215,10 +194,58 @@ function IssueList({ issues, departments }: IssueListProps) {
 
   const expandable = {
     expandedRowRender: (record: TrackedIssue) => (
-      <>
-        <FeishuTaskBinder issue={record} />
-        <CommentSection issueId={record.id} comments={record.comments} />
-      </>
+      <div style={{
+        padding: '12px 0 4px',
+      }}>
+        <div
+          style={{
+            padding: '16px 16px 14px',
+            border: '1px solid #f0f0f0',
+            borderRadius: 8,
+            background: 'linear-gradient(180deg, rgba(0, 0, 0, 0.015), rgba(0, 0, 0, 0.03))'
+          }}
+        >
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div>
+                <Text strong style={{ fontSize: 14 }}>二级页面信息</Text>
+                <div>
+                  <Text type="secondary">
+                    这里展示外部来源、绑定状态和沟通记录。主列表只保留核心问题信息。
+                  </Text>
+                </div>
+              </div>
+              <Space size={6} wrap>
+                <Tag>{record.source || '未标记来源'}</Tag>
+                {record.feishuTaskGuid ? <Tag color="cyan">飞书已绑定</Tag> : <Tag>飞书未绑定</Tag>}
+                {record.ticketURL || record.jiraKey ? <Tag color="geekblue">已有外部链接</Tag> : <Tag>无外部链接</Tag>}
+              </Space>
+            </div>
+
+            <Descriptions size="small" column={3} colon={false}>
+              <Descriptions.Item label="来源">{record.source || '-'}</Descriptions.Item>
+              <Descriptions.Item label="外部链接">{renderExternalLink(record)}</Descriptions.Item>
+              <Descriptions.Item label="飞书任务">{record.feishuTaskGuid ? <Text code>{record.feishuTaskGuid}</Text> : '-'}</Descriptions.Item>
+            </Descriptions>
+
+            <Divider style={{ margin: '0' }} />
+
+            <Row gutter={16}>
+              <Col xs={24} lg={8}>
+                <FeishuTaskBinder issue={record} />
+              </Col>
+              <Col xs={24} lg={16}>
+                <div style={{ paddingTop: 4 }}>
+                  <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+                    沟通记录
+                  </Text>
+                  <CommentSection issueId={record.id} comments={record.comments} />
+                </div>
+              </Col>
+            </Row>
+          </Space>
+        </div>
+      </div>
     )
   }
 

@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import CryptoKit
+import Network
 
 @MainActor
 final class RSSFeedManager {
@@ -7,12 +9,20 @@ final class RSSFeedManager {
 
     private var pollingTasks: [UUID: Task<Void, Never>] = [:]
     private weak var store: DataStore?
+    private var wakeObserver: NSObjectProtocol?
+    private var pathMonitor: NWPathMonitor?
+    private let pathMonitorQueue = DispatchQueue(label: "com.tictracker.rss.path-monitor")
+    private var lastNetworkStatus: NWPath.Status?
+    private var lastRecoveryRestartAt: Date?
 
     private let log = DevLog.shared
     private let mod = "RSS"
+    private let recoveryRestartDebounce: TimeInterval = 10
 
     func setup(store: DataStore) {
         self.store = store
+        observeSystemWake()
+        startNetworkMonitor()
         log.info(mod, "初始化，\(store.rssFeeds.count) 个订阅源")
     }
 
@@ -20,8 +30,22 @@ final class RSSFeedManager {
 
     func startPolling() {
         stopPolling()
-        guard let store else { return }
-        for feed in store.rssFeeds where feed.enabled {
+        guard let store else {
+            log.warn(mod, "轮询未启动：store 未就绪")
+            return
+        }
+        guard store.rssEnabled else {
+            log.info(mod, "RSS 已关闭，跳过轮询启动")
+            return
+        }
+
+        let enabledFeeds = store.rssFeeds.filter(\.enabled)
+        guard !enabledFeeds.isEmpty else {
+            log.info(mod, "没有启用的订阅源，轮询未启动")
+            return
+        }
+
+        for feed in enabledFeeds {
             startPolling(for: feed)
         }
     }
@@ -35,6 +59,14 @@ final class RSSFeedManager {
         startPolling()
     }
 
+    func syncPollingState() {
+        guard store?.rssEnabled == true else {
+            stopPolling()
+            return
+        }
+        startPolling()
+    }
+
     func restartPolling(for feedID: UUID) {
         pollingTasks[feedID]?.cancel()
         pollingTasks.removeValue(forKey: feedID)
@@ -43,18 +75,82 @@ final class RSSFeedManager {
     }
 
     private func startPolling(for feed: RSSFeed) {
+        pollingTasks[feed.id]?.cancel()
         let minutes = max(feed.pollingInterval, 1)
         log.info(mod, "轮询启动 [\(feed.name)]，间隔 \(minutes) 分钟")
-        pollingTasks[feed.id] = Task { [weak self] in
+        pollingTasks[feed.id] = Task { [weak self, feedID = feed.id] in
             while !Task.isCancelled {
-                if let feed = self?.store?.rssFeeds.first(where: { $0.id == feed.id }), feed.enabled {
-                    await self?.checkFeed(feed)
+                guard let self else { return }
+                guard let store = self.store, store.rssEnabled else {
+                    self.log.info(self.mod, "轮询结束：RSS 已关闭 [\(feed.name)]")
+                    return
                 }
-                let interval = self?.store?.rssFeeds.first(where: { $0.id == feed.id })?.pollingInterval ?? minutes
-                self?.log.info(self?.mod ?? "RSS", "[\(feed.name)] 下次检查: \(interval) 分钟后")
-                try? await Task.sleep(for: .seconds(max(interval, 1) * 60))
+                guard let currentFeed = store.rssFeeds.first(where: { $0.id == feedID }) else {
+                    self.log.info(self.mod, "轮询结束：订阅源已删除 [\(feed.name)]")
+                    return
+                }
+                guard currentFeed.enabled else {
+                    self.log.info(self.mod, "轮询结束：订阅源已停用 [\(currentFeed.name)]")
+                    return
+                }
+
+                await self.checkFeed(currentFeed)
+
+                let interval = max(currentFeed.pollingInterval, 1)
+                self.log.info(self.mod, "[\(currentFeed.name)] 下次检查: \(interval) 分钟后")
+                do {
+                    try await Task.sleep(for: .seconds(interval * 60))
+                } catch {
+                    break
+                }
+            }
+            self?.log.info(self?.mod ?? "RSS", "轮询任务已取消 [\(feed.name)]")
+        }
+    }
+
+    // MARK: - Recovery
+
+    private func observeSystemWake() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.recoverPolling(reason: "系统唤醒")
             }
         }
+    }
+
+    private func startNetworkMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        pathMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                guard let self else { return }
+                let previous = self.lastNetworkStatus
+                self.lastNetworkStatus = path.status
+                if path.status == .satisfied, previous != nil, previous != .satisfied {
+                    self.recoverPolling(reason: "网络恢复")
+                }
+            }
+        }
+        monitor.start(queue: pathMonitorQueue)
+    }
+
+    private func recoverPolling(reason: String) {
+        guard store?.rssEnabled == true else { return }
+        let now = Date()
+        if let lastRecoveryRestartAt,
+           now.timeIntervalSince(lastRecoveryRestartAt) < recoveryRestartDebounce {
+            log.info(mod, "\(reason)：距离上次恢复检查太近，跳过")
+            return
+        }
+        lastRecoveryRestartAt = now
+        log.info(mod, "\(reason)：重启 RSS 轮询并立即检查")
+        startPolling()
     }
 
     // MARK: - Feed Checking

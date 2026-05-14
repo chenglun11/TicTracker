@@ -30,41 +30,16 @@ enum KeychainHelper {
     private static let migrationFlagKey = "keychainMigrationDone"
     private static let cache = KeychainCache()
 
-    private static func mirrorDirectoryURL() -> URL? {
+    private static func legacyMirrorDirectoryURL() -> URL? {
         guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
         }
-        let dir = appSupport.appendingPathComponent("TicTracker/keychain-mirror", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        return appSupport.appendingPathComponent("TicTracker/keychain-mirror", isDirectory: true)
     }
 
-    private static func mirrorURL(service: String, account: String) -> URL? {
-        guard let dir = mirrorDirectoryURL() else { return nil }
-        let safeService = service.replacingOccurrences(of: "/", with: "_")
-        let safeAccount = account.replacingOccurrences(of: "/", with: "_")
-        return dir.appendingPathComponent("\(safeService)__\(safeAccount).bin")
-    }
-
-    @discardableResult
-    private static func saveMirror(service: String, account: String, data: Data) -> Bool {
-        guard let url = mirrorURL(service: service, account: account) else { return false }
-        do {
-            try data.write(to: url, options: .atomic)
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    private static func loadMirror(service: String, account: String) -> Data? {
-        guard let url = mirrorURL(service: service, account: account) else { return nil }
-        return try? Data(contentsOf: url)
-    }
-
-    private static func deleteMirror(service: String, account: String) {
-        guard let url = mirrorURL(service: service, account: account) else { return }
-        try? FileManager.default.removeItem(at: url)
+    private static func removeLegacyMirrorDirectory() {
+        guard let dir = legacyMirrorDirectoryURL() else { return }
+        try? FileManager.default.removeItem(at: dir)
     }
 
     private static func cacheKey(service: String, account: String) -> String {
@@ -78,14 +53,15 @@ enum KeychainHelper {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
             kSecValueData as String: data,
         ]
         let keychainSuccess = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
-        let mirrorSuccess = saveMirror(service: service, account: account, data: data)
-        if keychainSuccess || mirrorSuccess {
+        if keychainSuccess {
             cache.set(cacheKey(service: service, account: account), data: data)
         }
-        return keychainSuccess || mirrorSuccess
+        removeLegacyMirrorDirectory()
+        return keychainSuccess
     }
 
     static func load(service: String = service, account: String = account) -> Data? {
@@ -105,14 +81,8 @@ enum KeychainHelper {
         if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
            let data = result as? Data {
             cache.set(key, data: data)
-            _ = saveMirror(service: service, account: account, data: data)
+            removeLegacyMirrorDirectory()
             return data
-        }
-
-        if let mirrored = loadMirror(service: service, account: account) {
-            _ = save(service: service, account: account, data: mirrored)
-            cache.set(key, data: mirrored)
-            return mirrored
         }
         return nil
     }
@@ -134,21 +104,10 @@ enum KeychainHelper {
                    let data = item[kSecValueData as String] as? Data {
                     dict[account] = data
                     cache.set(cacheKey(service: service, account: account), data: data)
-                    _ = saveMirror(service: service, account: account, data: data)
                 }
             }
         }
-        if let dir = mirrorDirectoryURL(),
-           let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
-            let safeService = service.replacingOccurrences(of: "/", with: "_")
-            let prefix = "\(safeService)__"
-            for file in files where file.lastPathComponent.hasPrefix(prefix) && file.pathExtension == "bin" {
-                let raw = String(file.lastPathComponent.dropFirst(prefix.count).dropLast(".bin".count))
-                guard dict[raw] == nil, let data = try? Data(contentsOf: file) else { continue }
-                dict[raw] = data
-                cache.set(cacheKey(service: service, account: raw), data: data)
-            }
-        }
+        removeLegacyMirrorDirectory()
         return dict
     }
 
@@ -165,7 +124,7 @@ enum KeychainHelper {
         ]
         SecItemDelete(query as CFDictionary)
         cache.remove(cacheKey(service: service, account: account))
-        deleteMirror(service: service, account: account)
+        removeLegacyMirrorDirectory()
     }
 
     /// 将旧 service 下所有 account 迁移到新 service，只在首次启动时调用

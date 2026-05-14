@@ -8,7 +8,9 @@ final class FeishuBotService {
 
     private var store: DataStore?
     private var schedulerTask: Task<Void, Never>?
+    private var schedulerFailureAt: [String: Date] = [:]
     private var wakeObserver: NSObjectProtocol?
+    private let schedulerFailureCooldown: TimeInterval = 10 * 60
 
     private static let keychainService = "com.tictracker.keychain"
     private static let keychainAccount = "webhook-secret"
@@ -139,20 +141,36 @@ final class FeishuBotService {
         let weekday = isoWeekday == 1 ? 7 : isoWeekday - 1
 
         for scheduleTime in config.sendTimes {
-            guard hour == scheduleTime.hour,
-                  minute == scheduleTime.minute,
-                  scheduleTime.shouldSendOn(weekday: weekday),
+            let key = scheduleTime.key
+            guard scheduleTime.shouldSendOn(weekday: weekday),
+                  isScheduleDue(scheduleTime, currentHour: hour, currentMinute: minute),
                   config.lastSentTimes[scheduleTime.key] != todayKey else { continue }
+
+            if let failedAt = schedulerFailureAt[key],
+               now.timeIntervalSince(failedAt) < schedulerFailureCooldown {
+                continue
+            }
 
             let result = await sendReport(store: store)
             if result.success {
-                store.feishuBotConfig.lastSentTimes[scheduleTime.key] = todayKey
+                store.feishuBotConfig.lastSentTimes[key] = todayKey
                 let fmt = DateFormatter()
                 fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
                 store.feishuBotConfig.lastSentDateTime = fmt.string(from: now)
+                schedulerFailureAt.removeValue(forKey: key)
+                DevLog.shared.info("FeishuBot", "定时发送成功 [slot=\(key)]")
+            } else {
+                schedulerFailureAt[key] = now
+                DevLog.shared.error("FeishuBot", "定时发送失败，\(Int(schedulerFailureCooldown / 60)) 分钟后重试 [slot=\(key)]: \(result.message)")
             }
-            break  // 同一轮只发一次，避免多个时间点同分钟重复发
+            break  // 同一轮只处理一次，避免多个补发时间点连续发送
         }
+    }
+
+    private func isScheduleDue(_ scheduleTime: ScheduleTime, currentHour: Int, currentMinute: Int) -> Bool {
+        let current = currentHour * 60 + currentMinute
+        let scheduled = scheduleTime.hour * 60 + scheduleTime.minute
+        return current >= scheduled
     }
 
     // MARK: - Send

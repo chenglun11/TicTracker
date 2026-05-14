@@ -52,7 +52,8 @@ final class FeishuOAuthService {
     private static let scopes: [String] = [
         "task:task:readonly",
         "task:tasklist:read",
-        "contact:user.id:readonly"
+        "contact:user.id:readonly",
+        "contact:user.base:readonly"
     ]
 
     private var pendingState: String?
@@ -248,6 +249,7 @@ final class FeishuOAuthService {
         stopCallbackListener()
         let parameters = NWParameters.tcp
         let port = NWEndpoint.Port(rawValue: Self.callbackPort)!
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: port)
         let listener: NWListener
         do {
             listener = try NWListener(using: parameters, on: port)

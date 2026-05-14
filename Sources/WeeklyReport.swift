@@ -60,7 +60,7 @@ struct WeeklyReport {
         let grand = totals.values.reduce(0, +)
         lines.append("合计: \(grand) 次")
 
-        // Jira issue counts for the week
+        // Jira 入口 counts for the week
         var jiraTotals: [String: Int] = [:]
         var jiraDate = monday
         while jiraDate <= today {
@@ -74,7 +74,7 @@ struct WeeklyReport {
         }
         if !jiraTotals.isEmpty {
             lines.append("")
-            lines.append("--- Jira 工单支持 ---")
+            lines.append("--- Jira 入口支持 ---")
             let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
             for (issueKey, count) in jiraTotals.sorted(by: { $0.value > $1.value }) {
                 let summary = issueMap[issueKey].map { " \($0)" } ?? ""

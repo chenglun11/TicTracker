@@ -6,6 +6,38 @@ struct FeishuTaskCandidate: Identifiable, Codable, Sendable {
     var summary: String
     var completedAt: String?
     var tasklistGUIDs: Set<String> = []
+    var assigneeIDs: [String] = []
+    var assigneeNameByID: [String: String] = [:]
+
+    init(
+        guid: String,
+        summary: String,
+        completedAt: String?,
+        tasklistGUIDs: Set<String> = [],
+        assigneeIDs: [String] = [],
+        assigneeNameByID: [String: String] = [:]
+    ) {
+        self.guid = guid
+        self.summary = summary
+        self.completedAt = completedAt
+        self.tasklistGUIDs = tasklistGUIDs
+        self.assigneeIDs = assigneeIDs
+        self.assigneeNameByID = assigneeNameByID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case guid, summary, completedAt, tasklistGUIDs, assigneeIDs, assigneeNameByID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guid = try container.decode(String.self, forKey: .guid)
+        summary = try container.decode(String.self, forKey: .summary)
+        completedAt = try container.decodeIfPresent(String.self, forKey: .completedAt)
+        tasklistGUIDs = try container.decodeIfPresent(Set<String>.self, forKey: .tasklistGUIDs) ?? []
+        assigneeIDs = try container.decodeIfPresent([String].self, forKey: .assigneeIDs) ?? []
+        assigneeNameByID = try container.decodeIfPresent([String: String].self, forKey: .assigneeNameByID) ?? [:]
+    }
 }
 
 struct FeishuTaskListResult: Codable, Sendable {
@@ -79,7 +111,8 @@ final class FeishuTaskService {
         for guid in boundGUIDs {
             do {
                 let token = try await accessToken(for: store)
-                let task = try await self.getTaskDetail(guid: guid, token: token)
+                let detail = try await self.getTaskDetail(guid: guid, token: token)
+                let task = await self.enrichAssigneeNames(in: detail, store: store, token: token)
                 result[guid] = task
             } catch FeishuTaskServiceError.notFound {
                 deletedGUIDs.insert(guid)
@@ -91,6 +124,14 @@ final class FeishuTaskService {
         }
         DevLog.shared.info("FeishuTask", "单向同步完成：检查 \(boundGUIDs.count) 个绑定，成功 \(result.count)，解绑 \(deletedGUIDs.count)，失败 \(failedCount)")
         return BoundTaskSyncResult(tasks: result, deletedGUIDs: deletedGUIDs)
+    }
+
+    func taskDetail(store: DataStore, guid: String) async throws -> FeishuTaskCandidate {
+        let trimmed = guid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw FeishuTaskServiceError.invalidResponse }
+        let token = try await accessToken(for: store)
+        let task = try await getTaskDetail(guid: trimmed, token: token)
+        return await enrichAssigneeNames(in: task, store: store, token: token)
     }
 
     private func getTaskDetail(guid: String, token: String) async throws -> FeishuTaskCandidate {
@@ -122,11 +163,7 @@ final class FeishuTaskService {
               let task = dataObj["task"] as? [String: Any] else {
             throw FeishuTaskServiceError.invalidResponse
         }
-        return FeishuTaskCandidate(
-            guid: task["guid"] as? String ?? guid,
-            summary: task["summary"] as? String ?? "",
-            completedAt: task["completed_at"] as? String
-        )
+        return makeTaskCandidate(from: task, fallbackGUID: guid)
     }
 
     func listTasks(store: DataStore, tasklistGUID: String? = nil) async throws -> FeishuTaskListResult {
@@ -137,7 +174,8 @@ final class FeishuTaskService {
             throw FeishuTaskServiceError.notConfigured
         }
         let token = try await accessToken(for: store)
-        let tasks = try await self.listTasklistTasks(tasklistGUID: selected, token: token)
+        let rawTasks = try await self.listTasklistTasks(tasklistGUID: selected, token: token)
+        let tasks = await self.enrichAssigneeNames(in: rawTasks, store: store, token: token)
         DevLog.shared.info("FeishuTask", "拉取任务清单成功 [mode=\(store.feishuBotConfig.taskAuthMode.rawValue), tasklist=\(selected), count=\(tasks.count)]")
         return FeishuTaskListResult(tasklists: tasklists, selected: selected, tasks: tasks)
     }
@@ -150,7 +188,8 @@ final class FeishuTaskService {
         }
 
         let token = try await accessToken(for: store)
-        let tasks = try await self.listTasklistTasks(tasklistGUID: selected, token: token)
+        let rawTasks = try await self.listTasklistTasks(tasklistGUID: selected, token: token)
+        let tasks = await self.enrichAssigneeNames(in: rawTasks, store: store, token: token)
         DevLog.shared.info("FeishuTask", "\(store.feishuBotConfig.taskAuthMode.rawValue) 拉到 \(tasks.count) 条任务 [tasklist=\(selected)]")
         for task in tasks.prefix(10) {
             DevLog.shared.info("FeishuTask", "  任务: \(task.summary) [guid=\(task.guid)]")
@@ -276,11 +315,260 @@ final class FeishuTaskService {
             || message.contains("无效")
     }
 
+    private func makeTaskCandidate(
+        from task: [String: Any],
+        fallbackGUID: String = "",
+        tasklistGUIDs: Set<String> = []
+    ) -> FeishuTaskCandidate {
+        let assignees = taskAssigneeInfo(from: task)
+        return FeishuTaskCandidate(
+            guid: textValue(task["guid"]) ?? fallbackGUID,
+            summary: textValue(task["summary"]) ?? "",
+            completedAt: textValue(task["completed_at"]),
+            tasklistGUIDs: tasklistGUIDs,
+            assigneeIDs: assignees.ids,
+            assigneeNameByID: assignees.nameByID
+        )
+    }
+
+    private func taskAssigneeInfo(from task: [String: Any]) -> (ids: [String], nameByID: [String: String]) {
+        var ids: [String] = []
+        var nameByID: [String: String] = [:]
+        var seen = Set<String>()
+
+        for member in taskMemberObjects(from: task) {
+            guard isAssigneeMember(member), isUserMember(member),
+                  let id = firstUserID(in: member) else { continue }
+            if seen.insert(id).inserted {
+                ids.append(id)
+            }
+            if let name = firstUserName(in: member) {
+                nameByID[id] = name
+            }
+        }
+
+        return (ids, nameByID)
+    }
+
+    private func taskMemberObjects(from task: [String: Any]) -> [[String: Any]] {
+        for key in ["members", "task_members"] {
+            let members = dictionaryArray(from: task[key])
+            if !members.isEmpty { return members }
+        }
+        return []
+    }
+
+    private func dictionaryArray(from value: Any?) -> [[String: Any]] {
+        if let array = value as? [[String: Any]] {
+            return array
+        }
+        if let array = value as? [Any] {
+            return array.compactMap { $0 as? [String: Any] }
+        }
+        if let object = value as? [String: Any] {
+            for key in ["items", "list", "members"] {
+                let nested = dictionaryArray(from: object[key])
+                if !nested.isEmpty { return nested }
+            }
+        }
+        return []
+    }
+
+    private func isAssigneeMember(_ member: [String: Any]) -> Bool {
+        roleValues(in: member).contains { $0 == "assignee" }
+    }
+
+    private func isUserMember(_ member: [String: Any]) -> Bool {
+        let types = typeValues(in: member)
+        if types.isEmpty {
+            return firstUserID(in: member) != nil
+        }
+        return types.contains { $0 == "user" }
+    }
+
+    private func roleValues(in object: [String: Any]) -> [String] {
+        textValues(in: object, keys: ["role"])
+    }
+
+    private func typeValues(in object: [String: Any]) -> [String] {
+        textValues(in: object, keys: ["type", "member_type", "user_type"])
+    }
+
+    private func textValues(in object: [String: Any], keys: [String]) -> [String] {
+        var result: [String] = []
+        for key in keys {
+            if let value = textValue(object[key])?.lowercased() {
+                result.append(value)
+            }
+        }
+        for key in ["member", "user"] {
+            guard let nested = object[key] as? [String: Any] else { continue }
+            result.append(contentsOf: textValues(in: nested, keys: keys))
+        }
+        return result
+    }
+
+    private func firstUserID(in object: [String: Any]) -> String? {
+        for key in ["id", "open_id", "user_id"] {
+            if let value = textValue(object[key]) {
+                return value
+            }
+        }
+        for key in ["user", "member"] {
+            if let value = textValue(object[key]) {
+                return value
+            }
+            if let nested = object[key] as? [String: Any],
+               let value = firstUserID(in: nested) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func firstUserName(in object: [String: Any]) -> String? {
+        for key in ["name", "display_name", "localized_name", "name_cn", "name_en", "nickname"] {
+            if let value = textValue(object[key]) {
+                return value
+            }
+            if let value = localizedNameValue(object[key]) {
+                return value
+            }
+        }
+        for key in ["user", "member"] {
+            if let nested = object[key] as? [String: Any],
+               let value = firstUserName(in: nested) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func localizedNameValue(_ value: Any?) -> String? {
+        guard let object = value as? [String: Any] else { return nil }
+        for key in ["zh_cn", "en_us", "ja_jp", "default", "name"] {
+            if let value = textValue(object[key]) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func textValue(_ value: Any?) -> String? {
+        let raw: String?
+        if let string = value as? String {
+            raw = string
+        } else if let number = value as? NSNumber {
+            raw = number.stringValue
+        } else {
+            raw = nil
+        }
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func enrichAssigneeNames(in task: FeishuTaskCandidate, store: DataStore, token: String) async -> FeishuTaskCandidate {
+        let tasks = await enrichAssigneeNames(in: [task], store: store, token: token)
+        return tasks.first ?? task
+    }
+
+    private func enrichAssigneeNames(in tasks: [FeishuTaskCandidate], store: DataStore, token: String) async -> [FeishuTaskCandidate] {
+        guard !tasks.isEmpty else { return tasks }
+        var knownNames = store.feishuBotConfig.feishuUserNameMap
+        for task in tasks {
+            for (id, name) in task.assigneeNameByID where !id.isEmpty && !name.isEmpty {
+                knownNames[id] = name
+            }
+        }
+
+        var missingIDs: [String] = []
+        var seen = Set<String>()
+        for task in tasks {
+            for id in task.assigneeIDs where knownNames[id] == nil && seen.insert(id).inserted {
+                missingIDs.append(id)
+            }
+        }
+
+        for id in missingIDs {
+            if let name = try? await fetchFeishuUserName(userID: id, token: token) {
+                knownNames[id] = name
+            }
+        }
+
+        return tasks.map { task in
+            var enriched = task
+            for id in task.assigneeIDs {
+                if enriched.assigneeNameByID[id] == nil, let name = knownNames[id] {
+                    enriched.assigneeNameByID[id] = name
+                }
+            }
+            return enriched
+        }
+    }
+
+    private func fetchFeishuUserName(userID: String, token: String) async throws -> String? {
+        for idType in ["open_id", "user_id"] {
+            if let name = try await fetchFeishuUserName(userID: userID, userIDType: idType, token: token, logFailures: false) {
+                return name
+            }
+        }
+        DevLog.shared.warn("FeishuTask", "未能解析用户名称 [id=\(userID)]")
+        return nil
+    }
+
+    private func fetchFeishuUserName(userID: String, userIDType: String, token: String, logFailures: Bool) async throws -> String? {
+        guard var components = URLComponents(string: "https://open.feishu.cn/open-apis/contact/v3/users/\(userID)") else {
+            throw FeishuTaskServiceError.invalidResponse
+        }
+        components.queryItems = [URLQueryItem(name: "user_id_type", value: userIDType)]
+        guard let url = components.url else {
+            throw FeishuTaskServiceError.invalidResponse
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+        guard status == 200 else {
+            if status == 401 { throw FeishuTaskServiceError.unauthorized }
+            if logFailures {
+                DevLog.shared.warn("FeishuTask", "读取用户名称失败 [id=\(userID), idType=\(userIDType), status=\(status), body=\(body.prefix(200))]")
+            }
+            return nil
+        }
+        guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let code = payload["code"] as? Int, code != 0 {
+            let msg = payload["msg"] as? String ?? "读取用户名称失败"
+            if code == 99991663 || code == 99991664 { throw FeishuTaskServiceError.unauthorized }
+            if logFailures {
+                DevLog.shared.warn("FeishuTask", "读取用户名称返回错误 [id=\(userID), idType=\(userIDType), code=\(code), msg=\(msg)]")
+            }
+            return nil
+        }
+        guard let dataObj = payload["data"] as? [String: Any] else { return nil }
+        let user = dataObj["user"] as? [String: Any] ?? dataObj
+        return firstUserName(in: user)
+    }
+
     func createTaskForIssue(store: DataStore, issue: TrackedIssue) async throws -> FeishuTaskCandidate {
         let token = try await tenantAccessToken(store: store)
         let collaboratorOpenID = store.feishuBotConfig.taskDefaultCollaboratorOpenID.trimmingCharacters(in: .whitespacesAndNewlines)
         let tasklistGUID = try await ensureBotTasklist(store: store, token: token, collaboratorOpenID: collaboratorOpenID)
-        let task = try await createTask(summary: issue.title, tasklistGUID: tasklistGUID, collaboratorOpenID: collaboratorOpenID, token: token)
+        var task = try await createTask(summary: issue.title, tasklistGUID: tasklistGUID, collaboratorOpenID: collaboratorOpenID, token: token)
+        if task.assigneeIDs.isEmpty {
+            if let detail = try? await getTaskDetail(guid: task.guid, token: token) {
+                task = detail
+            }
+            if task.assigneeIDs.isEmpty, !collaboratorOpenID.isEmpty {
+                task.assigneeIDs = [collaboratorOpenID]
+            }
+        }
+        task = await enrichAssigneeNames(in: task, store: store, token: token)
         DevLog.shared.info("FeishuTask", "已用 Bot 创建飞书任务 [issue=#\(issue.issueNumber), guid=\(task.guid), tasklist=\(tasklistGUID), collaborator=\(collaboratorOpenID.isEmpty ? "未配置" : collaboratorOpenID)]")
         return task
     }
@@ -430,11 +718,7 @@ final class FeishuTaskService {
             DevLog.shared.error("FeishuTask", "\(action)响应缺少 guid [payload=\(body.prefix(300))]")
             throw FeishuTaskServiceError.invalidResponse
         }
-        return FeishuTaskCandidate(
-            guid: guid,
-            summary: taskObj["summary"] as? String ?? "",
-            completedAt: taskObj["completed_at"] as? String
-        )
+        return makeTaskCandidate(from: taskObj, fallbackGUID: guid)
     }
 
     private func parseMutationPayload(data: Data, response: URLResponse, action: String) throws -> [String: Any] {
@@ -571,11 +855,7 @@ final class FeishuTaskService {
             }
             let items = dataObj["items"] as? [[String: Any]] ?? []
             all += items.map { item in
-                FeishuTaskCandidate(
-                    guid: item["guid"] as? String ?? "",
-                    summary: item["summary"] as? String ?? "",
-                    completedAt: item["completed_at"] as? String
-                )
+                makeTaskCandidate(from: item, tasklistGUIDs: [tasklistGUID])
             }.filter { !$0.guid.isEmpty }
 
             let hasMore = dataObj["has_more"] as? Bool ?? false

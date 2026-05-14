@@ -103,7 +103,7 @@ struct MenuBarView: View {
                 }
             }
 
-            // Jira section
+            // Jira 入口 section
             if store.jiraConfig.showInMenuBar {
                 Divider()
                 jiraSection
@@ -268,7 +268,7 @@ struct MenuBarView: View {
                         Image(systemName: "server.rack")
                     }
                     .buttonStyle(.borderless)
-                    .help("Jira 工单")
+                    .help("Jira 入口")
 
                     Spacer()
                 }
@@ -379,7 +379,7 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Jira Section
+    // MARK: - Jira 入口
 
     @ViewBuilder
     private var jiraSection: some View {
@@ -388,7 +388,7 @@ struct MenuBarView: View {
                 Image(systemName: "server.rack")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text("Jira")
+                Text("Jira 入口")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 if store.jiraConfig.enabled {

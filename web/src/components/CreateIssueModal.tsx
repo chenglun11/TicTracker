@@ -69,8 +69,8 @@ function CreateIssueModal({ open, onClose, departments }: CreateIssueModalProps)
           )}
         </Form.Item>
 
-        <Form.Item name="ticketURL" label="链接">
-          <Input placeholder="可选，填写相关链接" />
+        <Form.Item name="ticketURL" label="外部链接">
+          <Input placeholder="可选，填写外部问题链接" />
         </Form.Item>
       </Form>
     </Modal>

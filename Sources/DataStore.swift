@@ -67,7 +67,10 @@ final class DataStore {
     // MARK: - RSS
 
     var rssFeeds: [RSSFeed] {
-        didSet { saveRSSFeeds() }
+        didSet {
+            saveRSSFeeds()
+            RSSFeedManager.shared.syncPollingState()
+        }
     }
     var rssItems: [String: [RSSItem]] {  // feedID.uuidString -> items
         didSet { saveRSSItems() }
@@ -1095,9 +1098,40 @@ final class DataStore {
         entry.feishuTaskGuid = task.guid
         entry.status = completedAt.isEmpty || completedAt == "0" ? .pending : .fixed
         entry.resolvedAt = entry.status.isResolved ? Date() : nil
+        if let assignee = assigneeText(fromFeishuTask: task) {
+            entry.assignee = assignee
+        }
         trackedIssues.append(entry)
         logOperation(module: "问题", action: "飞书同步新增", detail: "#\(entry.issueNumber) \(title) [guid=\(task.guid)]")
+        if let assignee = entry.assignee {
+            DevLog.shared.info("IssueTracker", "飞书任务负责人已同步 #\(entry.issueNumber) [guid=\(task.guid), assigneeIDs=\(task.assigneeIDs.joined(separator: ", ")), assignee=\(assignee)]")
+        }
         return true
+    }
+
+    func assigneeText(fromFeishuTask task: FeishuTaskCandidate) -> String? {
+        mergeFeishuUserNameMap(task.assigneeNameByID)
+        let ids = task.assigneeIDs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !ids.isEmpty else { return nil }
+        let localNameMap = feishuBotConfig.feishuUserNameMap
+        return ids.map { localNameMap[$0] ?? $0 }.joined(separator: ", ")
+    }
+
+    func mergeFeishuUserNameMap(_ updates: [String: String]) {
+        var merged = feishuBotConfig.feishuUserNameMap
+        var changed = false
+        for (rawID, rawName) in updates {
+            let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, !name.isEmpty, merged[id] != name else { continue }
+            merged[id] = name
+            changed = true
+        }
+        if changed {
+            feishuBotConfig.feishuUserNameMap = merged
+        }
     }
 
     /// Apply mutations to a tracked issue via copy-modify-writeback to reliably trigger didSet.

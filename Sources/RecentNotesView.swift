@@ -443,11 +443,11 @@ struct RecentNotesView: View {
                     }
                 }
 
-                // Jira tags
+                // Jira 入口 tags
                 if item.jiraTotal > 0 {
                     Divider()
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("Jira 工单", systemImage: "ticket")
+                        Label("Jira 入口", systemImage: "ticket")
                             .font(.headline)
 
                         let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })

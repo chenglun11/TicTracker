@@ -3,11 +3,42 @@ import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var store: DataStore?
+    private var didInitializeServices = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
-        if let store {
-            HotkeyManager.shared.setup(store: store)
+        Task { @MainActor in
+            self.initializeServicesIfNeeded()
+        }
+    }
+
+    @MainActor
+    private func initializeServicesIfNeeded() {
+        guard !didInitializeServices, let store else { return }
+        didInitializeServices = true
+        DevLog.shared.info("App", "启动 TicTracker")
+        KeychainHelper.warmUpAccess()
+        FeishuBotService.warmUpSecrets()
+        DevLog.shared.info("App", "已完成 Keychain 预热")
+        HotkeyManager.shared.setup(store: store)
+        NotificationManager.shared.refreshReminderIfNeeded()
+        NotificationManager.shared.sendWelcome()
+        UpdateChecker.shared.checkInBackground()
+        RSSFeedManager.shared.setup(store: store)
+        if store.rssEnabled {
+            RSSFeedManager.shared.startPolling()
+        }
+        JiraService.shared.setup(store: store)
+        if store.jiraConfig.enabled {
+            JiraService.shared.startPolling()
+        }
+        FeishuBotService.shared.setup(store: store)
+        if store.feishuBotConfig.enabled {
+            FeishuBotService.shared.startScheduler()
+        }
+        if SyncManager.shared.config.enabled {
+            Task { await SyncManager.shared.sync(store: store) }
+            SyncManager.shared.startPeriodicSync(store: store)
         }
     }
 
@@ -99,42 +130,19 @@ extension Notification.Name {
 
 @main
 struct TicTrackerApp: App {
-    @State private var store = DataStore()
+    @State private var store: DataStore
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @Environment(\.openWindow) private var openWindow
+
+    init() {
+        let store = DataStore()
+        _store = State(initialValue: store)
+        appDelegate.store = store
+    }
 
     var body: some Scene {
         MenuBarExtra {
             MenuBarView(store: store)
-                .onAppear {
-                    if appDelegate.store == nil {
-                        appDelegate.store = store
-                        DevLog.shared.info("App", "启动 TicTracker")
-                        KeychainHelper.warmUpAccess()
-                        FeishuBotService.warmUpSecrets()
-                        DevLog.shared.info("App", "已完成 Keychain 预热")
-                        HotkeyManager.shared.setup(store: store)
-                        NotificationManager.shared.refreshReminderIfNeeded()
-                        NotificationManager.shared.sendWelcome()
-                        UpdateChecker.shared.checkInBackground()
-                        RSSFeedManager.shared.setup(store: store)
-                        if store.rssEnabled {
-                            RSSFeedManager.shared.startPolling()
-                        }
-                        JiraService.shared.setup(store: store)
-                        if store.jiraConfig.enabled {
-                            JiraService.shared.startPolling()
-                        }
-                        FeishuBotService.shared.setup(store: store)
-                        if store.feishuBotConfig.enabled {
-                            FeishuBotService.shared.startScheduler()
-                        }
-                        if SyncManager.shared.config.enabled {
-                            Task { await SyncManager.shared.sync(store: store) }
-                            SyncManager.shared.startPeriodicSync(store: store)
-                        }
-                    }
-                }
                 .onReceive(NotificationCenter.default.publisher(for: .openWindowRequest)) { notification in
                     if let windowID = notification.object as? String {
                         openWindow(id: windowID)
@@ -163,7 +171,7 @@ struct TicTrackerApp: App {
         }
         .defaultSize(width: 650, height: 500)
 
-        Window("Jira 工单", id: "jira") {
+        Window("Jira 入口", id: "jira") {
             JiraView(store: store)
         }
         .defaultSize(width: 700, height: 500)

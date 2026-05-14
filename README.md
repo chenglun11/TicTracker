@@ -4,7 +4,7 @@
 
 **轻量级 macOS 菜单栏技术支持计数器**
 
-快捷键一键记录 · 日报提醒 · AI 周报 · Jira 集成 · RSS 订阅
+快捷键一键记录 · 日报提醒 · AI 周报 · Jira 入口 · RSS 订阅
 
 [![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange?logo=swift&logoColor=white)](https://swift.org)
@@ -49,7 +49,7 @@
 | 每日摘要 | 复制周报 · 查看详情 | 日报提醒后 30 分钟推送今日统计 |
 | RSS 新条目 | 打开链接 | 直接在浏览器打开对应 URL |
 
-### 🔗 Jira Server/DC 集成
+### 🔗 Jira 入口
 - 工单列表查看与搜索
 - 工单计数（手动 +1 / -1）
 - 状态流转（一键流转到下一状态）

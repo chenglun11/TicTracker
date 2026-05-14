@@ -65,7 +65,7 @@ struct JiraView: View {
                     ContentUnavailableView {
                         Label("暂无工单", systemImage: "tray")
                     } description: {
-                        Text("请先在设置中配置 Jira 连接")
+                        Text("请先在设置中配置 Jira 入口")
                     }
                     .frame(maxHeight: .infinity)
                 } else if refreshing && store.jiraIssues.isEmpty {

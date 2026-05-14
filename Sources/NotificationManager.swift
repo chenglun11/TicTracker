@@ -28,10 +28,14 @@ final class NotificationManager {
 
     func requestPermission() {
         let center = UNUserNotificationCenter.current()
+        registerCategories()
         Task {
-            let granted = try? await center.requestAuthorization(options: [.alert, .sound])
-            DevLog.shared.info("Notify", "通知权限: \(granted == true ? "已授权" : "未授权")")
-            registerCategories()
+            do {
+                let granted = try await center.requestAuthorization(options: [.alert, .sound])
+                DevLog.shared.info("Notify", "通知权限: \(granted ? "已授权" : "未授权")")
+            } catch {
+                DevLog.shared.error("Notify", "通知权限请求失败: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -141,7 +145,7 @@ final class NotificationManager {
         let jiraTodayTotal = store.jiraIssueCounts[store.todayKey]?.values.reduce(0, +) ?? 0
         var parts: [String] = []
         if todayTotal > 0 { parts.append("项目支持 \(todayTotal) 次") }
-        if jiraTodayTotal > 0 { parts.append("Jira 工单 \(jiraTodayTotal) 次") }
+        if jiraTodayTotal > 0 { parts.append("Jira 入口 \(jiraTodayTotal) 次") }
         content.body = parts.isEmpty ? "今天还没有记录，明天继续加油" : parts.joined(separator: "，")
 
         content.sound = .default
@@ -196,9 +200,28 @@ final class NotificationManager {
         let id = "rss-\(UUID().uuidString)"
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         Task {
-            try? await center.add(request)
+            let settings = await center.notificationSettings()
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                break
+            case .notDetermined:
+                DevLog.shared.warn("Notify", "RSS 通知未投递：通知权限尚未请求")
+                return
+            case .denied:
+                DevLog.shared.warn("Notify", "RSS 通知未投递：通知权限被拒绝")
+                return
+            @unknown default:
+                DevLog.shared.warn("Notify", "RSS 通知未投递：未知通知权限状态")
+                return
+            }
+
+            do {
+                try await center.add(request)
+                DevLog.shared.info("Notify", "RSS 通知已投递: [\(feedName)] \(title)")
+            } catch {
+                DevLog.shared.error("Notify", "RSS 通知投递失败: \(error.localizedDescription)")
+            }
         }
-        DevLog.shared.info("Notify", "RSS 通知: [\(feedName)] \(title)")
     }
 
     // MARK: - Todo Task Notifications

@@ -26,7 +26,6 @@ struct IssueTrackerView: View {
     @State private var feishuTaskError: String?
     @State private var creatingFeishuTaskIssueID: UUID?
     @State private var feishuSyncInProgress = false
-    @State private var syncTimer: Timer?
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -70,9 +69,13 @@ struct IssueTrackerView: View {
         if !searchText.isEmpty {
             let query = searchText.lowercased()
             issues = issues.filter {
+                "#\($0.issueNumber)".contains(query) ||
+                "\($0.issueNumber)".contains(query) ||
                 $0.title.lowercased().contains(query) ||
                 ($0.assignee?.lowercased().contains(query) ?? false) ||
                 ($0.jiraKey?.lowercased().contains(query) ?? false) ||
+                ($0.ticketURL?.lowercased().contains(query) ?? false) ||
+                ($0.feishuTaskGuid?.lowercased().contains(query) ?? false) ||
                 ($0.department?.lowercased().contains(query) ?? false) ||
                 $0.comments.contains(where: { $0.text.lowercased().contains(query) })
             }
@@ -102,163 +105,270 @@ struct IssueTrackerView: View {
 
     var body: some View {
         HSplitView {
-            // Left sidebar
-            VStack(spacing: 0) {
-                // Toolbar
-                HStack(spacing: 12) {
-                    // Stats
-                    HStack(spacing: 8) {
+            sidebar
+            detailPane
+        }
+        .onAppear {
+            syncFeishuBoundTasks()
+            if selectedIssueID == nil, let first = filteredIssues.first {
+                selectedIssueID = first.id
+            }
+        }
+        .onDisappear {
+            NSApp.setActivationPolicy(.accessory)
+        }
+        .onChange(of: selectedIssueID) {
+            isEditingTitle = false
+            isEditingTime = false
+            newCommentText = ""
+            sendResult = nil
+        }
+        .task(id: store.feishuBotConfig.taskPollingInterval) {
+            await runFeishuSyncLoop()
+        }
+        .onChange(of: searchText) {
+            if let id = selectedIssueID, !filteredIssues.contains(where: { $0.id == id }) {
+                selectedIssueID = filteredIssues.first?.id
+            }
+        }
+        .onChange(of: typeFilter) {
+            keepSelectionVisible()
+        }
+        .onChange(of: statusFilter) {
+            keepSelectionVisible()
+        }
+        .autoSaveIndicator(saveState)
+    }
+
+    // MARK: - Sidebar
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            sidebarHeader
+            Divider()
+            filterBar
+            Divider()
+            issueList
+        }
+        .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var sidebarHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("问题追踪")
+                        .font(.headline)
+                    HStack(spacing: 10) {
                         statBadge(title: "总计", value: store.visibleTrackedIssues.count, color: .blue)
                         statBadge(title: "未解决", value: unresolvedCount, color: unresolvedCount > 0 ? .orange : .green)
                     }
-                    Spacer()
-                    if feishuSyncInProgress {
-                        ProgressView()
-                            .controlSize(.small)
-                            .help("正在同步飞书任务状态…")
-                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if feishuSyncInProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("正在同步飞书任务状态…")
+                }
+
+                Button {
+                    addNewIssue()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help("新增问题")
+            }
+
+            HStack(spacing: 6) {
+                Button {
+                    syncFeishuBoundTasks()
+                } label: {
+                    Label("同步", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(feishuSyncInProgress || !canSyncFeishuTasks)
+                .help(store.feishuBotConfig.taskAuthMode == .botTenant ? "使用 Bot / 应用身份同步飞书任务" : "使用用户 OAuth 同步飞书任务")
+
+                Button {
+                    sendToFeishu()
+                } label: {
+                    Label(sendingFeishu ? "发送中" : "日报", systemImage: "paperplane.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(sendingFeishu || store.feishuBotConfig.webhooks.isEmpty)
+                .help("发送完整日报")
+
+                if store.jiraConfig.enabled {
                     Button {
-                        syncFeishuBoundTasks()
+                        syncJiraIssues()
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                            Text("同步任务")
-                        }
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .rotationEffect(jiraSyncing ? .degrees(360) : .zero)
+                            .animation(jiraSyncing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: jiraSyncing)
                     }
-                    .buttonStyle(.borderless)
-                    .controlSize(.regular)
-                    .disabled(feishuSyncInProgress || !canSyncFeishuTasks)
-                    .help(store.feishuBotConfig.taskAuthMode == .botTenant ? "使用 Bot / 应用身份同步飞书任务" : "使用用户 OAuth 同步飞书任务")
-                    Button {
-                        sendToFeishu()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "paperplane.fill")
-                            Text(sendingFeishu ? "发送中…" : "发送完整日报")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
-                    .disabled(sendingFeishu || store.feishuBotConfig.webhooks.isEmpty)
-                    if store.jiraConfig.enabled {
-                        Button {
-                            jiraSyncing = true
-                            Task {
-                                async let myResult = JiraService.shared.fetchMyIssues()
-                                async let reportedResult = JiraService.shared.fetchReportedIssues()
-                                _ = await (myResult, reportedResult)
-                                await JiraService.shared.syncTrackedIssues()
-                                jiraSyncing = false
-                                saveState.triggerSave()
-                            }
-                        } label: {
-                            Image(systemName: jiraSyncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath")
-                                .rotationEffect(jiraSyncing ? .degrees(360) : .zero)
-                                .animation(jiraSyncing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: jiraSyncing)
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(jiraSyncing)
-                    }
-                    Button {
-                        addNewIssue()
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-
-                if let result = sendResult {
-                    HStack {
-                        Text(result)
-                            .font(.caption)
-                            .foregroundStyle(sendSuccess ? .green : .red)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 6)
+                    .disabled(jiraSyncing)
+                    .help("同步 Jira 入口")
                 }
 
-                Divider()
+                Spacer(minLength: 0)
+            }
 
-                // Type filter
-                HStack(spacing: 6) {
-                    ForEach(TypeFilter.allCases, id: \.self) { filter in
-                        Button {
-                            typeFilter = filter
-                        } label: {
-                            HStack(spacing: 4) {
-                                if let type = filter.issueType {
-                                    Image(systemName: type.icon)
-                                        .font(.caption2)
-                                }
-                                Text(filter.rawValue)
-                            }
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(
-                                typeFilter == filter
-                                    ? (filter.issueType?.color ?? Color.accentColor)
-                                    : Color.secondary.opacity(0.12),
-                                in: Capsule()
-                            )
-                            .foregroundStyle(typeFilter == filter ? .white : .primary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+            if let result = sendResult {
+                Text(result)
+                    .font(.caption)
+                    .foregroundStyle(sendSuccess ? .green : .red)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
 
-                // Status filter
-                HStack(spacing: 6) {
-                    ForEach(StatusFilter.allCases, id: \.self) { filter in
-                        Button(filter.rawValue) {
-                            statusFilter = filter
-                        }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            statusFilter == filter ? Color.accentColor : Color.secondary.opacity(0.12),
-                            in: Capsule()
-                        )
-                        .foregroundStyle(statusFilter == filter ? .white : .primary)
+    private var filterBar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("搜索编号、标题、负责人、备注", text: $searchText)
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
                     }
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 6)
-
-                Divider()
-
-                // List
-                if filteredIssues.isEmpty {
-                    ContentUnavailableView {
-                        Label("无记录", systemImage: "tray")
-                    } description: {
-                        Text(searchText.isEmpty ? "点击 + 添加新问题" : "没有匹配的结果")
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List(selection: $selectedIssueID) {
-                        ForEach(filteredIssues) { issue in
-                            listRow(issue)
-                                .tag(issue.id)
-                        }
-                    }
-                    .listStyle(.sidebar)
+                    .buttonStyle(.plain)
+                    .help("清空搜索")
                 }
             }
-            .frame(minWidth: 200, idealWidth: 260, maxWidth: 320)
-            .searchable(text: $searchText, prompt: "搜索问题")
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
 
-            // Right detail
+            VStack(alignment: .leading, spacing: 5) {
+                Text("类型")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Picker("类型", selection: $typeFilter) {
+                    ForEach(TypeFilter.allCases, id: \.self) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("状态")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Picker("状态", selection: $statusFilter) {
+                    ForEach(StatusFilter.allCases, id: \.self) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private var issueList: some View {
+        if filteredIssues.isEmpty {
+            ContentUnavailableView {
+                Label("无记录", systemImage: "tray")
+            } description: {
+                Text(searchText.isEmpty ? "点击 + 添加新问题" : "没有匹配的结果")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(selection: $selectedIssueID) {
+                ForEach(filteredIssues) { issue in
+                    listRow(issue)
+                        .tag(issue.id)
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private func listRow(_ issue: TrackedIssue) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if issue.issueNumber > 0 {
+                    Text("#\(issue.issueNumber)")
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(issue.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                Spacer(minLength: 4)
+
+                Image(systemName: issue.status.icon)
+                    .font(.caption)
+                    .foregroundStyle(statusColor(issue.status))
+                    .help(issue.status.rawValue)
+            }
+
+            HStack(spacing: 5) {
+                issueTag(issue.type.rawValue, systemImage: issue.type.icon, color: issue.type.color)
+                issueTag(issue.status.rawValue, systemImage: nil, color: statusColor(issue.status))
+
+                if let assignee = issue.assignee, !assignee.isEmpty {
+                    issueTag(assignee, systemImage: "person", color: .blue)
+                }
+
+                Spacer(minLength: 2)
+
+                Text(issue.dateKey)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            if issue.source != .manual || issue.hasDevActivity || issue.isEscalated || issue.feishuTaskGuid?.isEmpty == false {
+                HStack(spacing: 5) {
+                    if issue.source != .manual {
+                        issueTag(issue.source.rawValue, systemImage: "link", color: .secondary)
+                    }
+                    if issue.hasDevActivity {
+                        issueTag("开发中", systemImage: "hammer", color: .green)
+                    }
+                    if issue.isEscalated {
+                        issueTag("Escalated", systemImage: "exclamationmark.arrow.triangle.2.circlepath", color: .red)
+                    }
+                    if issue.feishuTaskGuid?.isEmpty == false {
+                        issueTag("飞书任务", systemImage: "checklist", color: .indigo)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.vertical, 5)
+    }
+
+    // MARK: - Issue Detail
+
+    private var detailPane: some View {
+        Group {
             if let issue = selectedIssue {
                 issueDetail(issue)
             } else {
@@ -270,169 +380,118 @@ struct IssueTrackerView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear {
-            syncFeishuBoundTasks()
-            startSyncTimer()
-            if selectedIssueID == nil, let first = filteredIssues.first {
-                selectedIssueID = first.id
-            }
-        }
-        .onDisappear {
-            stopSyncTimer()
-            NSApp.setActivationPolicy(.accessory)
-        }
-        .onChange(of: selectedIssueID) {
-            isEditingTitle = false
-            isEditingTime = false
-            newCommentText = ""
-            sendResult = nil
-        }
-        .onChange(of: store.feishuBotConfig.taskPollingInterval) { _, _ in
-            startSyncTimer()
-        }
-        .onChange(of: searchText) {
-            if let id = selectedIssueID, !filteredIssues.contains(where: { $0.id == id }) {
-                selectedIssueID = filteredIssues.first?.id
-            }
-        }
-        .autoSaveIndicator(saveState)
+        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
-
-    // MARK: - List Row
-
-    @ViewBuilder
-    private func listRow(_ issue: TrackedIssue) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: issue.type.icon)
-                .font(.system(size: 10))
-                .frame(width: 12)
-                .foregroundStyle(issue.type.color)
-            Image(systemName: issue.status.icon)
-                .font(.system(size: 10))
-                .frame(width: 12)
-                .foregroundStyle(statusColor(issue.status))
-            if issue.issueNumber > 0 {
-                Text("#\(issue.issueNumber)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-            Text(issue.title)
-                .font(.callout)
-                .lineLimit(1)
-            Spacer()
-            if issue.hasDevActivity {
-                Text("开发中")
-                    .font(.caption2)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .foregroundStyle(.white)
-                    .background(Color.green, in: Capsule())
-            }
-            if issue.isEscalated {
-                Text("Escalated")
-                    .font(.caption2)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .foregroundStyle(.white)
-                    .background(Color.red, in: Capsule())
-            }
-            if let assignee = issue.assignee {
-                Text(assignee)
-                    .font(.caption2)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.blue.opacity(0.15))
-                    .clipShape(Capsule())
-            }
-            if issue.source != .manual {
-                Text(issue.source.rawValue)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Text(issue.dateKey)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 2)
-    }
-
-    // MARK: - Issue Detail
 
     @ViewBuilder
     private func issueDetail(_ issue: TrackedIssue) -> some View {
         let isReadOnly = issue.source.isReadOnly
-        let isStatusLocked = issue.feishuTaskGuid != nil
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // Title
-                VStack(alignment: .leading, spacing: 8) {
-                    if isEditingTitle {
-                        TextEditor(text: $editingTitle)
-                            .font(.title2.bold())
-                            .frame(height: 100)
-                            .padding(4)
-                            .background(Color(nsColor: .textBackgroundColor))
-                            .cornerRadius(6)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                            )
-                    } else {
-                        ScrollView(.vertical, showsIndicators: true) {
-                            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                if issue.issueNumber > 0 {
-                                    Text("#\(issue.issueNumber)")
-                                        .font(.title3.monospaced())
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(issue.title)
-                                    .font(.title2.bold())
-                                    .textSelection(.enabled)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(maxHeight: 100)
-                        .onTapGesture {
-                            guard !isReadOnly else { return }
-                            editingTitle = issue.title
-                            isEditingTitle = true
-                        }
-                    }
 
-                    if isEditingTitle {
-                        HStack {
-                            Button("保存") {
-                                store.updateIssueTitle(id: issue.id, title: editingTitle)
-                                isEditingTitle = false
-                                saveState.triggerSave()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            Button("取消") {
-                                isEditingTitle = false
-                            }
-                            .controlSize(.small)
-                        }
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                issueSummaryHeader(issue, isReadOnly: isReadOnly)
+                primaryFieldsSection(issue, isReadOnly: isReadOnly)
+                externalLinksSection(issue, isReadOnly: isReadOnly)
+                commentsSection(issue, isReadOnly: isReadOnly)
+                metadataAndDangerSection(issue, isReadOnly: isReadOnly)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    @ViewBuilder
+    private func issueSummaryHeader(_ issue: TrackedIssue, isReadOnly: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                if issue.issueNumber > 0 {
+                    Text("#\(issue.issueNumber)")
+                        .font(.title3.monospaced().weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
 
-                // Type, Status, Assignee, Department
-                HStack(spacing: 12) {
-                    Picker("类型", selection: Binding(
-                        get: { issue.type },
-                        set: {
-                            store.updateIssueType(id: issue.id, type: $0)
-                            saveState.triggerSave()
-                        }
-                    )) {
-                        ForEach(IssueType.allCases, id: \.self) { type in
-                            Label(type.rawValue, systemImage: type.icon).tag(type)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 100)
-                    .disabled(isReadOnly || isStatusLocked)
+                summaryChip(issue.type.rawValue, systemImage: issue.type.icon, color: issue.type.color)
+                summaryChip(issue.status.rawValue, systemImage: issue.status.icon, color: statusColor(issue.status))
 
+                Spacer(minLength: 0)
+            }
+
+            if isEditingTitle {
+                TextEditor(text: $editingTitle)
+                    .font(.title2.weight(.semibold))
+                    .frame(minHeight: 80, maxHeight: 120)
+                    .padding(4)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                    )
+
+                HStack(spacing: 8) {
+                    Button("保存") {
+                        store.updateIssueTitle(id: issue.id, title: editingTitle)
+                        isEditingTitle = false
+                        saveState.triggerSave()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button("取消") {
+                        isEditingTitle = false
+                    }
+                    .controlSize(.small)
+                }
+            } else {
+                Text(issue.title)
+                    .font(.title2.weight(.semibold))
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard !isReadOnly else { return }
+                        editingTitle = issue.title
+                        isEditingTitle = true
+                    }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    summaryChip(issue.assignee ?? "未指派", systemImage: "person", color: .blue)
+                    if let department = issue.department, !department.isEmpty {
+                        summaryChip(department, systemImage: "folder", color: .teal)
+                    }
+                    if issue.source != .manual {
+                        summaryChip(displaySourceName(issue.source), systemImage: "link", color: .gray)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if issue.hasDevActivity || issue.isEscalated || issue.feishuTaskGuid?.isEmpty == false {
+                    HStack(spacing: 6) {
+                        if issue.hasDevActivity {
+                            summaryChip("开发中", systemImage: "hammer", color: .green)
+                        }
+                        if issue.isEscalated {
+                            summaryChip("Escalated", systemImage: "exclamationmark.arrow.triangle.2.circlepath", color: .red)
+                        }
+                        if issue.feishuTaskGuid?.isEmpty == false {
+                            summaryChip("飞书任务", systemImage: "checklist", color: .indigo)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+        .padding(.bottom, 2)
+    }
+
+    @ViewBuilder
+    private func primaryFieldsSection(_ issue: TrackedIssue, isReadOnly: Bool) -> some View {
+        workbenchSection("主信息", systemImage: "slider.horizontal.3") {
+            VStack(alignment: .leading, spacing: 10) {
+                fieldRow("状态", systemImage: "circle.dashed") {
                     Menu {
                         ForEach(IssueStatus.allCases, id: \.self) { status in
                             Button {
@@ -443,18 +502,15 @@ struct IssueTrackerView: View {
                             }
                         }
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: issue.status.icon)
-                            Text(issue.status.rawValue)
-                        }
-                        .font(.callout)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                        fieldButtonLabel(issue.status.rawValue, systemImage: issue.status.icon, color: statusColor(issue.status))
                     }
                     .disabled(isReadOnly)
+                }
 
-                    if !store.bugTeamMembers.isEmpty {
+                fieldRow("负责人", systemImage: "person") {
+                    if store.bugTeamMembers.isEmpty {
+                        mutedValue(issue.assignee ?? "未配置负责人")
+                    } else {
                         Menu {
                             Button("未指派") {
                                 store.updateIssueAssignee(id: issue.id, assignee: nil)
@@ -468,18 +524,31 @@ struct IssueTrackerView: View {
                                 }
                             }
                         } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "person")
-                                Text(issue.assignee ?? "未指派")
-                            }
-                            .font(.callout)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                            fieldButtonLabel(issue.assignee ?? "未指派", systemImage: "person", color: .blue)
                         }
                         .disabled(isReadOnly)
                     }
+                }
 
+                fieldRow("类型", systemImage: issue.type.icon) {
+                    Picker("类型", selection: Binding(
+                        get: { issue.type },
+                        set: {
+                            store.updateIssueType(id: issue.id, type: $0)
+                            saveState.triggerSave()
+                        }
+                    )) {
+                        ForEach(IssueType.allCases, id: \.self) { type in
+                            Label(type.rawValue, systemImage: type.icon).tag(type)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 180, alignment: .leading)
+                    .disabled(isReadOnly)
+                }
+
+                fieldRow("项目", systemImage: "folder") {
                     if issue.type == .issue {
                         Picker("项目", selection: Binding(
                             get: { issue.department },
@@ -494,140 +563,310 @@ struct IssueTrackerView: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 120)
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 220, alignment: .leading)
                         .disabled(isReadOnly)
+                    } else if let department = issue.department, !department.isEmpty {
+                        mutedValue(department)
+                    } else {
+                        mutedValue("仅 Support 类型需要项目")
                     }
                 }
+            }
+        }
+    }
 
-                // 来源 & 工单关联
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Text("来源")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Picker("", selection: Binding(
-                            get: { issue.source },
-                            set: {
-                                store.updateIssueSource(id: issue.id, source: $0)
-                                saveState.triggerSave()
-                            }
-                        )) {
-                            ForEach(IssueSource.allCases, id: \.self) { s in
-                                Text(s.rawValue).tag(s)
-                            }
+    @ViewBuilder
+    private func externalLinksSection(_ issue: TrackedIssue, isReadOnly: Bool) -> some View {
+        workbenchSection("关联信息", systemImage: "link") {
+            VStack(alignment: .leading, spacing: 12) {
+                fieldRow("来源", systemImage: "tray.and.arrow.down") {
+                    Picker("来源", selection: Binding(
+                        get: { issue.source },
+                        set: {
+                            store.updateIssueSource(id: issue.id, source: $0)
+                            saveState.triggerSave()
                         }
-                        .labelsHidden()
-                        .frame(width: 160)
-                        .disabled(isReadOnly)
+                    )) {
+                        ForEach(IssueSource.allCases, id: \.self) { source in
+                            Text(displaySourceName(source)).tag(source)
+                        }
                     }
-
-                    switch issue.source {
-                    case .jira:
-                        HStack(spacing: 8) {
-                            TextField("Jira Key", text: Binding(
-                                get: { issue.jiraKey ?? "" },
-                                set: {
-                                    store.updateIssueJiraKey(id: issue.id, jiraKey: $0.isEmpty ? nil : $0)
-                                    saveState.debouncedSave()
-                                }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 120)
-
-                            if !store.filteredJiraIssues.isEmpty {
-                                Button {
-                                    jiraSearchText = ""
-                                    showJiraPicker.toggle()
-                                } label: {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "link")
-                                        Text("关联工单")
-                                    }
-                                    .font(.caption)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .popover(isPresented: $showJiraPicker, arrowEdge: .bottom) {
-                                    jiraPickerPopover(issue: issue)
-                                }
-                            }
-
-                            if let jiraKey = issue.jiraKey, !jiraKey.isEmpty {
-                                Button {
-                                    openJiraInBrowser(jiraKey)
-                                } label: {
-                                    Image(systemName: "arrow.up.forward.square")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("在浏览器中打开 Jira 工单")
-                            }
-                        }
-                    case .meta:
-                        HStack(spacing: 8) {
-                            TextField("工单链接", text: Binding(
-                                get: { issue.ticketURL ?? "" },
-                                set: {
-                                    store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0)
-                                    saveState.debouncedSave()
-                                }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-
-                            if let url = issue.ticketURL, !url.isEmpty {
-                                Button {
-                                    openURL(url)
-                                } label: {
-                                    Image(systemName: "arrow.up.forward.square")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("在浏览器中打开")
-                            }
-
-                            Toggle(isOn: Binding(
-                                get: { issue.isEscalated },
-                                set: {
-                                    store.updateIssueEscalated(id: issue.id, isEscalated: $0)
-                                    saveState.debouncedSave()
-                                }
-                            )) {
-                                Text("Escalated")
-                                    .font(.caption)
-                            }
-                            .toggleStyle(.checkbox)
-                        }
-                    case .feishu:
-                        HStack(spacing: 8) {
-                            TextField("飞书文档链接", text: Binding(
-                                get: { issue.ticketURL ?? "" },
-                                set: {
-                                    store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0)
-                                    saveState.debouncedSave()
-                                }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-
-                            if let url = issue.ticketURL, !url.isEmpty {
-                                Button {
-                                    openURL(url)
-                                } label: {
-                                    Image(systemName: "arrow.up.forward.square")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("在浏览器中打开")
-                            }
-                        }
-                    case .manual:
-                        EmptyView()
-                    }
-
-                    linkedTaskControl(issue)
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                    .disabled(isReadOnly)
                 }
 
                 Divider()
 
-                // Timestamps
-                HStack(spacing: 16) {
-                    if isEditingTime {
+                switch issue.source {
+                case .jira:
+                    jiraLinkFields(issue)
+                case .meta:
+                    metaLinkFields(issue)
+                case .feishu:
+                    feishuDocFields(issue)
+                case .manual:
+                    fieldRow("外部工单", systemImage: "link.slash") {
+                        mutedValue("未关联")
+                    }
+                }
+
+                Divider()
+
+                linkedTaskControl(issue)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func jiraLinkFields(_ issue: TrackedIssue) -> some View {
+        fieldRow("历史入口", systemImage: "number") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("外部工单 Key", text: Binding(
+                    get: { issue.jiraKey ?? "" },
+                    set: {
+                        store.updateIssueJiraKey(id: issue.id, jiraKey: $0.isEmpty ? nil : $0)
+                        saveState.debouncedSave()
+                    }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 220)
+
+                HStack(spacing: 8) {
+                    if !store.filteredJiraIssues.isEmpty {
+                        Button {
+                            jiraSearchText = ""
+                            showJiraPicker.toggle()
+                        } label: {
+                            Label("关联入口", systemImage: "link")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .popover(isPresented: $showJiraPicker, arrowEdge: .bottom) {
+                            jiraPickerPopover(issue: issue)
+                        }
+                    }
+
+                    if let jiraKey = issue.jiraKey, !jiraKey.isEmpty {
+                        Button {
+                            openJiraInBrowser(jiraKey)
+                        } label: {
+                            Label("打开", systemImage: "arrow.up.forward.square")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("在浏览器中打开历史入口")
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func metaLinkFields(_ issue: TrackedIssue) -> some View {
+        fieldRow("Meta", systemImage: "link") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("工单链接", text: Binding(
+                    get: { issue.ticketURL ?? "" },
+                    set: {
+                        store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0)
+                        saveState.debouncedSave()
+                    }
+                ))
+                .textFieldStyle(.roundedBorder)
+
+                HStack(spacing: 10) {
+                    if let url = issue.ticketURL, !url.isEmpty {
+                        Button {
+                            openURL(url)
+                        } label: {
+                            Label("打开", systemImage: "arrow.up.forward.square")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("在浏览器中打开")
+                    }
+
+                    Toggle(isOn: Binding(
+                        get: { issue.isEscalated },
+                        set: {
+                            store.updateIssueEscalated(id: issue.id, isEscalated: $0)
+                            saveState.debouncedSave()
+                        }
+                    )) {
+                        Text("Escalated")
+                            .font(.caption)
+                    }
+                    .toggleStyle(.checkbox)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func feishuDocFields(_ issue: TrackedIssue) -> some View {
+        fieldRow("飞书文档", systemImage: "doc.text") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("飞书文档链接", text: Binding(
+                    get: { issue.ticketURL ?? "" },
+                    set: {
+                        store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0)
+                        saveState.debouncedSave()
+                    }
+                ))
+                .textFieldStyle(.roundedBorder)
+
+                if let url = issue.ticketURL, !url.isEmpty {
+                    Button {
+                        openURL(url)
+                    } label: {
+                        Label("打开", systemImage: "arrow.up.forward.square")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("在浏览器中打开")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linkedTaskControl(_ issue: TrackedIssue) -> some View {
+        fieldRow("飞书任务", systemImage: "checklist") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("飞书任务 GUID", text: Binding(
+                    get: { issue.feishuTaskGuid ?? "" },
+                    set: {
+                        let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                        store.updateIssueFeishuTaskGuid(id: issue.id, guid: trimmed.isEmpty ? nil : trimmed)
+                        saveState.debouncedSave()
+                    }
+                ))
+                .textFieldStyle(.roundedBorder)
+
+                HStack(spacing: 8) {
+                    Button {
+                        loadFeishuTasks()
+                        showFeishuTaskPicker = true
+                    } label: {
+                        Label(issue.feishuTaskGuid?.isEmpty == false ? "更换任务" : "关联任务", systemImage: "link")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .popover(isPresented: $showFeishuTaskPicker, arrowEdge: .bottom) {
+                        feishuTaskPickerPopover(issue: issue)
+                    }
+
+                    if let guid = issue.feishuTaskGuid, !guid.isEmpty {
+                        Text("状态由飞书同步")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+
+                        Button {
+                            openFeishuTask(guid: guid)
+                        } label: {
+                            Image(systemName: "arrow.up.forward.square")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("在飞书中打开任务")
+
+                        Button("解绑") {
+                            store.updateIssueFeishuTaskGuid(id: issue.id, guid: nil)
+                            saveState.triggerSave()
+                        }
+                        .controlSize(.small)
+                    } else {
+                        Button(creatingFeishuTaskIssueID == issue.id ? "创建中…" : "创建飞书任务") {
+                            createFeishuTask(for: issue)
+                        }
+                        .controlSize(.small)
+                        .disabled(creatingFeishuTaskIssueID != nil)
+                        .help("用 Bot / 应用身份创建飞书任务；如未配置 Bot 清单 GUID，会自动创建 Bot 专用清单")
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func commentsSection(_ issue: TrackedIssue, isReadOnly: Bool) -> some View {
+        workbenchSection("沟通记录", systemImage: "text.bubble") {
+            VStack(alignment: .leading, spacing: 10) {
+                if !isReadOnly {
+                    HStack(spacing: 8) {
+                        TextField("添加备注…", text: $newCommentText)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit {
+                                submitComment(issue)
+                            }
+
+                        Button {
+                            submitComment(issue)
+                        } label: {
+                            Label("提交", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(newCommentText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+
+                if issue.comments.isEmpty {
+                    Text("暂无备注")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach(issue.comments.sorted { $0.createdAt > $1.createdAt }) { comment in
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 5) {
+                                    Text(Self.timeFmt.string(from: comment.createdAt))
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                    commentSourceBadge(comment)
+                                }
+                                Text(comment.text)
+                                    .font(.callout)
+                                    .textSelection(.enabled)
+                            }
+
+                            Spacer(minLength: 8)
+
+                            if comment.jiraCommentId == nil && !isReadOnly {
+                                Button {
+                                    store.deleteIssueComment(issueID: issue.id, commentID: comment.id)
+                                    saveState.triggerSave()
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("删除备注")
+                            }
+                        }
+                        .padding(8)
+                        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func metadataAndDangerSection(_ issue: TrackedIssue, isReadOnly: Bool) -> some View {
+        workbenchSection("系统信息", systemImage: "info.circle") {
+            VStack(alignment: .leading, spacing: 12) {
+                if isEditingTime {
+                    VStack(alignment: .leading, spacing: 10) {
                         DatePicker("创建时间", selection: Binding(
                             get: { issue.createdAt },
                             set: {
@@ -646,25 +885,18 @@ struct IssueTrackerView: View {
                         ))
                         .font(.callout)
 
-                        Button("完成") { isEditingTime = false }
-                            .controlSize(.small)
-                    } else {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("创建时间")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(Self.timeFmt.string(from: issue.createdAt))
-                                .font(.callout)
+                        Button("完成") {
+                            isEditingTime = false
                         }
+                        .controlSize(.small)
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 16) {
+                        metadataItem(title: "创建时间", value: Self.timeFmt.string(from: issue.createdAt))
                         if let updated = issue.updatedAt {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("更新时间")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(Self.timeFmt.string(from: updated))
-                                    .font(.callout)
-                            }
+                            metadataItem(title: "更新时间", value: Self.timeFmt.string(from: updated))
                         }
+                        Spacer(minLength: 0)
                         if !isReadOnly {
                             Button {
                                 isEditingTime = true
@@ -673,95 +905,24 @@ struct IssueTrackerView: View {
                                     .font(.caption)
                             }
                             .buttonStyle(.borderless)
+                            .help("编辑时间")
                         }
                     }
                 }
 
                 Divider()
 
-                // Comments timeline
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("备注时间线")
-                        .font(.headline)
-
-                    if issue.comments.isEmpty {
-                        Text("暂无备注")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        ForEach(issue.comments.sorted { $0.createdAt > $1.createdAt }) { comment in
-                            HStack(alignment: .top, spacing: 8) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack(spacing: 4) {
-                                        Text(Self.timeFmt.string(from: comment.createdAt))
-                                            .font(.caption)
-                                            .foregroundStyle(.tertiary)
-                                        commentSourceBadge(comment)
-                                    }
-                                    Text(comment.text)
-                                        .font(.callout)
-                                }
-                                Spacer()
-                                if comment.jiraCommentId == nil && !isReadOnly {
-                                    Button {
-                                        store.deleteIssueComment(issueID: issue.id, commentID: comment.id)
-                                        saveState.triggerSave()
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                            .padding(8)
-                            .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
-                        }
-                    }
-                }
-
-                // Add comment
-                if !isReadOnly {
-                    HStack(spacing: 8) {
-                        TextField("添加备注…", text: $newCommentText)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit {
-                                let text = newCommentText.trimmingCharacters(in: .whitespaces)
-                                if !text.isEmpty {
-                                    store.addIssueComment(id: issue.id, text: text)
-                                    newCommentText = ""
-                                    saveState.triggerSave()
-                                }
-                            }
-                        Button("提交") {
-                            let text = newCommentText.trimmingCharacters(in: .whitespaces)
-                            if !text.isEmpty {
-                                store.addIssueComment(id: issue.id, text: text)
-                                newCommentText = ""
-                                saveState.triggerSave()
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(newCommentText.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-
-                Divider()
-
-                // Delete button
                 if !isReadOnly {
                     Button {
                         store.deleteIssue(id: issue.id)
                         selectedIssueID = filteredIssues.first?.id
                         saveState.triggerSave()
                     } label: {
-                        HStack {
-                            Image(systemName: "trash")
-                            Text("删除问题")
-                        }
-                        .foregroundStyle(.red)
+                        Label("删除问题", systemImage: "trash")
+                            .foregroundStyle(.red)
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                 } else {
                     HStack(spacing: 6) {
                         Image(systemName: "info.circle")
@@ -771,68 +932,6 @@ struct IssueTrackerView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-            }
-            .padding(20)
-        }
-    }
-
-    @ViewBuilder
-    private func linkedTaskControl(_ issue: TrackedIssue) -> some View {
-        HStack(spacing: 8) {
-            Text("飞书任务")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            TextField("飞书任务 GUID", text: Binding(
-                get: { issue.feishuTaskGuid ?? "" },
-                set: {
-                    let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                    store.updateIssueFeishuTaskGuid(id: issue.id, guid: trimmed.isEmpty ? nil : trimmed)
-                    saveState.debouncedSave()
-                }
-            ))
-            .textFieldStyle(.roundedBorder)
-            .frame(minWidth: 320, maxWidth: 520)
-
-            Button {
-                loadFeishuTasks()
-                showFeishuTaskPicker = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "link")
-                    Text(issue.feishuTaskGuid?.isEmpty == false ? "更换任务" : "关联任务")
-                }
-                .font(.caption)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .popover(isPresented: $showFeishuTaskPicker, arrowEdge: .bottom) {
-                feishuTaskPickerPopover(issue: issue)
-            }
-
-            if let guid = issue.feishuTaskGuid, !guid.isEmpty {
-                Text("状态由飞书同步")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Button {
-                    openFeishuTask(guid: guid)
-                } label: {
-                    Image(systemName: "arrow.up.forward.square")
-                }
-                .buttonStyle(.borderless)
-                .help("在飞书中打开任务")
-                Button("解绑") {
-                    store.updateIssueFeishuTaskGuid(id: issue.id, guid: nil)
-                    saveState.triggerSave()
-                }
-                .controlSize(.small)
-            } else {
-                Button(creatingFeishuTaskIssueID == issue.id ? "创建中…" : "创建飞书任务") {
-                    createFeishuTask(for: issue)
-                }
-                .controlSize(.small)
-                .disabled(creatingFeishuTaskIssueID != nil)
-                .help("用 Bot / 应用身份创建飞书任务；如未配置 Bot 清单 GUID，会自动创建 Bot 专用清单")
             }
         }
     }
@@ -846,10 +945,111 @@ struct IssueTrackerView: View {
     }()
 
     @ViewBuilder
+    private func workbenchSection<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+                .foregroundStyle(.primary)
+
+            content()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func fieldRow<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Label(title, systemImage: systemImage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .labelStyle(.titleAndIcon)
+                .frame(width: 82, alignment: .leading)
+                .padding(.top, 5)
+
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func issueTag(_ title: String, systemImage: String?, color: Color) -> some View {
+        HStack(spacing: 3) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            Text(title)
+                .lineLimit(1)
+        }
+        .font(.caption2)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .foregroundStyle(color)
+        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+    }
+
+    @ViewBuilder
+    private func summaryChip(_ title: String, systemImage: String, color: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .foregroundStyle(color)
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    @ViewBuilder
+    private func fieldButtonLabel(_ title: String, systemImage: String, color: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.callout)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .foregroundStyle(color)
+            .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func mutedValue(_ value: String) -> some View {
+        Text(value)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.vertical, 5)
+    }
+
+    @ViewBuilder
+    private func metadataItem(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout)
+                .foregroundStyle(.primary)
+        }
+    }
+
+    @ViewBuilder
     private func commentSourceBadge(_ comment: IssueComment) -> some View {
         if comment.jiraCommentId != nil {
             // Jira 同步的原生评论
-            Text("Jira")
+            Text("历史同步")
                 .font(.caption2)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
@@ -857,7 +1057,7 @@ struct IssueTrackerView: View {
                 .foregroundStyle(.blue)
         } else if comment.text.hasPrefix("[Jira]") {
             // Jira 状态变更等系统自动生成的评论
-            Text("Jira 同步")
+            Text("历史同步")
                 .font(.caption2)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
@@ -996,10 +1196,7 @@ struct IssueTrackerView: View {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(filtered) { task in
                         Button {
-                            store.updateIssueFeishuTaskGuid(id: issue.id, guid: task.guid)
-                            applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
-                            saveState.triggerSave()
-                            showFeishuTaskPicker = false
+                            bindFeishuTask(task, to: issue)
                         } label: {
                             HStack(alignment: .top, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -1038,9 +1235,10 @@ struct IssueTrackerView: View {
                     }
                 }
             }
-            .frame(maxHeight: 360)
+            .frame(minHeight: 280, maxHeight: 360)
         }
         .frame(width: 760)
+        .frame(minHeight: 380)
         .task {
             if feishuTaskCandidates.isEmpty {
                 loadFeishuTasks(tasklistGUID: selectedFeishuTasklist.isEmpty ? nil : selectedFeishuTasklist)
@@ -1093,11 +1291,32 @@ struct IssueTrackerView: View {
                 let task = try await FeishuTaskService.shared.createTaskForIssue(store: store, issue: issue)
                 store.updateIssueFeishuTaskGuid(id: issue.id, guid: task.guid)
                 applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
+                applyFeishuTaskAssignee(issueID: issue.id, candidate: task)
                 saveState.triggerSave()
             } catch {
                 DevLog.shared.error("IssueTracker", "创建飞书任务失败 #\(issue.issueNumber): \(error.localizedDescription)")
             }
             creatingFeishuTaskIssueID = nil
+        }
+    }
+
+    private func bindFeishuTask(_ task: FeishuTaskCandidate, to issue: TrackedIssue) {
+        store.updateIssueFeishuTaskGuid(id: issue.id, guid: task.guid)
+        applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
+        applyFeishuTaskAssignee(issueID: issue.id, candidate: task)
+        saveState.triggerSave()
+        showFeishuTaskPicker = false
+
+        guard task.assigneeIDs.isEmpty else { return }
+        Task {
+            do {
+                let detail = try await FeishuTaskService.shared.taskDetail(store: store, guid: task.guid)
+                applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: detail)
+                applyFeishuTaskAssignee(issueID: issue.id, candidate: detail)
+                saveState.triggerSave()
+            } catch {
+                DevLog.shared.error("IssueTracker", "读取飞书任务详情失败 #\(issue.issueNumber) [guid=\(task.guid)]: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -1114,6 +1333,16 @@ struct IssueTrackerView: View {
         } else if let issue = store.trackedIssues.first(where: { $0.id == issueID }), issue.status.isResolved {
             store.updateIssueStatus(id: issueID, status: .pending)
         }
+    }
+
+    private func applyFeishuTaskAssignee(issueID: UUID, candidate: FeishuTaskCandidate) {
+        guard let assignee = store.assigneeText(fromFeishuTask: candidate),
+              let issue = store.trackedIssues.first(where: { $0.id == issueID }) else { return }
+        let boundGUID = issue.feishuTaskGuid?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard boundGUID == candidate.guid || issue.source == .feishu else { return }
+        guard issue.assignee != assignee else { return }
+        store.updateIssueAssignee(id: issueID, assignee: assignee)
+        DevLog.shared.info("IssueTracker", "飞书任务负责人已同步 #\(issue.issueNumber) [guid=\(candidate.guid), assigneeIDs=\(candidate.assigneeIDs.joined(separator: ", ")), assignee=\(assignee)]")
     }
 
     private func syncFeishuBoundTasks() {
@@ -1135,6 +1364,7 @@ struct IssueTrackerView: View {
                 for (guid, task) in boundResult.tasks {
                     if let issue = store.trackedIssues.first(where: { $0.feishuTaskGuid == guid }) {
                         applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
+                        applyFeishuTaskAssignee(issueID: issue.id, candidate: task)
                     }
                 }
 
@@ -1158,24 +1388,19 @@ struct IssueTrackerView: View {
         }
     }
 
-    private func startSyncTimer() {
-        stopSyncTimer()
+    private func runFeishuSyncLoop() async {
         let minutes = max(store.feishuBotConfig.taskPollingInterval, 1)
-        DevLog.shared.info("IssueTracker", "飞书任务单向同步定时器已启动，每 \(minutes) 分钟检查一次")
-        syncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(minutes * 60), repeats: true) { _ in
-            Task { @MainActor in
-                guard NSApp.isActive, !NSApp.isHidden else { return }
+        DevLog.shared.info("IssueTracker", "飞书任务单向同步循环已启动，每 \(minutes) 分钟检查一次")
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(minutes * 60) * 1_000_000_000)
+                guard !Task.isCancelled, NSApp.isActive, !NSApp.isHidden else { continue }
                 syncFeishuBoundTasks()
+            } catch {
+                break
             }
         }
-    }
-
-    private func stopSyncTimer() {
-        if syncTimer != nil {
-            DevLog.shared.info("IssueTracker", "飞书任务单向同步定时器已停止")
-        }
-        syncTimer?.invalidate()
-        syncTimer = nil
+        DevLog.shared.info("IssueTracker", "飞书任务单向同步循环已停止")
     }
 
     private func openJiraInBrowser(_ key: String) {
@@ -1195,6 +1420,33 @@ struct IssueTrackerView: View {
             selectedIssueID = newIssue.id
         }
         saveState.triggerSave()
+    }
+
+    private func keepSelectionVisible() {
+        if let id = selectedIssueID, filteredIssues.contains(where: { $0.id == id }) {
+            return
+        }
+        selectedIssueID = filteredIssues.first?.id
+    }
+
+    private func submitComment(_ issue: TrackedIssue) {
+        let text = newCommentText.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+        store.addIssueComment(id: issue.id, text: text)
+        newCommentText = ""
+        saveState.triggerSave()
+    }
+
+    private func syncJiraIssues() {
+        jiraSyncing = true
+        Task {
+            async let myResult = JiraService.shared.fetchMyIssues()
+            async let reportedResult = JiraService.shared.fetchReportedIssues()
+            _ = await (myResult, reportedResult)
+            await JiraService.shared.syncTrackedIssues()
+            jiraSyncing = false
+            saveState.triggerSave()
+        }
     }
 
     private func sendToFeishu() {
@@ -1223,6 +1475,13 @@ struct IssueTrackerView: View {
         case .observing: return .blue
         case .fixed: return .green
         case .ignored: return .secondary
+        }
+    }
+
+    private func displaySourceName(_ source: IssueSource) -> String {
+        switch source {
+        case .jira: return "历史入口"
+        default: return source.rawValue
         }
     }
 

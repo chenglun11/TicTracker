@@ -121,6 +121,7 @@ struct FeishuBotConfig: Codable, Sendable {
     var taskDefaultCollaboratorOpenID: String = ""
     var botTasklistGUID: String = ""
     var botTasklistName: String = "TicTracker Issues"
+    var feishuUserNameMap: [String: String] = [:]
 
     // 卡片模块开关
     var showSupportStats: Bool = true   // 项目支持统计
@@ -157,6 +158,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case taskAuthMode
         case taskDefaultCollaboratorOpenID
         case botTasklistGUID, botTasklistName
+        case feishuUserNameMap
         case showSupportStats, showOverview, showPending, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showComments
         case fieldType, fieldDepartment, fieldJiraKey, fieldStatus, fieldAssignee
     }
@@ -193,6 +195,7 @@ struct FeishuBotConfig: Codable, Sendable {
         taskDefaultCollaboratorOpenID = try c.decodeIfPresent(String.self, forKey: .taskDefaultCollaboratorOpenID) ?? ""
         botTasklistGUID = try c.decodeIfPresent(String.self, forKey: .botTasklistGUID) ?? ""
         botTasklistName = try c.decodeIfPresent(String.self, forKey: .botTasklistName) ?? "TicTracker Issues"
+        feishuUserNameMap = try c.decodeIfPresent([String: String].self, forKey: .feishuUserNameMap) ?? [:]
 
         // 新格式
         sendTimes = try c.decodeIfPresent([ScheduleTime].self, forKey: .sendTimes) ?? []
@@ -273,6 +276,9 @@ struct FeishuBotConfig: Codable, Sendable {
         }
         if botTasklistName != "TicTracker Issues" {
             try c.encode(botTasklistName, forKey: .botTasklistName)
+        }
+        if !feishuUserNameMap.isEmpty {
+            try c.encode(feishuUserNameMap, forKey: .feishuUserNameMap)
         }
 
         try c.encode(showSupportStats, forKey: .showSupportStats)

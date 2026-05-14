@@ -9,19 +9,23 @@ import (
 )
 
 type Scheduler struct {
-	cfg      *Config
-	store    *Store
-	mu       sync.Mutex
-	lastSent map[string]string // "HH:MM" -> "YYYY-MM-DD"
+	cfg        *Config
+	store      *Store
+	mu         sync.Mutex
+	lastSent   map[string]string    // "HH:MM" -> "YYYY-MM-DD"
+	lastFailed map[string]time.Time // "HH:MM" -> last failed attempt time
 }
 
 func NewScheduler(cfg *Config, store *Store) *Scheduler {
 	return &Scheduler{
-		cfg:      cfg,
-		store:    store,
-		lastSent: make(map[string]string),
+		cfg:        cfg,
+		store:      store,
+		lastSent:   make(map[string]string),
+		lastFailed: make(map[string]time.Time),
 	}
 }
+
+const schedulerFailureCooldown = 10 * time.Minute
 
 // Run 启动调度器；ctx 取消时优雅退出
 func (s *Scheduler) Run(ctx context.Context) {
@@ -78,7 +82,7 @@ func (s *Scheduler) check(ctx context.Context) {
 	}
 
 	for _, st := range cfg.SendTimes {
-		if st.Hour != curHour || st.Minute != curMinute {
+		if curHour*60+curMinute < st.Hour*60+st.Minute {
 			continue
 		}
 		if len(st.Weekdays) > 0 {
@@ -99,16 +103,24 @@ func (s *Scheduler) check(ctx context.Context) {
 			s.mu.Unlock()
 			continue
 		}
+		if failedAt, ok := s.lastFailed[key]; ok && now.Sub(failedAt) < schedulerFailureCooldown {
+			s.mu.Unlock()
+			continue
+		}
 		s.mu.Unlock()
 
 		slog.Info("scheduler sending feishu report", "slot", key)
 		if err := sendFeishuReport(ctx, *payload); err != nil {
 			slog.Warn("scheduler send failed", "slot", key, "err", err)
-			continue
+			s.mu.Lock()
+			s.lastFailed[key] = now
+			s.mu.Unlock()
+			return
 		}
 
 		s.mu.Lock()
 		s.lastSent[key] = today
+		delete(s.lastFailed, key)
 		s.mu.Unlock()
 
 		slog.Info("scheduler sent successfully", "slot", key)
@@ -127,5 +139,6 @@ func (s *Scheduler) check(ctx context.Context) {
 		}); err != nil {
 			slog.Warn("scheduler update sync.json failed", "err", err)
 		}
+		return
 	}
 }
