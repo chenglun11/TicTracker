@@ -1403,7 +1403,7 @@ struct IssueTrackerView: View {
                                     .foregroundStyle(.purple)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(linearIssue.title)
-                                        .lineLimit(1)
+                                        .lineLimit(2)
                                     if let state = linearIssue.state {
                                         Text(state.name)
                                             .font(.caption2)
@@ -1437,9 +1437,9 @@ struct IssueTrackerView: View {
                     }
                 }
             }
-            .frame(maxHeight: 280)
+            .frame(maxHeight: 400)
         }
-        .frame(width: 420)
+        .frame(width: 480)
     }
 
     private func loadFeishuTasks(tasklistGUID: String? = nil) {
