@@ -5,6 +5,7 @@ private enum SettingsTab: Hashable {
     case general
     case rss
     case issueTracker
+    case linear
     case jira
     case feishu
     case ai
@@ -52,6 +53,9 @@ struct SettingsView: View {
             SyncTab(store: store, isActive: selectedTab == .sync)
                 .tabItem { Label("同步", systemImage: "arrow.triangle.2.circlepath.icloud") }
                 .tag(SettingsTab.sync)
+            LinearTab(store: store, isActive: selectedTab == .linear)
+                .tabItem { Label("Linear 入口", systemImage: "arrow.triangle.branch") }
+                .tag(SettingsTab.linear)
             JiraTab(store: store, isActive: selectedTab == .jira)
                 .tabItem { Label("Jira 入口", systemImage: "server.rack") }
                 .tag(SettingsTab.jira)

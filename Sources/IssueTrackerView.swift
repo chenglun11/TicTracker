@@ -26,6 +26,18 @@ struct IssueTrackerView: View {
     @State private var feishuTaskError: String?
     @State private var creatingFeishuTaskIssueID: UUID?
     @State private var feishuSyncInProgress = false
+    @State private var linearSyncing = false
+    @State private var showLinearPicker = false
+    @State private var linearSearchText = ""
+    @State private var linearSearchResults: [LinearIssue] = []
+    @State private var linearMyIssues: [LinearIssue] = []
+    @State private var linearPickerLoading = false
+    @State private var linearPickerTab: LinearPickerTab = .myIssues
+
+    private enum LinearPickerTab: String, CaseIterable {
+        case myIssues = "我的 Issues"
+        case search = "搜索"
+    }
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -217,6 +229,20 @@ struct IssueTrackerView: View {
                     .controlSize(.small)
                     .disabled(jiraSyncing)
                     .help("同步 Jira 入口")
+                }
+
+                if store.linearConfig.enabled {
+                    Button {
+                        syncLinearIssues()
+                    } label: {
+                        Image(systemName: "arrow.triangle.branch")
+                            .rotationEffect(linearSyncing ? .degrees(360) : .zero)
+                            .animation(linearSyncing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: linearSyncing)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(linearSyncing)
+                    .help("同步 Linear")
                 }
 
                 Spacer(minLength: 0)
@@ -607,6 +633,8 @@ struct IssueTrackerView: View {
                     metaLinkFields(issue)
                 case .feishu:
                     feishuDocFields(issue)
+                case .linear:
+                    linearLinkFields(issue)
                 case .manual:
                     fieldRow("外部工单", systemImage: "link.slash") {
                         mutedValue("未关联")
@@ -731,6 +759,64 @@ struct IssueTrackerView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("在浏览器中打开")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linearLinkFields(_ issue: TrackedIssue) -> some View {
+        fieldRow("Linear", systemImage: "arrow.triangle.branch") {
+            VStack(alignment: .leading, spacing: 8) {
+                if let key = issue.linearKey, !key.isEmpty {
+                    HStack {
+                        Text(key)
+                            .font(.body.monospaced())
+                        Spacer()
+                        if let url = issue.linearUrl, !url.isEmpty {
+                            Button {
+                                openURL(url)
+                            } label: {
+                                Label("打开", systemImage: "arrow.up.forward.square")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help("在浏览器中打开 Linear")
+                        }
+                    }
+
+                    Button {
+                        store.updateIssueLinearLink(id: issue.id, issueId: nil, key: nil, url: nil)
+                        saveState.triggerSave()
+                    } label: {
+                        Label("解除关联", systemImage: "xmark")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    HStack(spacing: 8) {
+                        Text("未关联 Linear Issue")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+
+                        Button {
+                            linearSearchText = ""
+                            linearSearchResults = []
+                            linearPickerTab = .myIssues
+                            showLinearPicker = true
+                            loadLinearMyIssues()
+                        } label: {
+                            Label("关联 Linear Issue", systemImage: "link")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .popover(isPresented: $showLinearPicker, arrowEdge: .bottom) {
+                            linearPickerPopover(issue: issue)
+                        }
+                    }
                 }
             }
         }
@@ -1047,16 +1133,28 @@ struct IssueTrackerView: View {
 
     @ViewBuilder
     private func commentSourceBadge(_ comment: IssueComment) -> some View {
-        if comment.jiraCommentId != nil {
-            // Jira 同步的原生评论
+        if let jiraCommentId = comment.jiraCommentId, jiraCommentId.hasPrefix("linear:") {
+            Text("Linear")
+                .font(.caption2)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.purple.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+                .foregroundStyle(.purple)
+        } else if comment.jiraCommentId != nil {
             Text("历史同步")
                 .font(.caption2)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
                 .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
                 .foregroundStyle(.blue)
+        } else if comment.text.hasPrefix("[Linear]") {
+            Text("Linear")
+                .font(.caption2)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.purple.opacity(0.10), in: RoundedRectangle(cornerRadius: 3))
+                .foregroundStyle(.purple.opacity(0.7))
         } else if comment.text.hasPrefix("[Jira]") {
-            // Jira 状态变更等系统自动生成的评论
             Text("历史同步")
                 .font(.caption2)
                 .padding(.horizontal, 4)
@@ -1064,7 +1162,6 @@ struct IssueTrackerView: View {
                 .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 3))
                 .foregroundStyle(.blue.opacity(0.7))
         } else {
-            // 用户手动添加的本地评论
             Text("本地")
                 .font(.caption2)
                 .padding(.horizontal, 4)
@@ -1250,6 +1347,99 @@ struct IssueTrackerView: View {
         if !feishuTasklists.isEmpty { return feishuTasklists }
         let guid = store.feishuBotConfig.tasklistGUID.trimmingCharacters(in: .whitespacesAndNewlines)
         return guid.isEmpty ? [] : [FeishuVisibleTasklist(guid: guid, name: "默认清单")]
+    }
+
+    @ViewBuilder
+    private func linearPickerPopover(issue: TrackedIssue) -> some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $linearPickerTab) {
+                ForEach(LinearPickerTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(8)
+
+            if linearPickerTab == .search {
+                HStack(spacing: 6) {
+                    TextField("搜索 Linear Issue…", text: $linearSearchText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            searchLinearIssues()
+                        }
+                    Button {
+                        searchLinearIssues()
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(linearSearchText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+            }
+
+            Divider()
+
+            let items = linearPickerTab == .myIssues ? linearMyIssues : linearSearchResults
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(items) { linearIssue in
+                        Button {
+                            store.updateIssueLinearLink(
+                                id: issue.id,
+                                issueId: linearIssue.id,
+                                key: linearIssue.identifier,
+                                url: linearIssue.url
+                            )
+                            saveState.triggerSave()
+                            showLinearPicker = false
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(linearIssue.identifier)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.purple)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(linearIssue.title)
+                                        .lineLimit(1)
+                                    if let state = linearIssue.state {
+                                        Text(state.name)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if let assignee = linearIssue.assignee {
+                                    Text(assignee.name)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if linearPickerLoading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    } else if items.isEmpty {
+                        Text(linearPickerTab == .search ? "输入关键词搜索" : "无 Issues")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                }
+            }
+            .frame(maxHeight: 280)
+        }
+        .frame(width: 420)
     }
 
     private func loadFeishuTasks(tasklistGUID: String? = nil) {
@@ -1446,6 +1636,36 @@ struct IssueTrackerView: View {
             await JiraService.shared.syncTrackedIssues()
             jiraSyncing = false
             saveState.triggerSave()
+        }
+    }
+
+    private func syncLinearIssues() {
+        linearSyncing = true
+        Task {
+            await LinearService.shared.syncTrackedIssues()
+            linearSyncing = false
+            saveState.triggerSave()
+        }
+    }
+
+    private func loadLinearMyIssues() {
+        linearPickerLoading = true
+        Task {
+            let teamId = store.linearConfig.teamId.isEmpty ? nil : store.linearConfig.teamId
+            let projectId = store.linearConfig.projectId.isEmpty ? nil : store.linearConfig.projectId
+            linearMyIssues = await LinearService.shared.fetchMyIssues(teamId: teamId, projectId: projectId)
+            linearPickerLoading = false
+        }
+    }
+
+    private func searchLinearIssues() {
+        let query = linearSearchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return }
+        linearPickerLoading = true
+        Task {
+            let teamId = store.linearConfig.teamId.isEmpty ? nil : store.linearConfig.teamId
+            linearSearchResults = await LinearService.shared.searchIssues(query: query, teamId: teamId)
+            linearPickerLoading = false
         }
     }
 

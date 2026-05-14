@@ -36,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if store.feishuBotConfig.enabled {
             FeishuBotService.shared.startScheduler()
         }
+        LinearService.shared.setup(store: store)
+        if store.linearConfig.enabled {
+            LinearService.shared.startPolling()
+        }
         if SyncManager.shared.config.enabled {
             Task { await SyncManager.shared.sync(store: store) }
             SyncManager.shared.startPeriodicSync(store: store)

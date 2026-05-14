@@ -64,6 +64,12 @@ final class DataStore {
         didSet { saveFeishuBotConfig() }
     }
 
+    // MARK: - Linear
+
+    var linearConfig: LinearConfig {
+        didSet { saveLinearConfig() }
+    }
+
     // MARK: - RSS
 
     var rssFeeds: [RSSFeed] {
@@ -268,6 +274,14 @@ final class DataStore {
             feishuBotConfig = decoded
         } else {
             feishuBotConfig = FeishuBotConfig()
+        }
+
+        // Linear
+        if let data = UserDefaults.standard.data(forKey: "linearConfig"),
+           let decoded = try? JSONDecoder().decode(LinearConfig.self, from: data) {
+            linearConfig = decoded
+        } else {
+            linearConfig = LinearConfig()
         }
 
         // RSS
@@ -835,6 +849,11 @@ final class DataStore {
            let decoded = try? JSONDecoder().decode(FeishuBotConfig.self, from: feishuData) {
             feishuBotConfig = decoded
         }
+        if let linearObj = obj["linearConfig"],
+           let linearData = try? JSONSerialization.data(withJSONObject: linearObj),
+           let decoded = try? JSONDecoder().decode(LinearConfig.self, from: linearData) {
+            linearConfig = decoded
+        }
         if let aiObj = obj["aiConfig"],
            let aiData = try? JSONSerialization.data(withJSONObject: aiObj),
            let decoded = try? JSONDecoder().decode(AIConfig.self, from: aiData) {
@@ -886,6 +905,12 @@ final class DataStore {
     private func saveFeishuBotConfig() {
         if let data = try? JSONEncoder().encode(feishuBotConfig) {
             UserDefaults.standard.set(data, forKey: "feishuBotConfig")
+        }
+    }
+
+    private func saveLinearConfig() {
+        if let data = try? JSONEncoder().encode(linearConfig) {
+            UserDefaults.standard.set(data, forKey: "linearConfig")
         }
     }
 
@@ -1037,6 +1062,8 @@ final class DataStore {
             issueSourceMetaEnabled
         case .feishu:
             issueSourceFeishuDocEnabled
+        case .linear:
+            linearConfig.enabled
         }
     }
 
@@ -1209,6 +1236,18 @@ final class DataStore {
 
     func updateIssueFeishuTaskGuid(id: UUID, guid: String?) {
         mutateIssue(id: id) { $0.feishuTaskGuid = guid }
+    }
+
+    func updateIssueLinearAssignee(id: UUID, assignee: String?) {
+        mutateIssue(id: id) { $0.linearAssignee = assignee }
+    }
+
+    func updateIssueLinearLink(id: UUID, issueId: String?, key: String?, url: String?) {
+        mutateIssue(id: id) {
+            $0.linearIssueId = issueId
+            $0.linearKey = key
+            $0.linearUrl = url
+        }
     }
 
     func markIssueFeishuTaskDeleted(id: UUID, guid: String) {
