@@ -1403,6 +1403,11 @@ final class DataStore {
 
     func updateIssueDepartment(id: UUID, department: String?) {
         mutateIssue(id: id) { $0.department = department }
+        pushProjectToLinearIfNeeded(issueId: id, department: department)
+    }
+
+    func updateIssueDepartmentLocally(id: UUID, department: String?) {
+        mutateIssue(id: id) { $0.department = department }
     }
 
     func updateIssueType(id: UUID, type: IssueType) {
@@ -1468,5 +1473,27 @@ final class DataStore {
         guard !trimmed.isEmpty else { return false }
         let systemPrefixes = ["[Linear]", "[Jira]", "[飞书]"]
         return !systemPrefixes.contains { trimmed.hasPrefix($0) }
+    }
+
+    private func pushProjectToLinearIfNeeded(issueId: UUID, department: String?) {
+        guard linearConfig.enabled,
+              let issue = trackedIssues.first(where: { $0.id == issueId }),
+              let linearId = issue.linearIssueId, !linearId.isEmpty else { return }
+        let projectId: String?
+        if let department, !department.isEmpty {
+            guard let mapped = linearConfig.projectMapping[department], !mapped.isEmpty else {
+                DevLog.shared.info("Linear", "本地项目未映射 Linear Project，跳过推送: \(department)")
+                return
+            }
+            projectId = mapped
+        } else {
+            projectId = nil
+        }
+        Task {
+            let ok = await LinearService.shared.updateIssueProject(issueId: linearId, projectId: projectId)
+            if !ok {
+                DevLog.shared.error("Linear", "pushProject failed: \(linearId)")
+            }
+        }
     }
 }

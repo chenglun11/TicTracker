@@ -252,6 +252,33 @@ final class LinearService {
         return success
     }
 
+    /// Push project to Linear. Pass nil/empty projectId to clear project.
+    func updateIssueProject(issueId: String, projectId: String?) async -> Bool {
+        guard let token = loadToken() else { return false }
+        let value: String
+        if let projectId, !projectId.isEmpty {
+            value = "\\\"\(escapeGraphQL(projectId))\\\""
+        } else {
+            value = "null"
+        }
+        let q = "mutation { issueUpdate(id: \\\"\(escapeGraphQL(issueId))\\\", input: { projectId: \(value) }) { success } }"
+        let query = #"{"query":""# + q + #""}"#
+        guard let json = await executeQuery(query: query, token: token) else {
+            DevLog.shared.error("Linear", "updateIssueProject: query failed")
+            return false
+        }
+        guard let data = json["data"] as? [String: Any],
+              let issueUpdate = data["issueUpdate"] as? [String: Any],
+              let success = issueUpdate["success"] as? Bool else {
+            if let errors = json["errors"] as? [[String: Any]] {
+                let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
+                DevLog.shared.error("Linear", "updateIssueProject errors: \(msg)")
+            }
+            return false
+        }
+        return success
+    }
+
     @discardableResult
     func updateIssueTitle(issueId: String, title: String) async -> Bool {
         guard let token = loadToken() else { return false }
@@ -292,7 +319,7 @@ final class LinearService {
 
     func fetchIssueDetail(issueId: String) async -> LinearIssue? {
         guard let token = loadToken() else { return nil }
-        let q = "{ issue(id: \\\"\(issueId)\\\") { id identifier title description url state { id name type } assignee { id name } labels { nodes { name } } } }"
+        let q = "{ issue(id: \\\"\(issueId)\\\") { id identifier title description url state { id name type } assignee { id name } project { id name } labels { nodes { name } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else { return nil }
         guard let data = json["data"] as? [String: Any],
@@ -313,7 +340,7 @@ final class LinearService {
             filterParts.append("project: { id: { eq: \\\"\(pid)\\\" } }")
         }
         let filterArg = filterParts.isEmpty ? "(first: 50)" : "(filter: { \(filterParts.joined(separator: ", ")) }, first: 50)"
-        let q = "{ issues\(filterArg) { nodes { id identifier title description url state { id name type } assignee { id name } labels { nodes { name } } } } }"
+        let q = "{ issues\(filterArg) { nodes { id identifier title description url state { id name type } assignee { id name } project { id name } labels { nodes { name } } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else {
             DevLog.shared.error("Linear", "fetchIssues: query failed")
@@ -341,7 +368,7 @@ final class LinearService {
             filterArg = ", filter: { team: { id: { eq: \\\"\(tid)\\\" } } }"
         }
         let escaped = escapeGraphQL(searchText)
-        let q = "{ issueSearch(query: \\\"\(escaped)\\\"\(filterArg), first: 30) { nodes { id identifier title description url state { id name type } assignee { id name } labels { nodes { name } } } } }"
+        let q = "{ issueSearch(query: \\\"\(escaped)\\\"\(filterArg), first: 30) { nodes { id identifier title description url state { id name type } assignee { id name } project { id name } labels { nodes { name } } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else {
             DevLog.shared.error("Linear", "searchIssues: query failed")
@@ -410,6 +437,20 @@ final class LinearService {
                     store.addIssueComment(id: issue.id, text: commentText)
                 }
                 DevLog.shared.info("LinearSync", "\(displayKey): title updated")
+            }
+
+            // Project sync. Only apply when the Linear project has an explicit local mapping.
+            if let remoteProjectId = detail.project?.id,
+               let localDepartment = store.linearConfig.projectMapping.first(where: { $0.value == remoteProjectId })?.key,
+               let current = store.trackedIssues.first(where: { $0.id == issue.id }),
+               current.department != localDepartment {
+                let oldDepartment = current.department ?? "未设置"
+                store.updateIssueDepartmentLocally(id: issue.id, department: localDepartment)
+                let commentText = "[Linear] 项目变更: \(oldDepartment) → \(localDepartment)"
+                if !issueHasComment(issueId: issue.id, text: commentText) {
+                    store.addIssueComment(id: issue.id, text: commentText)
+                }
+                DevLog.shared.info("LinearSync", "\(displayKey): project → \(localDepartment)")
             }
 
             // Assignee sync
@@ -603,12 +644,18 @@ final class LinearService {
            let aname = assigneeObj["name"] as? String {
             assignee = LinearUser(id: aid, name: aname)
         }
+        var project: LinearProject?
+        if let projectObj = node["project"] as? [String: Any],
+           let pid = projectObj["id"] as? String,
+           let pname = projectObj["name"] as? String {
+            project = LinearProject(id: pid, name: pname)
+        }
         var labels: [String] = []
         if let labelsObj = node["labels"] as? [String: Any],
            let labelNodes = labelsObj["nodes"] as? [[String: Any]] {
             labels = labelNodes.compactMap { $0["name"] as? String }
         }
         return LinearIssue(id: id, identifier: identifier, title: title, description: description,
-                           state: state, assignee: assignee, labels: labels, url: url)
+                           state: state, assignee: assignee, project: project, labels: labels, url: url)
     }
 }

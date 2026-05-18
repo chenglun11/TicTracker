@@ -1571,7 +1571,8 @@ struct IssueTrackerView: View {
         creatingLinearIssueID = issue.id
         let config = store.linearConfig
         let teamId = config.teamId
-        let projectId = config.projectId.isEmpty ? nil : config.projectId
+        let mappedProjectId = issue.department.flatMap { config.projectMapping[$0] }
+        let projectId = !(mappedProjectId ?? "").isEmpty ? mappedProjectId : (config.projectId.isEmpty ? nil : config.projectId)
         // Resolve assignee: local name → Linear user ID via mapping
         let assigneeId: String? = {
             guard let name = issue.assignee, !name.isEmpty else { return nil }

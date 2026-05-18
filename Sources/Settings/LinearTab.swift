@@ -88,6 +88,7 @@ struct LinearTab: View {
                     }
                     store.linearConfig.projectId = ""
                     store.linearConfig.projectName = ""
+                    store.linearConfig.projectMapping = [:]
                     store.linearConfig.defaultAssigneeId = ""
                     store.linearConfig.defaultAssigneeName = ""
                     loadProjectsAndStates()
@@ -135,6 +136,49 @@ struct LinearTab: View {
                     Text("请在下方「成员映射」中绑定 Linear 成员与本地成员。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("项目映射") {
+                if projects.isEmpty {
+                    Text("选择 Team 后 Linear Project 会自动加载，届时可配置本地项目映射。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if store.departments.isEmpty {
+                    Text("先在通用设置中添加本地项目。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("创建 Linear Issue 时优先使用本地项目映射；远端 Project 回流时也会按映射更新本地项目。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(store.departments, id: \.self) { department in
+                        HStack {
+                            Text(department)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "arrow.right")
+                                .foregroundStyle(.tertiary)
+                            Picker("", selection: Binding(
+                                get: { store.linearConfig.projectMapping[department] ?? "" },
+                                set: { newValue in
+                                    if newValue.isEmpty {
+                                        store.linearConfig.projectMapping.removeValue(forKey: department)
+                                    } else {
+                                        store.linearConfig.projectMapping[department] = newValue
+                                    }
+                                    saveState.triggerSave()
+                                }
+                            )) {
+                                Text("未映射").tag("")
+                                ForEach(projects) { project in
+                                    Text(project.name).tag(project.id)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: 160)
+                        }
+                    }
                 }
             }
 
