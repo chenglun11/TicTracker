@@ -1738,7 +1738,7 @@ struct IssueTrackerView: View {
     private func submitComment(_ issue: TrackedIssue) {
         let text = newCommentText.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
-        store.addIssueComment(id: issue.id, text: text)
+        store.addIssueComment(id: issue.id, text: text, syncToLinear: true)
         newCommentText = ""
         saveState.triggerSave()
     }

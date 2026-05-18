@@ -252,15 +252,30 @@ final class LinearService {
         return success
     }
 
-    func addComment(issueId: String, body: String) async -> Bool {
+    @discardableResult
+    func updateIssueTitle(issueId: String, title: String) async -> Bool {
         guard let token = loadToken() else { return false }
-        let q = "mutation { commentCreate(input: { issueId: \\\"\(issueId)\\\", body: \\\"\(escapeGraphQL(body))\\\" }) { success } }"
+        let q = "mutation { issueUpdate(id: \\\"\(escapeGraphQL(issueId))\\\", input: { title: \\\"\(escapeGraphQL(title))\\\" }) { success } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else { return false }
         guard let data = json["data"] as? [String: Any],
-              let commentCreate = data["commentCreate"] as? [String: Any],
-              let success = commentCreate["success"] as? Bool else { return false }
+              let issueUpdate = data["issueUpdate"] as? [String: Any],
+              let success = issueUpdate["success"] as? Bool else { return false }
         return success
+    }
+
+    @discardableResult
+    func addComment(issueId: String, body: String) async -> LinearComment? {
+        guard let token = loadToken() else { return nil }
+        let q = "mutation { commentCreate(input: { issueId: \\\"\(escapeGraphQL(issueId))\\\", body: \\\"\(escapeGraphQL(body))\\\" }) { success comment { id body createdAt user { id name } } } }"
+        let query = #"{"query":""# + q + #""}"#
+        guard let json = await executeQuery(query: query, token: token) else { return nil }
+        guard let data = json["data"] as? [String: Any],
+              let commentCreate = data["commentCreate"] as? [String: Any],
+              let success = commentCreate["success"] as? Bool,
+              success,
+              let comment = commentCreate["comment"] as? [String: Any] else { return nil }
+        return parseComment(comment)
     }
 
     func fetchIssueComments(issueId: String) async -> [LinearComment] {
@@ -383,6 +398,18 @@ final class LinearService {
                     }
                     DevLog.shared.info("LinearSync", "\(displayKey): \(oldLabel) → \(newLabel)")
                 }
+            }
+
+            // Title sync. Remote Linear wins when the linked issue title changed elsewhere.
+            if let current = store.trackedIssues.first(where: { $0.id == issue.id }),
+               detail.title != current.title {
+                let oldTitle = current.title
+                store.updateIssueTitleLocally(id: issue.id, title: detail.title)
+                let commentText = "[Linear] 标题变更: \(oldTitle) → \(detail.title)"
+                if !issueHasComment(issueId: issue.id, text: commentText) {
+                    store.addIssueComment(id: issue.id, text: commentText)
+                }
+                DevLog.shared.info("LinearSync", "\(displayKey): title updated")
             }
 
             // Assignee sync

@@ -1185,12 +1185,8 @@ final class DataStore {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !ids.isEmpty else { return nil }
-        let mapping = feishuBotConfig.assigneeMapping
-        let nameMap = feishuBotConfig.feishuUserNameMap
-        return ids.map { id in
-            // Priority: assigneeMapping (open_id → local name) > feishuUserNameMap (open_id → feishu display name) > raw id
-            mapping[id] ?? nameMap[id] ?? id
-        }.joined(separator: ", ")
+        let localNameMap = feishuBotConfig.feishuUserNameMap
+        return ids.map { localNameMap[$0] ?? $0 }.joined(separator: ", ")
     }
 
     func mergeFeishuUserNameMap(_ updates: [String: String]) {
@@ -1205,15 +1201,6 @@ final class DataStore {
         }
         if changed {
             feishuBotConfig.feishuUserNameMap = merged
-        }
-    }
-
-    /// Record a Jira displayName so the settings UI can offer it for mapping.
-    func recordJiraAssignee(_ displayName: String) {
-        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        if !jiraConfig.knownAssignees.contains(trimmed) {
-            jiraConfig.knownAssignees.append(trimmed)
         }
     }
 
@@ -1316,9 +1303,14 @@ final class DataStore {
         }
     }
 
-    func addIssueComment(id: UUID, text: String) {
+    func addIssueComment(id: UUID, text: String, syncToLinear: Bool = false) {
         guard !text.isEmpty else { return }
-        mutateIssue(id: id) { $0.comments.append(IssueComment(text: text)) }
+        let commentID = UUID()
+        let comment = IssueComment(id: commentID, text: text)
+        mutateIssue(id: id) { $0.comments.append(comment) }
+        if syncToLinear {
+            pushCommentToLinearIfNeeded(issueId: id, commentID: commentID, text: text)
+        }
     }
 
     /// Add a pre-built IssueComment (used by Jira comment sync with custom createdAt / jiraCommentId)
@@ -1395,6 +1387,16 @@ final class DataStore {
     func updateIssueTitle(id: UUID, title: String) {
         guard !title.isEmpty else { return }
         let old = trackedIssues.first(where: { $0.id == id })?.title ?? ""
+        guard old != title else { return }
+        mutateIssue(id: id) { $0.title = title }
+        logOperation(module: "问题", action: "改名", detail: "\(old)→\(title)")
+        pushTitleToLinearIfNeeded(issueId: id, title: title)
+    }
+
+    func updateIssueTitleLocally(id: UUID, title: String) {
+        guard !title.isEmpty else { return }
+        let old = trackedIssues.first(where: { $0.id == id })?.title ?? ""
+        guard old != title else { return }
         mutateIssue(id: id) { $0.title = title }
         logOperation(module: "问题", action: "改名", detail: "\(old)→\(title)")
     }
@@ -1424,5 +1426,47 @@ final class DataStore {
 
     func markDevActivity(id: UUID) {
         mutateIssueRaw(id: id) { $0.hasDevActivity = true }
+    }
+
+    private func pushTitleToLinearIfNeeded(issueId: UUID, title: String) {
+        guard linearConfig.enabled,
+              let issue = trackedIssues.first(where: { $0.id == issueId }),
+              let linearId = issue.linearIssueId, !linearId.isEmpty else { return }
+        Task {
+            let ok = await LinearService.shared.updateIssueTitle(issueId: linearId, title: title)
+            if !ok {
+                DevLog.shared.error("Linear", "pushTitle failed: \(linearId)")
+            }
+        }
+    }
+
+    private func pushCommentToLinearIfNeeded(issueId: UUID, commentID: UUID, text: String) {
+        guard shouldPushCommentToLinear(text),
+              linearConfig.enabled,
+              let issue = trackedIssues.first(where: { $0.id == issueId }),
+              let linearId = issue.linearIssueId, !linearId.isEmpty else { return }
+        Task {
+            guard let remote = await LinearService.shared.addComment(issueId: linearId, body: text) else {
+                DevLog.shared.error("Linear", "pushComment failed: \(linearId)")
+                return
+            }
+            await MainActor.run {
+                self.markIssueCommentLinearID(issueID: issueId, commentID: commentID, linearCommentID: remote.id)
+            }
+        }
+    }
+
+    private func markIssueCommentLinearID(issueID: UUID, commentID: UUID, linearCommentID: String) {
+        mutateIssueRaw(id: issueID) { issue in
+            guard let index = issue.comments.firstIndex(where: { $0.id == commentID }) else { return }
+            issue.comments[index].jiraCommentId = "linear:\(linearCommentID)"
+        }
+    }
+
+    private func shouldPushCommentToLinear(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let systemPrefixes = ["[Linear]", "[Jira]", "[飞书]"]
+        return !systemPrefixes.contains { trimmed.hasPrefix($0) }
     }
 }
