@@ -25,6 +25,7 @@ struct IssueTrackerView: View {
     @State private var feishuTaskLoading = false
     @State private var feishuTaskError: String?
     @State private var creatingFeishuTaskIssueID: UUID?
+    @State private var creatingLinearIssueID: UUID?
     @State private var feishuSyncInProgress = false
     @State private var linearSyncing = false
     @State private var showLinearPicker = false
@@ -35,7 +36,7 @@ struct IssueTrackerView: View {
     @State private var linearPickerTab: LinearPickerTab = .myIssues
 
     private enum LinearPickerTab: String, CaseIterable {
-        case myIssues = "我的 Issues"
+        case myIssues = "全部 Issues"
         case search = "搜索"
     }
 
@@ -556,6 +557,55 @@ struct IssueTrackerView: View {
                     }
                 }
 
+                fieldRow("关注人", systemImage: "eye") {
+                    if store.bugTeamMembers.isEmpty {
+                        mutedValue("未配置成员")
+                    } else {
+                        HStack(spacing: 6) {
+                            if issue.followers.isEmpty {
+                                Text("无")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(issue.followers, id: \.self) { name in
+                                    Text(name)
+                                        .font(.caption)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(.blue.opacity(0.1), in: Capsule())
+                                }
+                            }
+                            Spacer()
+                            Menu {
+                                ForEach(store.bugTeamMembers, id: \.self) { member in
+                                    let isFollowing = issue.followers.contains(member)
+                                    Button {
+                                        toggleFollower(issueId: issue.id, member: member)
+                                    } label: {
+                                        if isFollowing {
+                                            Label(member, systemImage: "checkmark")
+                                        } else {
+                                            Text(member)
+                                        }
+                                    }
+                                }
+                                if !issue.followers.isEmpty {
+                                    Divider()
+                                    Button("清空关注人") {
+                                        store.updateIssueFollowers(id: issue.id, followers: [])
+                                        saveState.triggerSave()
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: "plus.circle")
+                                    .foregroundStyle(.blue)
+                            }
+                            .menuStyle(.button)
+                            .fixedSize()
+                            .disabled(isReadOnly)
+                        }
+                    }
+                }
+
                 fieldRow("类型", systemImage: issue.type.icon) {
                     Picker("类型", selection: Binding(
                         get: { issue.type },
@@ -801,18 +851,34 @@ struct IssueTrackerView: View {
                             .foregroundStyle(.secondary)
                             .font(.caption)
 
-                        Button {
-                            linearSearchText = ""
-                            linearSearchResults = []
-                            linearPickerTab = .myIssues
-                            showLinearPicker = true
-                            loadLinearMyIssues()
+                        Menu {
+                            Button {
+                                linearSearchText = ""
+                                linearSearchResults = []
+                                linearPickerTab = .myIssues
+                                showLinearPicker = true
+                                loadLinearMyIssues()
+                            } label: {
+                                Label("关联已有 Issue", systemImage: "link")
+                            }
+                            Button {
+                                createLinearIssue(for: issue)
+                            } label: {
+                                Label("创建新 Issue", systemImage: "plus")
+                            }
+                            .disabled(store.linearConfig.teamId.isEmpty)
                         } label: {
-                            Label("关联 Linear Issue", systemImage: "link")
-                                .font(.caption)
+                            if creatingLinearIssueID == issue.id {
+                                Label("创建中…", systemImage: "arrow.triangle.branch")
+                                    .font(.caption)
+                            } else {
+                                Label("Linear", systemImage: "arrow.triangle.branch")
+                                    .font(.caption)
+                            }
                         }
-                        .buttonStyle(.bordered)
+                        .menuStyle(.button)
                         .controlSize(.small)
+                        .disabled(creatingLinearIssueID != nil)
                         .popover(isPresented: $showLinearPicker, arrowEdge: .bottom) {
                             linearPickerPopover(issue: issue)
                         }
@@ -1437,9 +1503,9 @@ struct IssueTrackerView: View {
                     }
                 }
             }
-            .frame(maxHeight: 400)
+            .frame(minHeight: 300, maxHeight: 500)
         }
-        .frame(width: 480)
+        .frame(width: 520)
     }
 
     private func loadFeishuTasks(tasklistGUID: String? = nil) {
@@ -1490,6 +1556,56 @@ struct IssueTrackerView: View {
         }
     }
 
+    private func toggleFollower(issueId: UUID, member: String) {
+        guard var issue = store.trackedIssues.first(where: { $0.id == issueId }) else { return }
+        if issue.followers.contains(member) {
+            issue.followers.removeAll { $0 == member }
+        } else {
+            issue.followers.append(member)
+        }
+        store.updateIssueFollowers(id: issueId, followers: issue.followers)
+        saveState.triggerSave()
+    }
+
+    private func createLinearIssue(for issue: TrackedIssue) {
+        creatingLinearIssueID = issue.id
+        let config = store.linearConfig
+        let teamId = config.teamId
+        let projectId = config.projectId.isEmpty ? nil : config.projectId
+        // Resolve assignee: local name → Linear user ID via mapping
+        let assigneeId: String? = {
+            guard let name = issue.assignee, !name.isEmpty else { return nil }
+            return config.assigneeMapping[name]
+        }()
+        // Resolve labels: local type → Linear label IDs via reverse labelMapping
+        let labelIds: [String]? = {
+            let typeRaw = issue.type.rawValue
+            let matchedLabelNames = config.labelMapping.filter { $0.value == typeRaw }.map(\.key)
+            guard !matchedLabelNames.isEmpty else { return nil }
+            let ids = config.teamLabels.filter { matchedLabelNames.contains($0.name) }.map(\.id)
+            return ids.isEmpty ? nil : ids
+        }()
+        Task {
+            if let created = await LinearService.shared.createIssue(
+                title: issue.title,
+                description: nil,
+                teamId: teamId,
+                projectId: projectId,
+                assigneeId: assigneeId,
+                labelIds: labelIds
+            ) {
+                store.updateIssueLinearLink(id: issue.id, issueId: created.id, key: created.identifier, url: created.url)
+                store.updateIssueLinearAssignee(id: issue.id, assignee: issue.assignee)
+                store.addIssueComment(id: issue.id, text: "[Linear] 已创建: \(created.identifier)")
+                saveState.triggerSave()
+                DevLog.shared.info("IssueTracker", "创建 Linear Issue 成功 #\(issue.issueNumber) → \(created.identifier)")
+            } else {
+                DevLog.shared.error("IssueTracker", "创建 Linear Issue 失败 #\(issue.issueNumber)")
+            }
+            creatingLinearIssueID = nil
+        }
+    }
+
     private func bindFeishuTask(_ task: FeishuTaskCandidate, to issue: TrackedIssue) {
         store.updateIssueFeishuTaskGuid(id: issue.id, guid: task.guid)
         applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
@@ -1531,7 +1647,7 @@ struct IssueTrackerView: View {
         let boundGUID = issue.feishuTaskGuid?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard boundGUID == candidate.guid || issue.source == .feishu else { return }
         guard issue.assignee != assignee else { return }
-        store.updateIssueAssignee(id: issueID, assignee: assignee)
+        store.updateIssueAssigneeLocally(id: issueID, assignee: assignee)
         DevLog.shared.info("IssueTracker", "飞书任务负责人已同步 #\(issue.issueNumber) [guid=\(candidate.guid), assigneeIDs=\(candidate.assigneeIDs.joined(separator: ", ")), assignee=\(assignee)]")
     }
 
@@ -1653,7 +1769,7 @@ struct IssueTrackerView: View {
         Task {
             let teamId = store.linearConfig.teamId.isEmpty ? nil : store.linearConfig.teamId
             let projectId = store.linearConfig.projectId.isEmpty ? nil : store.linearConfig.projectId
-            linearMyIssues = await LinearService.shared.fetchMyIssues(teamId: teamId, projectId: projectId)
+            linearMyIssues = await LinearService.shared.fetchIssues(teamId: teamId, projectId: projectId)
             linearPickerLoading = false
         }
     }

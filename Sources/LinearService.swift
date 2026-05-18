@@ -6,6 +6,7 @@ final class LinearService {
     static let shared = LinearService()
     private var store: DataStore?
     private var pollingTask: Task<Void, Never>?
+    private var isSyncing = false
 
     private init() {}
 
@@ -23,7 +24,7 @@ final class LinearService {
                 if isInPollingWindow() {
                     await syncTrackedIssues()
                 }
-                let minutes = store.linearConfig.pollingInterval
+                let minutes = max(store.linearConfig.pollingInterval, 1)
                 try? await Task.sleep(for: .seconds(minutes * 60))
             }
         }
@@ -120,7 +121,46 @@ final class LinearService {
         return nodes.compactMap { parseState($0) }
     }
 
-    func createIssue(title: String, description: String?, teamId: String, projectId: String?, assigneeId: String?) async -> LinearIssue? {
+    func fetchTeamMembers(teamId: String) async -> [LinearUser] {
+        guard let token = loadToken() else { return [] }
+        let q = "{ viewer { id name } team(id: \\\"\(escapeGraphQL(teamId))\\\") { members(first: 100) { nodes { id name } } } }"
+        let query = #"{"query":""# + q + #""}"#
+        guard let json = await executeQuery(query: query, token: token) else { return [] }
+        guard let data = json["data"] as? [String: Any],
+              let team = data["team"] as? [String: Any],
+              let members = team["members"] as? [String: Any],
+              let nodes = members["nodes"] as? [[String: Any]] else { return [] }
+        var result = nodes.compactMap { node -> LinearUser? in
+            guard let id = node["id"] as? String, let name = node["name"] as? String else { return nil }
+            return LinearUser(id: id, name: name)
+        }
+        // Ensure the current API user (viewer) is always included
+        if let viewer = data["viewer"] as? [String: Any],
+           let viewerId = viewer["id"] as? String,
+           let viewerName = viewer["name"] as? String,
+           !result.contains(where: { $0.id == viewerId }) {
+            result.insert(LinearUser(id: viewerId, name: viewerName), at: 0)
+        }
+        DevLog.shared.info("Linear", "fetchTeamMembers: team=\(teamId), count=\(result.count), names=\(result.map(\.name).joined(separator: ", "))")
+        return result
+    }
+
+    func fetchTeamLabels(teamId: String) async -> [LinearLabel] {
+        guard let token = loadToken() else { return [] }
+        let q = "{ team(id: \\\"\(escapeGraphQL(teamId))\\\") { labels { nodes { id name } } } }"
+        let query = #"{"query":""# + q + #""}"#
+        guard let json = await executeQuery(query: query, token: token) else { return [] }
+        guard let data = json["data"] as? [String: Any],
+              let team = data["team"] as? [String: Any],
+              let labels = team["labels"] as? [String: Any],
+              let nodes = labels["nodes"] as? [[String: Any]] else { return [] }
+        return nodes.compactMap { node in
+            guard let id = node["id"] as? String, let name = node["name"] as? String else { return nil }
+            return LinearLabel(id: id, name: name)
+        }
+    }
+
+    func createIssue(title: String, description: String?, teamId: String, projectId: String?, assigneeId: String?, labelIds: [String]? = nil) async -> LinearIssue? {
         guard let token = loadToken() else { return nil }
         var inputFields = "title: \\\"\(escapeGraphQL(title))\\\", teamId: \\\"\(teamId)\\\""
         if let desc = description, !desc.isEmpty {
@@ -135,6 +175,10 @@ final class LinearService {
         }()
         if let aid = effectiveAssigneeId, !aid.isEmpty {
             inputFields += ", assigneeId: \\\"\(aid)\\\""
+        }
+        if let ids = labelIds, !ids.isEmpty {
+            let quoted = ids.map { "\\\"\($0)\\\"" }.joined(separator: ", ")
+            inputFields += ", labelIds: [\(quoted)]"
         }
         let q = "mutation { issueCreate(input: { \(inputFields) }) { success issue { id identifier title url } } }"
         let query = #"{"query":""# + q + #""}"#
@@ -158,6 +202,53 @@ final class LinearService {
         guard let data = json["data"] as? [String: Any],
               let issueUpdate = data["issueUpdate"] as? [String: Any],
               let success = issueUpdate["success"] as? Bool else { return false }
+        return success
+    }
+
+    /// Resolve a state name to its ID using cached team states, then push.
+    @discardableResult
+    func updateIssueStateByName(issueId: String, stateName: String) async -> Bool {
+        guard let store else { return false }
+        let teamId = store.linearConfig.teamId
+        guard !teamId.isEmpty else { return false }
+        let states = await fetchTeamStates(teamId: teamId)
+        guard let target = states.first(where: { $0.name.localizedCaseInsensitiveCompare(stateName) == .orderedSame }) else {
+            DevLog.shared.info("Linear", "pushStatus: state '\(stateName)' not found in team states")
+            return false
+        }
+        let ok = await updateIssueState(issueId: issueId, stateId: target.id)
+        if ok {
+            DevLog.shared.info("Linear", "pushStatus: \(issueId) → \(stateName) (\(target.id))")
+        } else {
+            DevLog.shared.error("Linear", "pushStatus failed: \(issueId) → \(stateName)")
+        }
+        return ok
+    }
+
+    /// Push assignee to Linear. Pass nil/empty assigneeId to unassign.
+    func updateIssueAssignee(issueId: String, assigneeId: String?) async -> Bool {
+        guard let token = loadToken() else { return false }
+        let value: String
+        if let aid = assigneeId, !aid.isEmpty {
+            value = "\\\"\(escapeGraphQL(aid))\\\""
+        } else {
+            value = "null"
+        }
+        let q = "mutation { issueUpdate(id: \\\"\(escapeGraphQL(issueId))\\\", input: { assigneeId: \(value) }) { success } }"
+        let query = #"{"query":""# + q + #""}"#
+        guard let json = await executeQuery(query: query, token: token) else {
+            DevLog.shared.error("Linear", "updateIssueAssignee: query failed")
+            return false
+        }
+        guard let data = json["data"] as? [String: Any],
+              let issueUpdate = data["issueUpdate"] as? [String: Any],
+              let success = issueUpdate["success"] as? Bool else {
+            if let errors = json["errors"] as? [[String: Any]] {
+                let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
+                DevLog.shared.error("Linear", "updateIssueAssignee errors: \(msg)")
+            }
+            return false
+        }
         return success
     }
 
@@ -186,7 +277,7 @@ final class LinearService {
 
     func fetchIssueDetail(issueId: String) async -> LinearIssue? {
         guard let token = loadToken() else { return nil }
-        let q = "{ issue(id: \\\"\(issueId)\\\") { id identifier title description url state { id name type } assignee { id name } } }"
+        let q = "{ issue(id: \\\"\(issueId)\\\") { id identifier title description url state { id name type } assignee { id name } labels { nodes { name } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else { return nil }
         guard let data = json["data"] as? [String: Any],
@@ -194,36 +285,65 @@ final class LinearService {
         return parseIssueDetail(issue)
     }
 
-    func fetchMyIssues(teamId: String? = nil, projectId: String? = nil) async -> [LinearIssue] {
-        guard let token = loadToken() else { return [] }
-        var filter = "assignee: { isMe: { eq: true } }"
+    func fetchIssues(teamId: String? = nil, projectId: String? = nil) async -> [LinearIssue] {
+        guard let token = loadToken() else {
+            DevLog.shared.error("Linear", "fetchIssues: no token")
+            return []
+        }
+        var filterParts: [String] = []
         if let tid = teamId, !tid.isEmpty {
-            filter += ", team: { id: { eq: \\\"\(tid)\\\" } }"
+            filterParts.append("team: { id: { eq: \\\"\(tid)\\\" } }")
         }
         if let pid = projectId, !pid.isEmpty {
-            filter += ", project: { id: { eq: \\\"\(pid)\\\" } }"
+            filterParts.append("project: { id: { eq: \\\"\(pid)\\\" } }")
         }
-        let q = "{ issues(filter: { \(filter) }, first: 50, orderBy: updatedAt) { nodes { id identifier title description url state { id name type } assignee { id name } } } }"
+        let filterArg = filterParts.isEmpty ? "(first: 50)" : "(filter: { \(filterParts.joined(separator: ", ")) }, first: 50)"
+        let q = "{ issues\(filterArg) { nodes { id identifier title description url state { id name type } assignee { id name } labels { nodes { name } } } } }"
         let query = #"{"query":""# + q + #""}"#
-        guard let json = await executeQuery(query: query, token: token) else { return [] }
+        guard let json = await executeQuery(query: query, token: token) else {
+            DevLog.shared.error("Linear", "fetchIssues: query failed")
+            return []
+        }
         guard let data = json["data"] as? [String: Any],
               let issues = data["issues"] as? [String: Any],
-              let nodes = issues["nodes"] as? [[String: Any]] else { return [] }
+              let nodes = issues["nodes"] as? [[String: Any]] else {
+            if let errors = json["errors"] as? [[String: Any]] {
+                let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
+                DevLog.shared.error("Linear", "fetchIssues errors: \(msg)")
+            }
+            return []
+        }
         return nodes.compactMap { parseIssueDetail($0) }
     }
 
     func searchIssues(query searchText: String, teamId: String? = nil) async -> [LinearIssue] {
-        guard let token = loadToken() else { return [] }
+        guard let token = loadToken() else {
+            DevLog.shared.error("Linear", "searchIssues: no token")
+            return []
+        }
         var filterArg = ""
         if let tid = teamId, !tid.isEmpty {
             filterArg = ", filter: { team: { id: { eq: \\\"\(tid)\\\" } } }"
         }
-        let q = "{ issueSearch(query: \\\"\(escapeGraphQL(searchText))\\\"\(filterArg), first: 30) { nodes { id identifier title description url state { id name type } assignee { id name } } } }"
+        let escaped = escapeGraphQL(searchText)
+        let q = "{ issueSearch(query: \\\"\(escaped)\\\"\(filterArg), first: 30) { nodes { id identifier title description url state { id name type } assignee { id name } labels { nodes { name } } } } }"
         let query = #"{"query":""# + q + #""}"#
-        guard let json = await executeQuery(query: query, token: token) else { return [] }
-        guard let data = json["data"] as? [String: Any],
-              let issueSearch = data["issueSearch"] as? [String: Any],
-              let nodes = issueSearch["nodes"] as? [[String: Any]] else { return [] }
+        guard let json = await executeQuery(query: query, token: token) else {
+            DevLog.shared.error("Linear", "searchIssues: query failed")
+            return []
+        }
+        guard let data = json["data"] as? [String: Any] else {
+            if let errors = json["errors"] as? [[String: Any]] {
+                let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
+                DevLog.shared.error("Linear", "searchIssues errors: \(msg)")
+            }
+            return []
+        }
+        guard let issueSearch = data["issueSearch"] as? [String: Any],
+              let nodes = issueSearch["nodes"] as? [[String: Any]] else {
+            DevLog.shared.error("Linear", "searchIssues: unexpected response structure: \(data.keys)")
+            return []
+        }
         return nodes.compactMap { parseIssueDetail($0) }
     }
 
@@ -231,48 +351,84 @@ final class LinearService {
 
     func syncTrackedIssues() async {
         guard let store else { return }
-        for issue in store.trackedIssues {
+        guard !isSyncing else {
+            DevLog.shared.info("LinearSync", "sync already running, skipped")
+            return
+        }
+        isSyncing = true
+        defer { isSyncing = false }
+
+        let reverseMapping = Dictionary(store.linearConfig.assigneeMapping.map { ($0.value, $0.key) }, uniquingKeysWith: { first, _ in first })
+        let issues = store.trackedIssues
+        for issue in issues {
             guard let linearId = issue.linearIssueId, !linearId.isEmpty else { continue }
+            let displayKey = issue.linearKey ?? linearId
             guard let detail = await fetchIssueDetail(issueId: linearId) else {
-                DevLog.shared.info("LinearSync", "\(issue.linearKey ?? linearId) fetch failed, skipped")
+                DevLog.shared.info("LinearSync", "\(displayKey) fetch failed, skipped")
                 continue
             }
 
             // Status sync
             if let state = detail.state {
                 let newStatus = mapLinearState(state.name)
-                if let newStatus, newStatus != issue.status {
-                    let oldLabel = issue.status.rawValue
+                if let newStatus,
+                   let current = store.trackedIssues.first(where: { $0.id == issue.id }),
+                   newStatus != current.status {
+                    let oldLabel = current.status.rawValue
                     let newLabel = newStatus.rawValue
                     let commentText = "[Linear] 状态变更: \(oldLabel) → \(newLabel)（\(state.name)）"
-                    let alreadyLogged = issue.comments.contains { $0.text == commentText }
-                    if !alreadyLogged {
-                        store.updateIssueStatus(id: issue.id, status: newStatus)
+                    store.updateIssueStatusLocally(id: issue.id, status: newStatus)
+                    if !issueHasComment(issueId: issue.id, text: commentText) {
                         store.addIssueComment(id: issue.id, text: commentText)
-                        DevLog.shared.info("LinearSync", "\(issue.linearKey ?? linearId): \(oldLabel) → \(newLabel)")
                     }
+                    DevLog.shared.info("LinearSync", "\(displayKey): \(oldLabel) → \(newLabel)")
                 }
             }
 
             // Assignee sync
             let remoteAssignee = detail.assignee?.name
-            let localAssignee = issue.linearAssignee
-            if remoteAssignee != localAssignee {
-                let oldName = localAssignee ?? "无"
+            if let current = store.trackedIssues.first(where: { $0.id == issue.id }),
+               remoteAssignee != current.linearAssignee {
+                let oldName = current.linearAssignee ?? "无"
                 let newName = remoteAssignee ?? "无"
                 let commentText = "[Linear] 负责人变更: \(oldName) → \(newName)"
-                let alreadyLogged = issue.comments.contains { $0.text == commentText }
-                if !alreadyLogged {
-                    store.updateIssueLinearAssignee(id: issue.id, assignee: remoteAssignee)
+                store.updateIssueLinearAssignee(id: issue.id, assignee: remoteAssignee)
+                if !issueHasComment(issueId: issue.id, text: commentText) {
                     store.addIssueComment(id: issue.id, text: commentText)
-                    DevLog.shared.info("LinearSync", "\(issue.linearKey ?? linearId): assignee \(oldName) → \(newName)")
+                }
+                DevLog.shared.info("LinearSync", "\(displayKey): assignee \(oldName) → \(newName)")
+
+                if let remoteId = detail.assignee?.id,
+                   let localName = reverseMapping[remoteId] {
+                    if current.assignee != localName {
+                        store.updateIssueAssigneeLocally(id: issue.id, assignee: localName)
+                    }
+                } else if let remoteAssignee, current.assignee != remoteAssignee {
+                    store.updateIssueAssigneeLocally(id: issue.id, assignee: remoteAssignee)
+                } else if remoteAssignee == nil, current.assignee != nil {
+                    store.updateIssueAssigneeLocally(id: issue.id, assignee: nil)
+                }
+            }
+
+            // Label → Type sync
+            if !detail.labels.isEmpty,
+               !store.linearConfig.labelMapping.isEmpty,
+               let current = store.trackedIssues.first(where: { $0.id == issue.id }) {
+                for label in detail.labels {
+                    if let typeRaw = store.linearConfig.labelMapping[label],
+                       let mappedType = IssueType(rawValue: typeRaw),
+                       mappedType != current.type {
+                        store.updateIssueType(id: issue.id, type: mappedType)
+                        DevLog.shared.info("LinearSync", "\(displayKey): type → \(mappedType.rawValue) (label: \(label))")
+                        break
+                    }
                 }
             }
 
             // Comment sync
             let remoteComments = await fetchIssueComments(issueId: linearId)
             let freshIssue = store.trackedIssues.first { $0.id == issue.id }
-            let existingLinearIds = Set((freshIssue ?? issue).comments.compactMap { c -> String? in
+            var existingLinearIds = Set((freshIssue ?? issue).comments.compactMap { c -> String? in
                 guard c.jiraCommentId?.hasPrefix("linear:") == true else { return nil }
                 return c.jiraCommentId
             })
@@ -286,7 +442,8 @@ final class LinearService {
                     jiraCommentId: linearCommentId
                 )
                 store.addIssueCommentDirect(id: issue.id, comment: comment)
-                DevLog.shared.info("LinearSync", "\(issue.linearKey ?? linearId): synced comment \(rc.id)")
+                existingLinearIds.insert(linearCommentId)
+                DevLog.shared.info("LinearSync", "\(displayKey): synced comment \(rc.id)")
             }
         }
     }
@@ -360,9 +517,18 @@ final class LinearService {
 
     private func parseISO8601(_ str: String?) -> Date? {
         guard let str, !str.isEmpty else { return nil }
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fmt.date(from: str)
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: str) {
+            return date
+        }
+        let basic = ISO8601DateFormatter()
+        basic.formatOptions = [.withInternetDateTime]
+        return basic.date(from: str)
+    }
+
+    private func issueHasComment(issueId: UUID, text: String) -> Bool {
+        store?.trackedIssues.first(where: { $0.id == issueId })?.comments.contains { $0.text == text } ?? false
     }
 
     // MARK: - JSON Parsing
@@ -410,7 +576,12 @@ final class LinearService {
            let aname = assigneeObj["name"] as? String {
             assignee = LinearUser(id: aid, name: aname)
         }
+        var labels: [String] = []
+        if let labelsObj = node["labels"] as? [String: Any],
+           let labelNodes = labelsObj["nodes"] as? [[String: Any]] {
+            labels = labelNodes.compactMap { $0["name"] as? String }
+        }
         return LinearIssue(id: id, identifier: identifier, title: title, description: description,
-                           state: state, assignee: assignee, url: url)
+                           state: state, assignee: assignee, labels: labels, url: url)
     }
 }

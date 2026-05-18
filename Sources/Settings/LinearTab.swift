@@ -13,9 +13,14 @@ struct LinearTab: View {
     @State private var states: [LinearState] = []
     @State private var isLoadingTeams = false
     @State private var isLoadingProjects = false
+    @State private var members: [LinearUser] = []
     @FocusState private var isTokenFocused: Bool
     @State private var saveState = AutoSaveState()
     @State private var didLoadToken = false
+
+    private var linkedMembers: [TeamMember] {
+        store.teamMembers.filter { store.linearConfig.assigneeMapping[$0.name] != nil }
+    }
     @State private var newLinearStateName = ""
     @State private var newLocalStatus: IssueStatus = .pending
 
@@ -81,6 +86,10 @@ struct LinearTab: View {
                     } else {
                         store.linearConfig.teamName = ""
                     }
+                    store.linearConfig.projectId = ""
+                    store.linearConfig.projectName = ""
+                    store.linearConfig.defaultAssigneeId = ""
+                    store.linearConfig.defaultAssigneeName = ""
                     loadProjectsAndStates()
                     saveState.triggerSave()
                 }
@@ -107,9 +116,101 @@ struct LinearTab: View {
                     saveState.triggerSave()
                 }
 
-                TextField("默认负责人", text: Bindable(store).linearConfig.defaultAssigneeName)
-                    .textFieldStyle(UnderlineTextFieldStyle())
-                    .onChange(of: store.linearConfig.defaultAssigneeName) { _, _ in saveState.debouncedSave() }
+                Picker("默认负责人", selection: Bindable(store).linearConfig.defaultAssigneeId) {
+                    Text("未指定").tag("")
+                    ForEach(linkedMembers) { member in
+                        Text(member.name).tag(store.linearConfig.assigneeMapping[member.name] ?? "")
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: store.linearConfig.defaultAssigneeId) { _, newId in
+                    if let member = linkedMembers.first(where: { store.linearConfig.assigneeMapping[$0.name] == newId }) {
+                        store.linearConfig.defaultAssigneeName = member.name
+                    } else {
+                        store.linearConfig.defaultAssigneeName = ""
+                    }
+                    saveState.triggerSave()
+                }
+                if linkedMembers.isEmpty {
+                    Text("请在下方「成员映射」中绑定 Linear 成员与本地成员。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("成员映射") {
+                if members.isEmpty {
+                    Text("选择 Team 后 Linear 成员会自动加载，届时可配置映射。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(members) { linearUser in
+                        HStack {
+                            Text(linearUser.name)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "arrow.right")
+                                .foregroundStyle(.tertiary)
+                            Picker("", selection: Binding(
+                                get: { localNameForLinearUser(linearUser.id) },
+                                set: { newLocalName in
+                                    setMapping(linearUserId: linearUser.id, localName: newLocalName)
+                                }
+                            )) {
+                                Text("未映射").tag("")
+                                ForEach(store.teamMembers) { tm in
+                                    Text(tm.name).tag(tm.name)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: 140)
+                        }
+                    }
+                    if store.teamMembers.isEmpty {
+                        Text("先在「问题追踪 > 团队成员」中添加本地成员。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("标签映射") {
+                if store.linearConfig.teamLabels.isEmpty {
+                    Text("选择 Team 后 Linear 标签会自动加载，届时可配置映射。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("将 Linear 标签映射到本地类型，同步时自动设置 issue 类型。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(store.linearConfig.teamLabels) { label in
+                        HStack {
+                            Text(label.name)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "arrow.right")
+                                .foregroundStyle(.tertiary)
+                            Picker("", selection: Binding(
+                                get: { store.linearConfig.labelMapping[label.name] ?? "" },
+                                set: { newValue in
+                                    if newValue.isEmpty {
+                                        store.linearConfig.labelMapping.removeValue(forKey: label.name)
+                                    } else {
+                                        store.linearConfig.labelMapping[label.name] = newValue
+                                    }
+                                    saveState.triggerSave()
+                                }
+                            )) {
+                                Text("未映射").tag("")
+                                ForEach(IssueType.allCases, id: \.self) { type in
+                                    Text(type.rawValue).tag(type.rawValue)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: 120)
+                        }
+                    }
+                }
             }
 
             Section("轮询") {
@@ -126,7 +227,12 @@ struct LinearTab: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(width: 100)
-                    .onChange(of: store.linearConfig.pollingInterval) { _, _ in saveState.triggerSave() }
+                    .onChange(of: store.linearConfig.pollingInterval) { _, _ in
+                        saveState.triggerSave()
+                        if store.linearConfig.enabled {
+                            LinearService.shared.restartPolling()
+                        }
+                    }
                 }
                 HStack {
                     Text("轮询时段")
@@ -150,8 +256,18 @@ struct LinearTab: View {
                     .pickerStyle(.menu)
                     .frame(width: 80)
                 }
-                .onChange(of: store.linearConfig.pollingStartHour) { _, _ in saveState.triggerSave() }
-                .onChange(of: store.linearConfig.pollingEndHour) { _, _ in saveState.triggerSave() }
+                .onChange(of: store.linearConfig.pollingStartHour) { _, _ in
+                    saveState.triggerSave()
+                    if store.linearConfig.enabled {
+                        LinearService.shared.restartPolling()
+                    }
+                }
+                .onChange(of: store.linearConfig.pollingEndHour) { _, _ in
+                    saveState.triggerSave()
+                    if store.linearConfig.enabled {
+                        LinearService.shared.restartPolling()
+                    }
+                }
             }
 
             Section("状态映射") {
@@ -193,21 +309,22 @@ struct LinearTab: View {
                                 .frame(minWidth: 80, alignment: .leading)
                             Text("→")
                                 .foregroundStyle(.secondary)
-                            Picker("", selection: Binding(
+                            Picker("", selection: Binding<String>(
                                 get: {
-                                    if let caseName = store.linearConfig.statusMapping[state.name],
-                                       let status = IssueStatus.fromCaseName(caseName) {
-                                        return status
-                                    }
-                                    return IssueStatus.pending
+                                    store.linearConfig.statusMapping[state.name] ?? ""
                                 },
-                                set: { newStatus in
-                                    store.linearConfig.statusMapping[state.name] = newStatus.caseName
+                                set: { newValue in
+                                    if newValue.isEmpty {
+                                        store.linearConfig.statusMapping.removeValue(forKey: state.name)
+                                    } else {
+                                        store.linearConfig.statusMapping[state.name] = newValue
+                                    }
                                     saveState.triggerSave()
                                 }
                             )) {
+                                Text("未映射").tag("")
                                 ForEach(IssueStatus.allCases, id: \.self) { s in
-                                    Text(s.rawValue).tag(s)
+                                    Text(s.rawValue).tag(s.caseName)
                                 }
                             }
                             .labelsHidden()
@@ -302,18 +419,59 @@ struct LinearTab: View {
     }
 
     private func loadProjectsAndStates() {
-        guard !store.linearConfig.teamId.isEmpty else {
+        let teamId = store.linearConfig.teamId
+        guard !teamId.isEmpty else {
             projects = []
             states = []
+            members = []
+            store.linearConfig.teamMembers = []
+            store.linearConfig.teamLabels = []
+            isLoadingProjects = false
             return
         }
         isLoadingProjects = true
         Task {
-            async let fetchedProjects = LinearService.shared.fetchProjects(teamId: store.linearConfig.teamId)
-            async let fetchedStates = LinearService.shared.fetchTeamStates(teamId: store.linearConfig.teamId)
-            projects = await fetchedProjects
-            states = await fetchedStates
+            async let fetchedProjects = LinearService.shared.fetchProjects(teamId: teamId)
+            async let fetchedStates = LinearService.shared.fetchTeamStates(teamId: teamId)
+            async let fetchedMembers = LinearService.shared.fetchTeamMembers(teamId: teamId)
+            async let fetchedLabels = LinearService.shared.fetchTeamLabels(teamId: teamId)
+            let loadedProjects = await fetchedProjects
+            let loadedStates = await fetchedStates
+            let loadedMembers = await fetchedMembers
+            let loadedLabels = await fetchedLabels
+            guard store.linearConfig.teamId == teamId else {
+                if store.linearConfig.teamId.isEmpty {
+                    isLoadingProjects = false
+                }
+                return
+            }
+            projects = loadedProjects
+            states = loadedStates
+            members = loadedMembers
+            store.linearConfig.teamMembers = loadedMembers
+            store.linearConfig.teamLabels = loadedLabels
+            saveState.triggerSave()
             isLoadingProjects = false
         }
+    }
+
+    // MARK: - Assignee Mapping Helpers
+
+    /// Reverse lookup: given a Linear user ID, find which local member name is mapped to it.
+    private func localNameForLinearUser(_ linearUserId: String) -> String {
+        store.linearConfig.assigneeMapping.first(where: { $0.value == linearUserId })?.key ?? ""
+    }
+
+    /// Set or clear the mapping for a Linear user.
+    private func setMapping(linearUserId: String, localName: String) {
+        // Remove any existing mapping pointing to this Linear user
+        for (key, value) in store.linearConfig.assigneeMapping where value == linearUserId {
+            store.linearConfig.assigneeMapping.removeValue(forKey: key)
+        }
+        // Set new mapping if a local name was selected
+        if !localName.isEmpty {
+            store.linearConfig.assigneeMapping[localName] = linearUserId
+        }
+        saveState.triggerSave()
     }
 }

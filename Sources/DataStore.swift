@@ -99,8 +99,21 @@ final class DataStore {
     var nextIssueNumber: Int {
         didSet { UserDefaults.standard.set(nextIssueNumber, forKey: "nextIssueNumber") }
     }
+    var teamMembers: [TeamMember] {
+        didSet { saveTeamMembers() }
+    }
+
+    /// Backwards-compatible name list (read-only view, derived from teamMembers).
     var bugTeamMembers: [String] {
-        didSet { saveBugTeamMembers() }
+        get { teamMembers.map(\.name) }
+        set {
+            // Preserve existing bindings (linearUserId) when names overlap.
+            // Use uniquingKeysWith to tolerate duplicate names rather than crash.
+            let lookup = Dictionary(teamMembers.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+            teamMembers = newValue.map { name in
+                lookup[name] ?? TeamMember(name: name)
+            }
+        }
     }
 
     // MARK: - Operation Log
@@ -334,10 +347,18 @@ final class DataStore {
         // Issue number counter
         nextIssueNumber = UserDefaults.standard.object(forKey: "nextIssueNumber") as? Int ?? 1
 
-        if let data = UserDefaults.standard.array(forKey: "bugTeamMembers") as? [String] {
-            bugTeamMembers = data
+        if let data = UserDefaults.standard.data(forKey: "teamMembers"),
+           let decoded = try? JSONDecoder().decode([TeamMember].self, from: data) {
+            teamMembers = decoded
+        } else if let legacy = UserDefaults.standard.array(forKey: "bugTeamMembers") as? [String] {
+            // Migrate from legacy [String] storage
+            let migrated = legacy.map { TeamMember(name: $0) }
+            teamMembers = migrated
+            if let data = try? JSONEncoder().encode(migrated) {
+                UserDefaults.standard.set(data, forKey: "teamMembers")
+            }
         } else {
-            bugTeamMembers = []
+            teamMembers = []
         }
 
         // Tap timestamps
@@ -692,6 +713,11 @@ final class DataStore {
         if !bugTeamMembers.isEmpty {
             payload["bugTeamMembers"] = bugTeamMembers
         }
+        if !teamMembers.isEmpty,
+           let memberData = try? JSONEncoder().encode(teamMembers),
+           let memberArray = try? JSONSerialization.jsonObject(with: memberData) {
+            payload["teamMembers"] = memberArray
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
         return String(data: data, encoding: .utf8)
     }
@@ -713,6 +739,11 @@ final class DataStore {
         }
         if !bugTeamMembers.isEmpty {
             payload["bugTeamMembers"] = bugTeamMembers
+        }
+        if !teamMembers.isEmpty,
+           let memberData = try? JSONEncoder().encode(teamMembers),
+           let memberArray = try? JSONSerialization.jsonObject(with: memberData) {
+            payload["teamMembers"] = memberArray
         }
         // 配置数据
         if let jiraData = try? JSONEncoder().encode(jiraConfig),
@@ -808,7 +839,11 @@ final class DataStore {
             }
             if !migrated.isEmpty { trackedIssues = migrated }
         }
-        if let members = obj["bugTeamMembers"] as? [String] {
+        if let memberArray = obj["teamMembers"],
+           let memberData = try? JSONSerialization.data(withJSONObject: memberArray),
+           let decoded = try? JSONDecoder().decode([TeamMember].self, from: memberData) {
+            teamMembers = decoded
+        } else if let members = obj["bugTeamMembers"] as? [String] {
             bugTeamMembers = members
         }
         return true
@@ -835,7 +870,11 @@ final class DataStore {
            let decoded = try? JSONDecoder().decode([TrackedIssue].self, from: issueData) {
             trackedIssues = decoded
         }
-        if let members = obj["bugTeamMembers"] as? [String] {
+        if let memberArray = obj["teamMembers"],
+           let memberData = try? JSONSerialization.data(withJSONObject: memberArray),
+           let decoded = try? JSONDecoder().decode([TeamMember].self, from: memberData) {
+            teamMembers = decoded
+        } else if let members = obj["bugTeamMembers"] as? [String] {
             bugTeamMembers = members
         }
         // 配置数据
@@ -974,8 +1013,12 @@ final class DataStore {
         }
     }
 
-    private func saveBugTeamMembers() {
-        UserDefaults.standard.set(bugTeamMembers, forKey: "bugTeamMembers")
+    private func saveTeamMembers() {
+        if let data = try? JSONEncoder().encode(teamMembers) {
+            UserDefaults.standard.set(data, forKey: "teamMembers")
+        }
+        // Keep legacy key in sync so older builds still see names.
+        UserDefaults.standard.set(teamMembers.map(\.name), forKey: "bugTeamMembers")
     }
 
     private func saveOperationLog() {
@@ -1142,8 +1185,12 @@ final class DataStore {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !ids.isEmpty else { return nil }
-        let localNameMap = feishuBotConfig.feishuUserNameMap
-        return ids.map { localNameMap[$0] ?? $0 }.joined(separator: ", ")
+        let mapping = feishuBotConfig.assigneeMapping
+        let nameMap = feishuBotConfig.feishuUserNameMap
+        return ids.map { id in
+            // Priority: assigneeMapping (open_id → local name) > feishuUserNameMap (open_id → feishu display name) > raw id
+            mapping[id] ?? nameMap[id] ?? id
+        }.joined(separator: ", ")
     }
 
     func mergeFeishuUserNameMap(_ updates: [String: String]) {
@@ -1158,6 +1205,15 @@ final class DataStore {
         }
         if changed {
             feishuBotConfig.feishuUserNameMap = merged
+        }
+    }
+
+    /// Record a Jira displayName so the settings UI can offer it for mapping.
+    func recordJiraAssignee(_ displayName: String) {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if !jiraConfig.knownAssignees.contains(trimmed) {
+            jiraConfig.knownAssignees.append(trimmed)
         }
     }
 
@@ -1181,6 +1237,20 @@ final class DataStore {
 
     func updateIssueStatus(id: UUID, status: IssueStatus) {
         guard let issue = trackedIssues.first(where: { $0.id == id }) else { return }
+        guard issue.status != status else { return }
+        let oldStatus = issue.status.rawValue
+        mutateIssue(id: id) { issue in
+            issue.status = status
+            issue.resolvedAt = status.isResolved ? Date() : nil
+        }
+        logOperation(module: "问题", action: "状态", detail: "\(issue.title): \(oldStatus)→\(status.rawValue)")
+        pushStatusToLinearIfNeeded(issueId: id, status: status)
+    }
+
+    /// Update status without triggering remote push. Use when the change originated from Linear.
+    func updateIssueStatusLocally(id: UUID, status: IssueStatus) {
+        guard let issue = trackedIssues.first(where: { $0.id == id }) else { return }
+        guard issue.status != status else { return }
         let oldStatus = issue.status.rawValue
         mutateIssue(id: id) { issue in
             issue.status = status
@@ -1189,8 +1259,61 @@ final class DataStore {
         logOperation(module: "问题", action: "状态", detail: "\(issue.title): \(oldStatus)→\(status.rawValue)")
     }
 
+    private func pushStatusToLinearIfNeeded(issueId: UUID, status: IssueStatus) {
+        guard let issue = trackedIssues.first(where: { $0.id == issueId }),
+              let linearId = issue.linearIssueId, !linearId.isEmpty else { return }
+        guard linearConfig.enabled else { return }
+        // Reverse lookup: local status caseName → Linear state ID
+        // statusMapping is [Linear state name → local caseName], we need to find a Linear state whose mapped local status matches
+        let targetStateName = linearConfig.statusMapping.first(where: { $0.value == status.caseName })?.key
+        guard let targetStateName else {
+            DevLog.shared.info("Linear", "本地状态变更未映射 Linear 状态，跳过推送: \(status.rawValue)")
+            return
+        }
+        // Find the state ID from cached teamMembers/states — we need to look it up via the states
+        // We'll push by state name; LinearService needs to resolve it to an ID
+        Task {
+            await LinearService.shared.updateIssueStateByName(issueId: linearId, stateName: targetStateName)
+        }
+    }
+
     func updateIssueAssignee(id: UUID, assignee: String?) {
         mutateIssue(id: id) { $0.assignee = assignee }
+        pushAssigneeToLinearIfNeeded(issueId: id, assignee: assignee)
+    }
+
+    /// Update assignee without triggering remote push. Use this when the change originated from Linear.
+    func updateIssueAssigneeLocally(id: UUID, assignee: String?) {
+        mutateIssue(id: id) { $0.assignee = assignee }
+    }
+
+    func updateIssueFollowers(id: UUID, followers: [String]) {
+        mutateIssue(id: id) { $0.followers = followers }
+    }
+
+    /// If the issue is linked to Linear and the new assignee maps to a Linear user, push the change upstream.
+    private func pushAssigneeToLinearIfNeeded(issueId: UUID, assignee: String?) {
+        guard let issue = trackedIssues.first(where: { $0.id == issueId }),
+              let linearId = issue.linearIssueId, !linearId.isEmpty else { return }
+        guard linearConfig.enabled else { return }
+        // Find the Linear user id for this assignee name (nil → unassign)
+        let targetLinearId: String? = {
+            guard let name = assignee, !name.isEmpty else { return nil }
+            return linearConfig.assigneeMapping[name]
+        }()
+        // Skip if nothing actionable: name without mapping → no-op
+        if assignee != nil, targetLinearId == nil {
+            DevLog.shared.info("Linear", "本地负责人变更未映射 Linear 账号，跳过推送: \(assignee ?? "")")
+            return
+        }
+        Task {
+            let ok = await LinearService.shared.updateIssueAssignee(issueId: linearId, assigneeId: targetLinearId)
+            if ok {
+                await MainActor.run {
+                    self.updateIssueLinearAssignee(id: issueId, assignee: assignee)
+                }
+            }
+        }
     }
 
     func addIssueComment(id: UUID, text: String) {
@@ -1247,6 +1370,9 @@ final class DataStore {
             $0.linearIssueId = issueId
             $0.linearKey = key
             $0.linearUrl = url
+            if issueId == nil {
+                $0.linearAssignee = nil
+            }
         }
     }
 

@@ -15,7 +15,11 @@ struct LinearConfig: Codable, Sendable {
     var pollingInterval: Int = 10
     var pollingStartHour: Int = 9
     var pollingEndHour: Int = 18
-    var statusMapping: [String: String] = [:]  // Linear state name → IssueStatus rawValue
+    var statusMapping: [String: String] = [:]  // Linear state name → IssueStatus caseName
+    var assigneeMapping: [String: String] = [:]  // 本地成员名 → Linear user ID
+    var labelMapping: [String: String] = [:]  // Linear label name → IssueType rawValue (Bug/Feature/Support)
+    var teamMembers: [LinearUser] = []
+    var teamLabels: [LinearLabel] = []
 
     init() {}
 
@@ -32,6 +36,10 @@ struct LinearConfig: Codable, Sendable {
         pollingStartHour = try c.decodeIfPresent(Int.self, forKey: .pollingStartHour) ?? 9
         pollingEndHour = try c.decodeIfPresent(Int.self, forKey: .pollingEndHour) ?? 18
         statusMapping = try c.decodeIfPresent([String: String].self, forKey: .statusMapping) ?? [:]
+        assigneeMapping = try c.decodeIfPresent([String: String].self, forKey: .assigneeMapping) ?? [:]
+        labelMapping = try c.decodeIfPresent([String: String].self, forKey: .labelMapping) ?? [:]
+        teamMembers = try c.decodeIfPresent([LinearUser].self, forKey: .teamMembers) ?? []
+        teamLabels = try c.decodeIfPresent([LinearLabel].self, forKey: .teamLabels) ?? []
     }
 }
 
@@ -44,6 +52,7 @@ struct LinearIssue: Codable, Sendable, Identifiable {
     var description: String?
     var state: LinearState?
     var assignee: LinearUser?
+    var labels: [String] = []
     var url: String
     var createdAt: String?
     var updatedAt: String?
@@ -68,7 +77,7 @@ struct LinearComment: Codable, Sendable, Identifiable {
 
 // MARK: - Linear User
 
-struct LinearUser: Codable, Sendable {
+struct LinearUser: Codable, Sendable, Identifiable {
     var id: String
     var name: String
 }
@@ -84,6 +93,11 @@ struct LinearTeam: Codable, Sendable, Identifiable {
 // MARK: - Linear Project
 
 struct LinearProject: Codable, Sendable, Identifiable {
+    var id: String
+    var name: String
+}
+
+struct LinearLabel: Codable, Sendable, Identifiable {
     var id: String
     var name: String
 }

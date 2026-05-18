@@ -83,6 +83,16 @@ struct IssueComment: Identifiable, Codable, Sendable {
     var jiraCommentId: String?
 }
 
+struct TeamMember: Identifiable, Codable, Sendable, Hashable {
+    var id: UUID = UUID()
+    var name: String
+
+    init(id: UUID = UUID(), name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 enum IssueSource: String, Codable, Sendable, CaseIterable {
     case manual = "手动"
     case jira = "Jira"
@@ -126,6 +136,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     var linearKey: String?               // Linear issue identifier (如 LIN-123)
     var linearUrl: String?               // Linear issue URL
     var linearAssignee: String?          // Linear 当前负责人名称，用于变更检测
+    var followers: [String] = []         // 关注人列表（本地成员名）
 
     init(title: String, type: IssueType = .bug) {
         self.title = title
@@ -136,7 +147,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, issueNumber, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt, hasDevActivity, isEscalated, feishuTaskGuid
-        case linearIssueId, linearKey, linearUrl, linearAssignee
+        case linearIssueId, linearKey, linearUrl, linearAssignee, followers
         case note       // legacy single-note field
         case isFixed    // legacy BugEntry field
         case fixedAt    // legacy BugEntry field
@@ -220,6 +231,7 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         linearKey = try? container.decodeIfPresent(String.self, forKey: .linearKey)
         linearUrl = try? container.decodeIfPresent(String.self, forKey: .linearUrl)
         linearAssignee = try? container.decodeIfPresent(String.self, forKey: .linearAssignee)
+        followers = (try? container.decodeIfPresent([String].self, forKey: .followers)) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -257,5 +269,8 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         try container.encodeIfPresent(linearKey, forKey: .linearKey)
         try container.encodeIfPresent(linearUrl, forKey: .linearUrl)
         try container.encodeIfPresent(linearAssignee, forKey: .linearAssignee)
+        if !followers.isEmpty {
+            try container.encode(followers, forKey: .followers)
+        }
     }
 }
