@@ -14,7 +14,7 @@ struct SyncTab: View {
 
     var body: some View {
         Form {
-            let webPortalURL = syncManager.makeWebPortalURL(token: webPortalTokenInput)
+            let webPortalURL = currentWebPortalURL
             Section("云端同步") {
                 Toggle(isOn: $syncManager.config.enabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -31,6 +31,34 @@ struct SyncTab: View {
                         syncManager.stopPeriodicSync()
                     }
                 }
+            }
+
+            Section("当前数据流") {
+                SettingsStatusRow(
+                    title: "本地数据",
+                    value: "本机工作台",
+                    systemImage: "macbook",
+                    tint: .blue
+                )
+                SettingsStatusRow(
+                    title: "服务端",
+                    value: syncBackendSummary,
+                    systemImage: syncManager.config.backend == .httpAPI ? "server.rack" : "icloud",
+                    tint: syncManager.config.enabled ? .green : .secondary
+                )
+                SettingsStatusRow(
+                    title: "同步能力",
+                    value: syncTokenState,
+                    systemImage: credentialInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "key.slash" : "key.fill",
+                    tint: credentialInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .orange : .green
+                )
+                SettingsStatusRow(
+                    title: "网页工作台",
+                    value: webPortalState,
+                    systemImage: "globe",
+                    tint: webPortalURL == nil ? .orange : .green
+                )
+                SettingsHint(text: "新服务端会用 Token 自动识别 workspace；同步 Token 只负责 /sync，网页 Token 负责 /api 和网页面板。")
             }
 
             Section("同步后端") {
@@ -106,6 +134,15 @@ struct SyncTab: View {
                     .controlSize(.small)
                     .disabled(webPortalURL == nil)
 
+                    Button("复制链接") {
+                        if let url = webPortalURL {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(webPortalURL == nil)
+
                     Spacer()
                 }
             }
@@ -128,7 +165,7 @@ struct SyncTab: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(syncing)
+                    .disabled(syncing || !manualSyncReady)
 
                     Spacer()
 
@@ -166,6 +203,53 @@ struct SyncTab: View {
         didLoadSyncSecrets = true
         credentialInput = syncManager.loadCredential()
         webPortalTokenInput = syncManager.loadWebPortalToken()
+    }
+
+    private var syncBackendSummary: String {
+        if !syncManager.config.enabled {
+            return "未启用"
+        }
+        switch syncManager.config.backend {
+        case .iCloud:
+            return "iCloud"
+        case .webDAV:
+            return syncManager.config.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "WebDAV 未配置" : "WebDAV"
+        case .httpAPI:
+            let serverURL = syncManager.config.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ ").union(.newlines))
+            return serverURL.isEmpty ? "服务端未配置" : serverURL
+        }
+    }
+
+    private var syncTokenState: String {
+        switch syncManager.config.backend {
+        case .iCloud:
+            return "无需 Token"
+        case .webDAV:
+            return credentialInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未保存密码" : "已保存凭据"
+        case .httpAPI:
+            return credentialInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "缺同步 Token" : "sync token 已保存"
+        }
+    }
+
+    private var webPortalState: String {
+        guard currentWebPortalURL != nil else { return "缺网页地址或 Token" }
+        return webPortalTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "使用同步 Token 登录" : "web token 已配置"
+    }
+
+    private var currentWebPortalURL: URL? {
+        syncManager.makeWebPortalURL(token: webPortalTokenInput)
+    }
+
+    private var manualSyncReady: Bool {
+        switch syncManager.config.backend {
+        case .iCloud:
+            return true
+        case .webDAV:
+            return !syncManager.config.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .httpAPI:
+            return !syncManager.config.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                !credentialInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     @ViewBuilder

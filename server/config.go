@@ -15,6 +15,9 @@ type Config struct {
 	SyncToken               string `yaml:"sync_token"`
 	WebToken                string `yaml:"web_token"`
 	DataDir                 string `yaml:"data_dir"`
+	DatabasePath            string `yaml:"database_path"`
+	SQLiteBin               string `yaml:"sqlite_bin"`
+	DefaultWorkspaceName    string `yaml:"default_workspace_name"`
 	MaxBodyBytes            int64  `yaml:"max_body_bytes"`
 	FeishuSecret            string `yaml:"feishu_secret"`
 	FeishuAppID             string `yaml:"feishu_app_id"`
@@ -39,10 +42,12 @@ func (c *Config) WebAccessToken() string {
 
 func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
-		Port:         "9999",
-		Bind:         "127.0.0.1",
-		DataDir:      "./data",
-		MaxBodyBytes: 10 << 20, // 10MB
+		Port:                 "9999",
+		Bind:                 "127.0.0.1",
+		DataDir:              "./data",
+		SQLiteBin:            "sqlite3",
+		DefaultWorkspaceName: "Default Workspace",
+		MaxBodyBytes:         10 << 20, // 10MB
 	}
 
 	data, err := os.ReadFile(path)
@@ -88,6 +93,15 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("DATA_DIR"); v != "" {
 		cfg.DataDir = v
+	}
+	if v := os.Getenv("DATABASE_PATH"); v != "" {
+		cfg.DatabasePath = v
+	}
+	if v := os.Getenv("SQLITE_BIN"); v != "" {
+		cfg.SQLiteBin = v
+	}
+	if v := os.Getenv("DEFAULT_WORKSPACE_NAME"); v != "" {
+		cfg.DefaultWorkspaceName = v
 	}
 	if v := os.Getenv("MAX_BODY_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {

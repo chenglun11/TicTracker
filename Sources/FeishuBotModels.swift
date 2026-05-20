@@ -93,6 +93,12 @@ struct FeishuBotConfig: Codable, Sendable {
 **👁 观测中问题：**
 {{观测中列表}}
 ---
+**我今日提交：**
+{{我提交列表}}
+---
+**今日重点（{{重点Tag}}）：**
+{{重点列表}}
+---
 **📝 日报：**
 {{日报内容}}
 """
@@ -106,6 +112,7 @@ struct FeishuBotConfig: Codable, Sendable {
     var customTemplate: String = Self.defaultTemplate
     var customTemplateTitle: String = "每日工单报告"
     var cardTitle: String = "每日工单报告"
+    var focusIssueTag: String = "今日Bug"
     var sendHistory: [SendHistory] = []
     var maxRetries: Int = 3
 
@@ -132,6 +139,8 @@ struct FeishuBotConfig: Codable, Sendable {
     var showDailyNote: Bool = true      // 日报文字
     var showScheduled: Bool = true      // 已排期列表
     var showTesting: Bool = true        // 测试中列表
+    var showMyReported: Bool = true     // 今日我提交
+    var showFocusTag: Bool = true       // 指定标签重点分组
     var showComments: Bool = true       // 问题评论
 
     // issue 显示字段
@@ -147,7 +156,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case enabled, webhookURL, webhookURLs, webhooks, signEnabled
         case sendTimes, lastSentTimes, lastSentDateTime
         case sendHour, sendMinute, lastSentDate  // legacy
-        case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle
+        case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle, focusIssueTag
         case appID
         case appSecret
         case verificationToken
@@ -159,7 +168,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case taskDefaultCollaboratorOpenID
         case botTasklistGUID, botTasklistName
         case feishuUserNameMap
-        case showSupportStats, showOverview, showPending, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showComments
+        case showSupportStats, showOverview, showPending, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showMyReported, showFocusTag, showComments
         case fieldType, fieldDepartment, fieldJiraKey, fieldStatus, fieldAssignee
     }
 
@@ -182,6 +191,7 @@ struct FeishuBotConfig: Codable, Sendable {
         customTemplate = try c.decodeIfPresent(String.self, forKey: .customTemplate) ?? Self.defaultTemplate
         customTemplateTitle = try c.decodeIfPresent(String.self, forKey: .customTemplateTitle) ?? "每日工单报告"
         cardTitle = try c.decodeIfPresent(String.self, forKey: .cardTitle) ?? "每日工单报告"
+        focusIssueTag = try c.decodeIfPresent(String.self, forKey: .focusIssueTag) ?? "今日Bug"
         sendHistory = try c.decodeIfPresent([SendHistory].self, forKey: .sendHistory) ?? []
         maxRetries = try c.decodeIfPresent(Int.self, forKey: .maxRetries) ?? 3
         appID = try c.decodeIfPresent(String.self, forKey: .appID) ?? ""
@@ -221,6 +231,8 @@ struct FeishuBotConfig: Codable, Sendable {
         showTesting = try c.decodeIfPresent(Bool.self, forKey: .showTesting) ?? true
         showResolved = try c.decodeIfPresent(Bool.self, forKey: .showResolved) ?? true
         showDailyNote = try c.decodeIfPresent(Bool.self, forKey: .showDailyNote) ?? true
+        showMyReported = try c.decodeIfPresent(Bool.self, forKey: .showMyReported) ?? true
+        showFocusTag = try c.decodeIfPresent(Bool.self, forKey: .showFocusTag) ?? true
         showComments = try c.decodeIfPresent(Bool.self, forKey: .showComments) ?? true
 
         fieldType = try c.decodeIfPresent(Bool.self, forKey: .fieldType) ?? true
@@ -242,6 +254,7 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(customTemplate, forKey: .customTemplate)
         try c.encode(customTemplateTitle, forKey: .customTemplateTitle)
         try c.encode(cardTitle, forKey: .cardTitle)
+        try c.encode(focusIssueTag, forKey: .focusIssueTag)
         try c.encode(sendHistory, forKey: .sendHistory)
         try c.encode(maxRetries, forKey: .maxRetries)
         if !appID.isEmpty {
@@ -289,6 +302,8 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(showTesting, forKey: .showTesting)
         try c.encode(showResolved, forKey: .showResolved)
         try c.encode(showDailyNote, forKey: .showDailyNote)
+        try c.encode(showMyReported, forKey: .showMyReported)
+        try c.encode(showFocusTag, forKey: .showFocusTag)
         try c.encode(showComments, forKey: .showComments)
 
         try c.encode(fieldType, forKey: .fieldType)

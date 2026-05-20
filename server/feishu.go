@@ -70,6 +70,9 @@ type reportStats struct {
 	scheduled     []TrackedIssue
 	testing       []TrackedIssue
 	observing     []TrackedIssue
+	myReported    []TrackedIssue
+	focusTagged   []TrackedIssue
+	focusTag      string
 	todayTotal    int
 	todayNote     string
 }
@@ -77,10 +80,21 @@ type reportStats struct {
 func calcStats(payload SyncPayload) reportStats {
 	today := time.Now().Format("2006-01-02")
 	stats := reportStats{}
+	focusTag := strings.TrimSpace(payload.FeishuBotConfig.FocusIssueTag)
+	if focusTag == "" {
+		focusTag = "今日Bug"
+	}
+	stats.focusTag = focusTag
 	for _, issue := range payload.TrackedIssues {
+		if issueReportedByCurrentMember(issue, payload.CurrentMemberID, payload.CurrentMemberName) {
+			continue
+		}
 		isResolved := isResolvedStatus(issue.Status)
 		if issue.DateKey == today && !isResolved {
 			stats.newIssues = append(stats.newIssues, issue)
+		}
+		if issueHasTag(issue, focusTag) {
+			stats.focusTagged = append(stats.focusTagged, issue)
 		}
 		if issue.ResolvedAt != nil && strings.HasPrefix(issue.ResolvedAt.Value, today) {
 			stats.resolvedToday = append(stats.resolvedToday, issue)
@@ -109,6 +123,31 @@ func calcStats(payload SyncPayload) reportStats {
 		stats.todayNote = payload.DailyNotes[today]
 	}
 	return stats
+}
+
+func issueReportedByCurrentMember(issue TrackedIssue, memberID, memberName string) bool {
+	if memberID == "" && memberName == "" {
+		return false
+	}
+	if memberID != "" && issue.ReporterID != nil && *issue.ReporterID == memberID {
+		return true
+	}
+	if memberName != "" && issue.ReporterName != nil && *issue.ReporterName == memberName {
+		return true
+	}
+	return false
+}
+
+func issueHasTag(issue TrackedIssue, tag string) bool {
+	if tag == "" {
+		return false
+	}
+	for _, issueTag := range issue.IssueTags {
+		if issueTag == tag {
+			return true
+		}
+	}
+	return false
 }
 
 func buildSupportStats(payload SyncPayload) string {
@@ -145,6 +184,8 @@ func collectSections(stats reportStats, cfg *FeishuBotConfig) []reportSection {
 		{title: fmt.Sprintf("**📅 已排期问题（%d个）**", len(stats.scheduled)), header: fmt.Sprintf("已排期问题（%d个）", len(stats.scheduled)), items: stats.scheduled, shown: cfg.ShowScheduled},
 		{title: fmt.Sprintf("**🧪 测试中问题（%d个）**", len(stats.testing)), header: fmt.Sprintf("测试中问题（%d个）", len(stats.testing)), items: stats.testing, shown: cfg.ShowTesting},
 		{title: fmt.Sprintf("**今日解决（%d个）**", len(stats.resolvedToday)), header: fmt.Sprintf("今日解决（%d个）", len(stats.resolvedToday)), items: stats.resolvedToday, shown: cfg.ShowResolved},
+		{title: fmt.Sprintf("**我今日提交（%d个）**", len(stats.myReported)), header: fmt.Sprintf("我今日提交（%d个）", len(stats.myReported)), items: stats.myReported, shown: cfg.ShowMyReported},
+		{title: fmt.Sprintf("**今日重点（%s，%d个）**", stats.focusTag, len(stats.focusTagged)), header: fmt.Sprintf("今日重点（%s，%d个）", stats.focusTag, len(stats.focusTagged)), items: stats.focusTagged, shown: cfg.ShowFocusTag && stats.focusTag != ""},
 	}
 	out := make([]reportSection, 0, len(raw))
 	for _, s := range raw {
@@ -290,6 +331,9 @@ func buildTemplateMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]
 	stats := calcStats(payload)
 
 	issueLines := func(issues []TrackedIssue) string {
+		if len(issues) == 0 {
+			return "无"
+		}
 		lines := []string{}
 		for _, issue := range issues {
 			lines = append(lines, formatIssue(issue, cfg))
@@ -301,22 +345,25 @@ func buildTemplateMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]
 
 	tpl := cfg.CustomTemplate
 	replacements := map[string]string{
-		"{{日期}}":     today,
-		"{{今日总数}}":   fmt.Sprintf("%d", stats.todayTotal),
-		"{{项目统计}}":   statsStr,
-		"{{新建数量}}":   fmt.Sprintf("%d", len(stats.newIssues)),
-		"{{解决数量}}":   fmt.Sprintf("%d", len(stats.resolvedToday)),
-		"{{待处理数量}}":  fmt.Sprintf("%d", len(stats.pending)),
-		"{{观测中数量}}":  fmt.Sprintf("%d", len(stats.observing)),
-		"{{已排期数量}}":  fmt.Sprintf("%d", len(stats.scheduled)),
-		"{{测试中数量}}":  fmt.Sprintf("%d", len(stats.testing)),
-		"{{待处理列表}}":  issueLines(stats.pending),
-		"{{已解决列表}}":  issueLines(stats.resolvedToday),
-		"{{观测中列表}}":  issueLines(stats.observing),
-		"{{已排期列表}}":  issueLines(stats.scheduled),
-		"{{测试中列表}}":  issueLines(stats.testing),
-		"{{日报内容}}":   stats.todayNote,
-		"{{当前时间}}":   now,
+		"{{日期}}":    today,
+		"{{今日总数}}":  fmt.Sprintf("%d", stats.todayTotal),
+		"{{项目统计}}":  statsStr,
+		"{{新建数量}}":  fmt.Sprintf("%d", len(stats.newIssues)),
+		"{{解决数量}}":  fmt.Sprintf("%d", len(stats.resolvedToday)),
+		"{{待处理数量}}": fmt.Sprintf("%d", len(stats.pending)),
+		"{{观测中数量}}": fmt.Sprintf("%d", len(stats.observing)),
+		"{{已排期数量}}": fmt.Sprintf("%d", len(stats.scheduled)),
+		"{{测试中数量}}": fmt.Sprintf("%d", len(stats.testing)),
+		"{{待处理列表}}": issueLines(stats.pending),
+		"{{已解决列表}}": issueLines(stats.resolvedToday),
+		"{{观测中列表}}": issueLines(stats.observing),
+		"{{已排期列表}}": issueLines(stats.scheduled),
+		"{{测试中列表}}": issueLines(stats.testing),
+		"{{我提交列表}}": issueLines(stats.myReported),
+		"{{重点Tag}}": stats.focusTag,
+		"{{重点列表}}":  issueLines(stats.focusTagged),
+		"{{日报内容}}":  stats.todayNote,
+		"{{当前时间}}":  now,
 	}
 	for k, v := range replacements {
 		tpl = strings.ReplaceAll(tpl, k, v)

@@ -25,6 +25,13 @@ type Store struct {
 	cacheLoaded bool
 }
 
+type PayloadStore interface {
+	Load(ctx context.Context) (*SyncPayload, error)
+	Update(ctx context.Context, fn func(payload *SyncPayload) error) error
+	ReplaceRaw(ctx context.Context, data []byte) error
+	LoadRaw(ctx context.Context) ([]byte, error)
+}
+
 // NewStore 创建 Store；dataDir 不存在时会以 0700 创建
 func NewStore(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {

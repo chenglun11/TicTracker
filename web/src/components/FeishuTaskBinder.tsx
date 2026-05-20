@@ -16,9 +16,13 @@ function FeishuTaskBinder({ issue }: FeishuTaskBinderProps) {
           {issue.feishuTaskGuid ? <Tag color="cyan">已绑定</Tag> : <Tag>客户端绑定</Tag>}
         </Space>
         {issue.feishuTaskGuid ? (
-          <Space wrap size={8}>
-            <Text type="secondary">已绑定：</Text>
-            <Text code>{issue.feishuTaskGuid}</Text>
+          <Space direction="vertical" size={4}>
+            <Space wrap size={8}>
+              <Text type="secondary">已绑定：</Text>
+              <Text code>{issue.feishuTaskGuid}</Text>
+              {issue.feishuTaskCompletedAt ? <Tag color="green">已完成</Tag> : <Tag color="blue">同步中</Tag>}
+            </Space>
+            {issue.feishuTaskSummary ? <Text>{issue.feishuTaskSummary}</Text> : null}
             <Text type="secondary">状态由 macOS 客户端从飞书单向同步。</Text>
           </Space>
         ) : (

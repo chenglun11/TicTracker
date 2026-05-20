@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func HandleGetSync(store *Store) gin.HandlerFunc {
+func HandleGetSync(store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		data, err := store.LoadRaw(c.Request.Context())
 		if err != nil {
@@ -30,7 +30,7 @@ func HandleGetSync(store *Store) gin.HandlerFunc {
 	}
 }
 
-func HandlePostSync(store *Store) gin.HandlerFunc {
+func HandlePostSync(store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 		body, err := c.GetRawData()

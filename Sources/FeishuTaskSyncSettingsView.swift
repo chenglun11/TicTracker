@@ -32,9 +32,10 @@ struct FeishuTaskSyncSettingsView: View {
                     ))
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { saveAppSecret() }
-                    Button("保存") { saveAppSecret() }
+                    Button(appSecretInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "清除" : "保存") {
+                        saveAppSecret()
+                    }
                         .controlSize(.small)
-                        .disabled(appSecretInput.isEmpty)
                 }
             }
 
@@ -216,6 +217,7 @@ struct FeishuTaskSyncSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .tunedForResponsiveScroll()
         .navigationTitle("飞书任务同步")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -287,8 +289,10 @@ struct FeishuTaskSyncSettingsView: View {
     }
 
     private func saveAppSecret() {
-        guard !appSecretInput.isEmpty else { return }
-        FeishuBotService.saveAppSecret(appSecretInput)
+        let trimmed = appSecretInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if FeishuBotService.saveAppSecret(trimmed) {
+            appSecretInput = trimmed
+        }
     }
 
     private func startFeishuOAuth() {

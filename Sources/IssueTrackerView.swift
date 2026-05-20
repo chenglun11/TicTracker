@@ -3,6 +3,7 @@ import SwiftUI
 struct IssueTrackerView: View {
     @Bindable var store: DataStore
     @State private var searchText = ""
+    @State private var workbenchFilter: WorkbenchFilter = .all
     @State private var statusFilter: StatusFilter = .unresolved
     @State private var typeFilter: TypeFilter = .all
     @State private var selectedIssueID: UUID?
@@ -30,9 +31,11 @@ struct IssueTrackerView: View {
     @State private var linearSyncing = false
     @State private var showLinearPicker = false
     @State private var linearSearchText = ""
+    @State private var linearProjects: [LinearProject] = []
     @State private var linearSearchResults: [LinearIssue] = []
     @State private var linearMyIssues: [LinearIssue] = []
     @State private var linearPickerLoading = false
+    @State private var linearProjectLoading = false
     @State private var linearPickerTab: LinearPickerTab = .myIssues
 
     private enum LinearPickerTab: String, CaseIterable {
@@ -46,6 +49,13 @@ struct IssueTrackerView: View {
         case observing = "观测中"
         case fixed = "已修复"
         case ignored = "已忽略"
+    }
+
+    private enum WorkbenchFilter: String, CaseIterable {
+        case all = "全部"
+        case reportedByMe = "我提交的"
+        case reportedToday = "今日提交"
+        case myOpen = "我提交未关闭"
     }
 
     private enum TypeFilter: String, CaseIterable {
@@ -66,6 +76,23 @@ struct IssueTrackerView: View {
 
     private var filteredIssues: [TrackedIssue] {
         var issues = store.visibleTrackedIssues
+
+        switch workbenchFilter {
+        case .all:
+            break
+        case .reportedByMe:
+            issues = issues.filter { isReportedByCurrentMember($0) }
+        case .reportedToday:
+            issues = issues.filter { issue in
+                guard isReportedByCurrentMember(issue) else { return false }
+                if let reportedAt = issue.reportedAt {
+                    return DataStore.dateKey(from: reportedAt) == store.todayKey
+                }
+                return issue.dateKey == store.todayKey
+            }
+        case .myOpen:
+            issues = issues.filter { isReportedByCurrentMember($0) && !$0.status.isResolved }
+        }
 
         if let type = typeFilter.issueType {
             issues = issues.filter { $0.type == type }
@@ -89,7 +116,10 @@ struct IssueTrackerView: View {
                 ($0.jiraKey?.lowercased().contains(query) ?? false) ||
                 ($0.ticketURL?.lowercased().contains(query) ?? false) ||
                 ($0.feishuTaskGuid?.lowercased().contains(query) ?? false) ||
+                ($0.feishuTaskSummary?.lowercased().contains(query) ?? false) ||
                 ($0.department?.lowercased().contains(query) ?? false) ||
+                ($0.reporterName?.lowercased().contains(query) ?? false) ||
+                $0.issueTags.contains(where: { $0.lowercased().contains(query) }) ||
                 $0.comments.contains(where: { $0.text.lowercased().contains(query) })
             }
         }
@@ -99,6 +129,24 @@ struct IssueTrackerView: View {
 
     private var unresolvedCount: Int {
         store.visibleTrackedIssues.filter { !$0.status.isResolved && $0.status != .observing }.count
+    }
+
+    private var myReportedCount: Int {
+        store.visibleTrackedIssues.filter { isReportedByCurrentMember($0) }.count
+    }
+
+    private var myReportedTodayCount: Int {
+        store.visibleTrackedIssues.filter { issue in
+            guard isReportedByCurrentMember(issue) else { return false }
+            if let reportedAt = issue.reportedAt {
+                return DataStore.dateKey(from: reportedAt) == store.todayKey
+            }
+            return issue.dateKey == store.todayKey
+        }.count
+    }
+
+    private var myOpenCount: Int {
+        store.visibleTrackedIssues.filter { isReportedByCurrentMember($0) && !$0.status.isResolved }.count
     }
 
     private var selectedIssue: TrackedIssue? {
@@ -114,6 +162,22 @@ struct IssueTrackerView: View {
         case .userOAuth:
             return FeishuOAuthService.shared.isAuthorized
         }
+    }
+
+    private var syncInProgress: Bool {
+        feishuSyncInProgress || jiraSyncing || linearSyncing
+    }
+
+    private var canSyncAnyIssueSource: Bool {
+        canSyncFeishuTasks || store.jiraConfig.enabled || store.linearConfig.enabled
+    }
+
+    private var syncButtonHelp: String {
+        var sources: [String] = []
+        if canSyncFeishuTasks { sources.append("飞书任务") }
+        if store.jiraConfig.enabled { sources.append("Jira") }
+        if store.linearConfig.enabled { sources.append("Linear") }
+        return sources.isEmpty ? "没有可同步的入口" : "同步：" + sources.joined(separator: "、")
     }
 
     var body: some View {
@@ -147,6 +211,9 @@ struct IssueTrackerView: View {
         .onChange(of: typeFilter) {
             keepSelectionVisible()
         }
+        .onChange(of: workbenchFilter) {
+            keepSelectionVisible()
+        }
         .onChange(of: statusFilter) {
             keepSelectionVisible()
         }
@@ -176,15 +243,18 @@ struct IssueTrackerView: View {
                     HStack(spacing: 10) {
                         statBadge(title: "总计", value: store.visibleTrackedIssues.count, color: .blue)
                         statBadge(title: "未解决", value: unresolvedCount, color: unresolvedCount > 0 ? .orange : .green)
+                        if !store.currentMemberName.isEmpty {
+                            statBadge(title: "我今日", value: myReportedTodayCount, color: .green)
+                        }
                     }
                 }
 
                 Spacer(minLength: 8)
 
-                if feishuSyncInProgress {
+                if syncInProgress {
                     ProgressView()
                         .controlSize(.small)
-                        .help("正在同步飞书任务状态…")
+                        .help("正在同步问题入口…")
                 }
 
                 Button {
@@ -199,14 +269,14 @@ struct IssueTrackerView: View {
 
             HStack(spacing: 6) {
                 Button {
-                    syncFeishuBoundTasks()
+                    syncAllIssueSources()
                 } label: {
-                    Label("同步", systemImage: "arrow.triangle.2.circlepath")
+                    Label(syncInProgress ? "同步中" : "同步", systemImage: "arrow.triangle.2.circlepath")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(feishuSyncInProgress || !canSyncFeishuTasks)
-                .help(store.feishuBotConfig.taskAuthMode == .botTenant ? "使用 Bot / 应用身份同步飞书任务" : "使用用户 OAuth 同步飞书任务")
+                .disabled(syncInProgress || !canSyncAnyIssueSource)
+                .help(syncButtonHelp)
 
                 Button {
                     sendToFeishu()
@@ -217,34 +287,6 @@ struct IssueTrackerView: View {
                 .controlSize(.small)
                 .disabled(sendingFeishu || store.feishuBotConfig.webhooks.isEmpty)
                 .help("发送完整日报")
-
-                if store.jiraConfig.enabled {
-                    Button {
-                        syncJiraIssues()
-                    } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .rotationEffect(jiraSyncing ? .degrees(360) : .zero)
-                            .animation(jiraSyncing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: jiraSyncing)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(jiraSyncing)
-                    .help("同步 Jira 入口")
-                }
-
-                if store.linearConfig.enabled {
-                    Button {
-                        syncLinearIssues()
-                    } label: {
-                        Image(systemName: "arrow.triangle.branch")
-                            .rotationEffect(linearSyncing ? .degrees(360) : .zero)
-                            .animation(linearSyncing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: linearSyncing)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(linearSyncing)
-                    .help("同步 Linear")
-                }
 
                 Spacer(minLength: 0)
             }
@@ -262,11 +304,13 @@ struct IssueTrackerView: View {
 
     private var filterBar: some View {
         VStack(alignment: .leading, spacing: 10) {
+            workbenchQuickFilters
+
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("搜索编号、标题、负责人、备注", text: $searchText)
+                TextField("搜索编号、标题、负责人、提交人、Tag、备注", text: $searchText)
                     .textFieldStyle(.plain)
                 if !searchText.isEmpty {
                     Button {
@@ -313,6 +357,56 @@ struct IssueTrackerView: View {
     }
 
     @ViewBuilder
+    private var workbenchQuickFilters: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("我的工作台", systemImage: "person.crop.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(store.currentMemberName.isEmpty ? "未选择我是谁" : store.currentMemberName)
+                    .font(.caption2)
+                    .foregroundStyle(store.currentMemberName.isEmpty ? .orange : .secondary)
+                    .lineLimit(1)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                workbenchButton(.all, count: store.visibleTrackedIssues.count)
+                workbenchButton(.reportedByMe, count: myReportedCount)
+                workbenchButton(.reportedToday, count: myReportedTodayCount)
+                workbenchButton(.myOpen, count: myOpenCount)
+            }
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func workbenchButton(_ filter: WorkbenchFilter, count: Int) -> some View {
+        Button {
+            workbenchFilter = filter
+        } label: {
+            HStack(spacing: 4) {
+                Text(filter.rawValue)
+                    .lineLimit(1)
+                    .font(.caption)
+                Spacer(minLength: 2)
+                Text("\(count)")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(workbenchFilter == filter ? .white.opacity(0.9) : .secondary)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(workbenchFilter == filter ? .white : .primary)
+            .background(workbenchFilter == filter ? Color.accentColor : Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(filter != .all && store.currentMemberName.isEmpty)
+        .help(filter == .all ? "查看全部问题" : "需要在设置中选择我是谁")
+    }
+
+    @ViewBuilder
     private var issueList: some View {
         if filteredIssues.isEmpty {
             ContentUnavailableView {
@@ -329,6 +423,7 @@ struct IssueTrackerView: View {
                 }
             }
             .listStyle(.sidebar)
+            .tunedForResponsiveScroll()
         }
     }
 
@@ -362,6 +457,9 @@ struct IssueTrackerView: View {
                 if let assignee = issue.assignee, !assignee.isEmpty {
                     issueTag(assignee, systemImage: "person", color: .blue)
                 }
+                if let reporter = issue.reporterName, !reporter.isEmpty {
+                    issueTag("提交 \(reporter)", systemImage: "person.crop.circle.badge.checkmark", color: .green)
+                }
 
                 Spacer(minLength: 2)
 
@@ -371,7 +469,7 @@ struct IssueTrackerView: View {
                     .lineLimit(1)
             }
 
-            if issue.source != .manual || issue.hasDevActivity || issue.isEscalated || issue.feishuTaskGuid?.isEmpty == false {
+            if issue.source != .manual || issue.hasDevActivity || issue.isEscalated || issue.feishuTaskGuid?.isEmpty == false || !issue.issueTags.isEmpty {
                 HStack(spacing: 5) {
                     if issue.source != .manual {
                         issueTag(issue.source.rawValue, systemImage: "link", color: .secondary)
@@ -384,6 +482,9 @@ struct IssueTrackerView: View {
                     }
                     if issue.feishuTaskGuid?.isEmpty == false {
                         issueTag("飞书任务", systemImage: "checklist", color: .indigo)
+                    }
+                    ForEach(issue.issueTags.prefix(2), id: \.self) { tag in
+                        issueTag(tag, systemImage: "tag", color: .pink)
                     }
                     Spacer(minLength: 0)
                 }
@@ -426,6 +527,7 @@ struct IssueTrackerView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .tunedForResponsiveScroll()
     }
 
     @ViewBuilder
@@ -486,6 +588,9 @@ struct IssueTrackerView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     summaryChip(issue.assignee ?? "未指派", systemImage: "person", color: .blue)
+                    if let reporter = issue.reporterName, !reporter.isEmpty {
+                        summaryChip("提交：\(reporter)", systemImage: "person.crop.circle.badge.checkmark", color: .green)
+                    }
                     if let department = issue.department, !department.isEmpty {
                         summaryChip(department, systemImage: "folder", color: .teal)
                     }
@@ -606,6 +711,42 @@ struct IssueTrackerView: View {
                     }
                 }
 
+                fieldRow("提交人", systemImage: "person.crop.circle.badge.checkmark") {
+                    if store.teamMembers.isEmpty {
+                        mutedValue(issue.reporterName ?? "未配置成员")
+                    } else {
+                        Menu {
+                            Button("未标记") {
+                                store.updateIssueReporter(id: issue.id, member: nil)
+                                saveState.triggerSave()
+                            }
+                            Divider()
+                            ForEach(store.teamMembers) { member in
+                                Button(member.name) {
+                                    store.updateIssueReporter(id: issue.id, member: member)
+                                    saveState.triggerSave()
+                                }
+                            }
+                        } label: {
+                            fieldButtonLabel(issue.reporterName ?? "未标记", systemImage: "person.crop.circle.badge.checkmark", color: .green)
+                        }
+                        .disabled(isReadOnly)
+                    }
+                }
+
+                fieldRow("Tag", systemImage: "tag") {
+                    TextField("例如：今日Bug, 待飞书推送", text: Binding(
+                        get: { issue.issueTags.joined(separator: ", ") },
+                        set: {
+                            let tags = $0.components(separatedBy: CharacterSet(charactersIn: ",，"))
+                            store.updateIssueTags(id: issue.id, tags: tags)
+                            saveState.debouncedSave()
+                        }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(isReadOnly)
+                }
+
                 fieldRow("类型", systemImage: issue.type.icon) {
                     Picker("类型", selection: Binding(
                         get: { issue.type },
@@ -682,7 +823,7 @@ struct IssueTrackerView: View {
                 case .meta:
                     metaLinkFields(issue)
                 case .feishu:
-                    feishuDocFields(issue)
+                    linkedTaskControl(issue)
                 case .linear:
                     linearLinkFields(issue)
                 case .manual:
@@ -690,10 +831,6 @@ struct IssueTrackerView: View {
                         mutedValue("未关联")
                     }
                 }
-
-                Divider()
-
-                linkedTaskControl(issue)
             }
         }
     }
@@ -787,36 +924,55 @@ struct IssueTrackerView: View {
     }
 
     @ViewBuilder
-    private func feishuDocFields(_ issue: TrackedIssue) -> some View {
-        fieldRow("飞书文档", systemImage: "doc.text") {
-            VStack(alignment: .leading, spacing: 8) {
-                TextField("飞书文档链接", text: Binding(
-                    get: { issue.ticketURL ?? "" },
-                    set: {
-                        store.updateIssueTicketURL(id: issue.id, ticketURL: $0.isEmpty ? nil : $0)
-                        saveState.debouncedSave()
+    private func linearLinkFields(_ issue: TrackedIssue) -> some View {
+        fieldRow("Project", systemImage: "folder") {
+            HStack(spacing: 8) {
+                Menu {
+                    Button("不指定 Project") {
+                        selectLinearProject(nil, for: issue)
                     }
-                ))
-                .textFieldStyle(.roundedBorder)
+                    Divider()
+                    ForEach(linearProjectOptions(), id: \.id) { project in
+                        Button {
+                            selectLinearProject(project, for: issue)
+                        } label: {
+                            if issue.linearProjectId == project.id {
+                                Label(project.name, systemImage: "checkmark")
+                            } else {
+                                Text(project.name)
+                            }
+                        }
+                    }
+                } label: {
+                    fieldButtonLabel(issue.linearProjectName ?? "选择 Project", systemImage: "folder", color: .purple)
+                }
+                .menuStyle(.button)
+                .controlSize(.small)
+                .disabled(!store.linearConfig.enabled)
 
-                if let url = issue.ticketURL, !url.isEmpty {
-                    Button {
-                        openURL(url)
-                    } label: {
-                        Label("打开", systemImage: "arrow.up.forward.square")
-                            .font(.caption)
+                Button {
+                    loadLinearProjects()
+                } label: {
+                    if linearProjectLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("在浏览器中打开")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(linearProjectLoading || store.linearConfig.teamId.isEmpty)
+                    .help("刷新 Linear Project")
+            }
+            .task {
+                if linearProjects.isEmpty {
+                    loadLinearProjects()
                 }
             }
         }
-    }
 
-    @ViewBuilder
-    private func linearLinkFields(_ issue: TrackedIssue) -> some View {
-        fieldRow("Linear", systemImage: "arrow.triangle.branch") {
+        fieldRow("Issue", systemImage: "arrow.triangle.branch") {
             VStack(alignment: .leading, spacing: 8) {
                 if let key = issue.linearKey, !key.isEmpty {
                     HStack {
@@ -857,7 +1013,7 @@ struct IssueTrackerView: View {
                                 linearSearchResults = []
                                 linearPickerTab = .myIssues
                                 showLinearPicker = true
-                                loadLinearMyIssues()
+                                loadLinearMyIssues(for: issue)
                             } label: {
                                 Label("关联已有 Issue", systemImage: "link")
                             }
@@ -878,7 +1034,7 @@ struct IssueTrackerView: View {
                         }
                         .menuStyle(.button)
                         .controlSize(.small)
-                        .disabled(creatingLinearIssueID != nil)
+                        .disabled(creatingLinearIssueID != nil || !store.linearConfig.enabled)
                         .popover(isPresented: $showLinearPicker, arrowEdge: .bottom) {
                             linearPickerPopover(issue: issue)
                         }
@@ -917,9 +1073,15 @@ struct IssueTrackerView: View {
                     }
 
                     if let guid = issue.feishuTaskGuid, !guid.isEmpty {
-                        Text("状态由飞书同步")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                        if issue.feishuTaskCompletedAt?.isEmpty == false {
+                            Text("飞书已完成")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                        } else {
+                            Text("状态由飞书同步")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
 
                         Button {
                             openFeishuTask(guid: guid)
@@ -930,7 +1092,7 @@ struct IssueTrackerView: View {
                         .help("在飞书中打开任务")
 
                         Button("解绑") {
-                            store.updateIssueFeishuTaskGuid(id: issue.id, guid: nil)
+                            store.updateIssueFeishuTaskBinding(id: issue.id, task: nil)
                             saveState.triggerSave()
                         }
                         .controlSize(.small)
@@ -1310,6 +1472,7 @@ struct IssueTrackerView: View {
                 }
             }
             .frame(maxHeight: 240)
+            .tunedForResponsiveScroll()
         }
         .frame(width: 340)
     }
@@ -1399,6 +1562,7 @@ struct IssueTrackerView: View {
                 }
             }
             .frame(minHeight: 280, maxHeight: 360)
+            .tunedForResponsiveScroll()
         }
         .frame(width: 760)
         .frame(minHeight: 380)
@@ -1413,6 +1577,16 @@ struct IssueTrackerView: View {
         if !feishuTasklists.isEmpty { return feishuTasklists }
         let guid = store.feishuBotConfig.tasklistGUID.trimmingCharacters(in: .whitespacesAndNewlines)
         return guid.isEmpty ? [] : [FeishuVisibleTasklist(guid: guid, name: "默认清单")]
+    }
+
+    private func isReportedByCurrentMember(_ issue: TrackedIssue) -> Bool {
+        if !store.currentMemberId.isEmpty, issue.reporterId == store.currentMemberId {
+            return true
+        }
+        if !store.currentMemberName.isEmpty, issue.reporterName == store.currentMemberName {
+            return true
+        }
+        return false
     }
 
     @ViewBuilder
@@ -1460,6 +1634,9 @@ struct IssueTrackerView: View {
                                 key: linearIssue.identifier,
                                 url: linearIssue.url
                             )
+                            if let project = linearIssue.project {
+                                store.updateIssueLinearProject(id: issue.id, projectId: project.id, name: project.name)
+                            }
                             saveState.triggerSave()
                             showLinearPicker = false
                         } label: {
@@ -1474,6 +1651,11 @@ struct IssueTrackerView: View {
                                         Text(state.name)
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
+                                    }
+                                    if let project = linearIssue.project {
+                                        Text(project.name)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
                                     }
                                 }
                                 Spacer()
@@ -1504,6 +1686,7 @@ struct IssueTrackerView: View {
                 }
             }
             .frame(minHeight: 300, maxHeight: 500)
+            .tunedForResponsiveScroll()
         }
         .frame(width: 520)
     }
@@ -1545,7 +1728,7 @@ struct IssueTrackerView: View {
         Task {
             do {
                 let task = try await FeishuTaskService.shared.createTaskForIssue(store: store, issue: issue)
-                store.updateIssueFeishuTaskGuid(id: issue.id, guid: task.guid)
+                store.updateIssueFeishuTaskBinding(id: issue.id, task: task)
                 applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
                 applyFeishuTaskAssignee(issueID: issue.id, candidate: task)
                 saveState.triggerSave()
@@ -1571,8 +1754,7 @@ struct IssueTrackerView: View {
         creatingLinearIssueID = issue.id
         let config = store.linearConfig
         let teamId = config.teamId
-        let mappedProjectId = issue.department.flatMap { config.projectMapping[$0] }
-        let projectId = !(mappedProjectId ?? "").isEmpty ? mappedProjectId : (config.projectId.isEmpty ? nil : config.projectId)
+        let selectedProjectId = issue.linearProjectId?.isEmpty == false ? issue.linearProjectId : nil
         // Resolve assignee: local name → Linear user ID via mapping
         let assigneeId: String? = {
             guard let name = issue.assignee, !name.isEmpty else { return nil }
@@ -1591,11 +1773,14 @@ struct IssueTrackerView: View {
                 title: issue.title,
                 description: nil,
                 teamId: teamId,
-                projectId: projectId,
+                projectId: selectedProjectId,
                 assigneeId: assigneeId,
                 labelIds: labelIds
             ) {
                 store.updateIssueLinearLink(id: issue.id, issueId: created.id, key: created.identifier, url: created.url)
+                if let project = created.project {
+                    store.updateIssueLinearProject(id: issue.id, projectId: project.id, name: project.name)
+                }
                 store.updateIssueLinearAssignee(id: issue.id, assignee: issue.assignee)
                 store.addIssueComment(id: issue.id, text: "[Linear] 已创建: \(created.identifier)")
                 saveState.triggerSave()
@@ -1608,7 +1793,7 @@ struct IssueTrackerView: View {
     }
 
     private func bindFeishuTask(_ task: FeishuTaskCandidate, to issue: TrackedIssue) {
-        store.updateIssueFeishuTaskGuid(id: issue.id, guid: task.guid)
+        store.updateIssueFeishuTaskBinding(id: issue.id, task: task)
         applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
         applyFeishuTaskAssignee(issueID: issue.id, candidate: task)
         saveState.triggerSave()
@@ -1618,6 +1803,7 @@ struct IssueTrackerView: View {
         Task {
             do {
                 let detail = try await FeishuTaskService.shared.taskDetail(store: store, guid: task.guid)
+                store.updateIssueFeishuTaskBinding(id: issue.id, task: detail)
                 applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: detail)
                 applyFeishuTaskAssignee(issueID: issue.id, candidate: detail)
                 saveState.triggerSave()
@@ -1670,6 +1856,7 @@ struct IssueTrackerView: View {
                 }
                 for (guid, task) in boundResult.tasks {
                     if let issue = store.trackedIssues.first(where: { $0.feishuTaskGuid == guid }) {
+                        store.updateIssueFeishuTaskBinding(id: issue.id, task: task)
                         applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
                         applyFeishuTaskAssignee(issueID: issue.id, candidate: task)
                     }
@@ -1765,11 +1952,66 @@ struct IssueTrackerView: View {
         }
     }
 
-    private func loadLinearMyIssues() {
+    private func syncAllIssueSources() {
+        if canSyncFeishuTasks {
+            syncFeishuBoundTasks()
+        }
+        if store.jiraConfig.enabled {
+            syncJiraIssues()
+        }
+        if store.linearConfig.enabled {
+            syncLinearIssues()
+        }
+    }
+
+    private func loadLinearProjects() {
+        guard !store.linearConfig.teamId.isEmpty else { return }
+        linearProjectLoading = true
+        Task {
+            linearProjects = await LinearService.shared.fetchProjects(teamId: store.linearConfig.teamId)
+            linearProjectLoading = false
+        }
+    }
+
+    private func linearProjectOptions() -> [LinearProject] {
+        var result: [LinearProject] = []
+        var seen = Set<String>()
+        func append(_ project: LinearProject?) {
+            guard let project, !project.id.isEmpty, seen.insert(project.id).inserted else { return }
+            result.append(project)
+        }
+        append(store.linearConfig.projectId.isEmpty ? nil : LinearProject(id: store.linearConfig.projectId, name: store.linearConfig.projectName.isEmpty ? store.linearConfig.projectId : store.linearConfig.projectName))
+        for project in linearProjects {
+            append(project)
+        }
+        return result
+    }
+
+    private func selectLinearProject(_ project: LinearProject?, for issue: TrackedIssue) {
+        let projectChanged = issue.linearProjectId != project?.id
+        store.updateIssueLinearProject(id: issue.id, projectId: project?.id, name: project?.name)
+        if let project {
+            if projectChanged {
+                store.updateIssueLinearLink(id: issue.id, issueId: nil, key: nil, url: nil)
+            }
+            if !projectChanged, let linkedId = issue.linearIssueId, !linkedId.isEmpty {
+                Task {
+                    await LinearService.shared.updateIssueProject(issueId: linkedId, projectId: project.id)
+                }
+            }
+        } else {
+            // No Project means "do not filter by Project"; keep the selected Issue intact.
+        }
+        linearMyIssues = []
+        linearSearchResults = []
+        saveState.triggerSave()
+    }
+
+    private func loadLinearMyIssues(for issue: TrackedIssue) {
         linearPickerLoading = true
         Task {
             let teamId = store.linearConfig.teamId.isEmpty ? nil : store.linearConfig.teamId
-            let projectId = store.linearConfig.projectId.isEmpty ? nil : store.linearConfig.projectId
+            let projectId = issue.linearProjectId?.isEmpty == false ? issue.linearProjectId : nil
             linearMyIssues = await LinearService.shared.fetchIssues(teamId: teamId, projectId: projectId)
             linearPickerLoading = false
         }
@@ -1781,7 +2023,12 @@ struct IssueTrackerView: View {
         linearPickerLoading = true
         Task {
             let teamId = store.linearConfig.teamId.isEmpty ? nil : store.linearConfig.teamId
-            linearSearchResults = await LinearService.shared.searchIssues(query: query, teamId: teamId)
+            let results = await LinearService.shared.searchIssues(query: query, teamId: teamId)
+            if let selected = selectedIssue, selected.source == .linear, let projectId = selected.linearProjectId, !projectId.isEmpty {
+                linearSearchResults = results.filter { $0.project?.id == projectId }
+            } else {
+                linearSearchResults = results
+            }
             linearPickerLoading = false
         }
     }

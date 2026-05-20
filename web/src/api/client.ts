@@ -5,7 +5,13 @@ import type {
   SendFeishuResponse,
   UpdateIssueRequest,
   CreateIssueRequest,
-  AddCommentRequest
+  AddCommentRequest,
+  SetupConfig,
+  SetupRequest,
+  AuthStatusResponse,
+  LoginRequest,
+  LoginResponse,
+  InitRequest
 } from '../types'
 
 const client = axios.create({
@@ -69,5 +75,30 @@ export const createIssue = async (data: CreateIssueRequest) => {
 
 export const deleteIssue = async (id: string) => {
   const { data } = await client.delete(`${API_BASE}/issues/${id}`)
+  return data
+}
+
+export const getSetup = async (): Promise<SetupConfig> => {
+  const { data } = await client.get<SetupConfig>(`${API_BASE}/setup`)
+  return data
+}
+
+export const saveSetup = async (payload: SetupRequest): Promise<SetupConfig> => {
+  const { data } = await client.put<SetupConfig>(`${API_BASE}/setup`, payload)
+  return data
+}
+
+export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
+  const { data } = await client.get<AuthStatusResponse>(`${API_BASE}/auth/status`)
+  return data
+}
+
+export const login = async (payload: LoginRequest): Promise<LoginResponse> => {
+  const { data } = await client.post<LoginResponse>(`${API_BASE}/auth/login`, payload)
+  return data
+}
+
+export const initSystem = async (payload: InitRequest): Promise<LoginResponse> => {
+  const { data } = await client.post<LoginResponse>(`${API_BASE}/auth/init`, payload)
   return data
 }

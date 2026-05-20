@@ -10,13 +10,13 @@ import (
 
 type Scheduler struct {
 	cfg        *Config
-	store      *Store
+	store      PayloadStore
 	mu         sync.Mutex
-	lastSent   map[string]string    // "HH:MM" -> "YYYY-MM-DD"
-	lastFailed map[string]time.Time // "HH:MM" -> last failed attempt time
+	lastSent   map[string]string    // "workspace:HH:MM" -> "YYYY-MM-DD"
+	lastFailed map[string]time.Time // "workspace:HH:MM" -> last failed attempt time
 }
 
-func NewScheduler(cfg *Config, store *Store) *Scheduler {
+func NewScheduler(cfg *Config, store PayloadStore) *Scheduler {
 	return &Scheduler{
 		cfg:        cfg,
 		store:      store,
@@ -50,18 +50,27 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 // primeLastSent 启动时从持久化的 LastSentTimes 恢复，避免 crash 重启后重复发送
 func (s *Scheduler) primeLastSent(ctx context.Context) {
-	payload, err := s.store.Load(ctx)
-	if err != nil || payload.FeishuBotConfig == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key, date := range payload.FeishuBotConfig.LastSentTimes {
-		s.lastSent[key] = date
+	for _, workspaceID := range s.workspaceIDs(ctx) {
+		wctx := withWorkspaceID(ctx, workspaceID)
+		payload, err := s.store.Load(wctx)
+		if err != nil || payload.FeishuBotConfig == nil {
+			continue
+		}
+		s.mu.Lock()
+		for key, date := range payload.FeishuBotConfig.LastSentTimes {
+			s.lastSent[s.schedulerKey(workspaceID, key)] = date
+		}
+		s.mu.Unlock()
 	}
 }
 
 func (s *Scheduler) check(ctx context.Context) {
+	for _, workspaceID := range s.workspaceIDs(ctx) {
+		s.checkWorkspace(withWorkspaceID(ctx, workspaceID), workspaceID)
+	}
+}
+
+func (s *Scheduler) checkWorkspace(ctx context.Context, workspaceID string) {
 	payload, err := s.store.Load(ctx)
 	if err != nil {
 		return
@@ -98,32 +107,49 @@ func (s *Scheduler) check(ctx context.Context) {
 			}
 		}
 		key := fmt.Sprintf("%02d:%02d", st.Hour, st.Minute)
+		runKey := s.schedulerKey(workspaceID, key)
+		if recorder, ok := s.store.(interface {
+			HasSuccessfulFeishuRun(context.Context, string, string, string) (bool, error)
+		}); ok {
+			sent, err := recorder.HasSuccessfulFeishuRun(ctx, workspaceID, key, today)
+			if err == nil && sent {
+				s.mu.Lock()
+				s.lastSent[runKey] = today
+				s.mu.Unlock()
+				continue
+			}
+		}
 		s.mu.Lock()
-		if s.lastSent[key] == today {
+		if s.lastSent[runKey] == today {
 			s.mu.Unlock()
 			continue
 		}
-		if failedAt, ok := s.lastFailed[key]; ok && now.Sub(failedAt) < schedulerFailureCooldown {
+		if failedAt, ok := s.lastFailed[runKey]; ok && now.Sub(failedAt) < schedulerFailureCooldown {
 			s.mu.Unlock()
 			continue
 		}
 		s.mu.Unlock()
 
-		slog.Info("scheduler sending feishu report", "slot", key)
+		slog.Info("scheduler sending feishu report", "workspace", workspaceID, "slot", key)
 		if err := sendFeishuReport(ctx, *payload); err != nil {
-			slog.Warn("scheduler send failed", "slot", key, "err", err)
+			slog.Warn("scheduler send failed", "workspace", workspaceID, "slot", key, "err", err)
 			s.mu.Lock()
-			s.lastFailed[key] = now
+			s.lastFailed[runKey] = now
 			s.mu.Unlock()
+			if recorder, ok := s.store.(interface {
+				SaveFeishuRun(context.Context, string, string, string, string, bool, string) error
+			}); ok {
+				_ = recorder.SaveFeishuRun(ctx, workspaceID, key, today, now.Format("2006-01-02 15:04:05"), false, err.Error())
+			}
 			return
 		}
 
 		s.mu.Lock()
-		s.lastSent[key] = today
-		delete(s.lastFailed, key)
+		s.lastSent[runKey] = today
+		delete(s.lastFailed, runKey)
 		s.mu.Unlock()
 
-		slog.Info("scheduler sent successfully", "slot", key)
+		slog.Info("scheduler sent successfully", "workspace", workspaceID, "slot", key)
 
 		sentTime := now.Format("2006-01-02 15:04:05")
 		if err := s.store.Update(ctx, func(p *SyncPayload) error {
@@ -139,6 +165,30 @@ func (s *Scheduler) check(ctx context.Context) {
 		}); err != nil {
 			slog.Warn("scheduler update sync.json failed", "err", err)
 		}
+		if recorder, ok := s.store.(interface {
+			SaveFeishuRun(context.Context, string, string, string, string, bool, string) error
+		}); ok {
+			_ = recorder.SaveFeishuRun(ctx, workspaceID, key, today, sentTime, true, "")
+		}
 		return
 	}
+}
+
+func (s *Scheduler) workspaceIDs(ctx context.Context) []string {
+	if lister, ok := s.store.(interface {
+		WorkspaceIDs(context.Context) ([]string, error)
+	}); ok {
+		ids, err := lister.WorkspaceIDs(ctx)
+		if err == nil && len(ids) > 0 {
+			return ids
+		}
+	}
+	return []string{defaultWorkspaceID}
+}
+
+func (s *Scheduler) schedulerKey(workspaceID, slotKey string) string {
+	if workspaceID == "" {
+		workspaceID = defaultWorkspaceID
+	}
+	return workspaceID + ":" + slotKey
 }

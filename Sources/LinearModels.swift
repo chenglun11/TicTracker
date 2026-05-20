@@ -17,7 +17,6 @@ struct LinearConfig: Codable, Sendable {
     var pollingEndHour: Int = 18
     var statusMapping: [String: String] = [:]  // Linear state name → IssueStatus caseName
     var assigneeMapping: [String: String] = [:]  // 本地成员名 → Linear user ID
-    var projectMapping: [String: String] = [:]  // 本地项目名 → Linear project ID
     var labelMapping: [String: String] = [:]  // Linear label name → IssueType rawValue (Bug/Feature/Support)
     var teamMembers: [LinearUser] = []
     var teamLabels: [LinearLabel] = []
@@ -38,7 +37,6 @@ struct LinearConfig: Codable, Sendable {
         pollingEndHour = try c.decodeIfPresent(Int.self, forKey: .pollingEndHour) ?? 18
         statusMapping = try c.decodeIfPresent([String: String].self, forKey: .statusMapping) ?? [:]
         assigneeMapping = try c.decodeIfPresent([String: String].self, forKey: .assigneeMapping) ?? [:]
-        projectMapping = try c.decodeIfPresent([String: String].self, forKey: .projectMapping) ?? [:]
         labelMapping = try c.decodeIfPresent([String: String].self, forKey: .labelMapping) ?? [:]
         teamMembers = try c.decodeIfPresent([LinearUser].self, forKey: .teamMembers) ?? []
         teamLabels = try c.decodeIfPresent([LinearLabel].self, forKey: .teamLabels) ?? []

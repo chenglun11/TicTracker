@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react'
 import { Layout, Button, Space, Typography } from 'antd'
-import { LogoutOutlined } from '@ant-design/icons'
+import { LogoutOutlined, SettingOutlined } from '@ant-design/icons'
+import { useQuery } from '@tanstack/react-query'
+import { getAuthStatus, getSetup } from './api/client'
 import Dashboard from './components/Dashboard'
+import InitPage from './components/InitPage'
 import LoginPage from './components/LoginPage'
 
 const { Header, Content } = Layout
-const { Title } = Typography
+const { Text } = Typography
 
 function tokenFromHash(): string | null {
   const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash
@@ -16,6 +19,19 @@ function tokenFromHash(): string | null {
 
 function App() {
   const [token, setToken] = useState<string | null>(null)
+  const [showInit, setShowInit] = useState(false)
+
+  const { data: authStatus, isLoading: authLoading } = useQuery({
+    queryKey: ['auth-status'],
+    queryFn: getAuthStatus,
+    enabled: !token
+  })
+
+  const { data: setup } = useQuery({
+    queryKey: ['setup'],
+    queryFn: getSetup,
+    enabled: Boolean(token)
+  })
 
   useEffect(() => {
     const hashToken = tokenFromHash()
@@ -40,37 +56,69 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem('token')
     setToken(null)
+    setShowInit(false)
+  }
+
+  if (!token && authStatus?.initialized === false) {
+    return (
+      <InitPage
+        firstRun
+        onInitialized={handleLogin}
+        onDone={() => undefined}
+      />
+    )
   }
 
   if (!token) {
+    if (authLoading) {
+      return (
+        <div className="login-shell">
+          <div className="login-card">
+            <div className="dashboard-kicker">TicTracker</div>
+            <h1 className="login-title">正在检查工作台状态</h1>
+            <p className="login-copy">稍等一下，正在确认是否需要首次初始化。</p>
+          </div>
+        </div>
+      )
+    }
     return <LoginPage onLogin={handleLogin} />
   }
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{
-        background: '#001529',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '0 24px'
-      }}>
-        <Title level={3} style={{ color: 'white', margin: 0 }}>
-          TicTracker - 技术支持工单追踪
-        </Title>
+    <Layout className="app-shell">
+      <Header className="app-header">
+        <div className="app-brand">
+          <div className="app-brand-mark">TT</div>
+          <div>
+            <h1 className="app-brand-title">TicTracker</h1>
+            <div className="app-brand-subtitle">技术支持工作台 · 团队问题流</div>
+          </div>
+        </div>
         <Space>
+          <Button
+            type="text"
+            icon={<SettingOutlined />}
+            onClick={() => setShowInit(true)}
+            style={{ color: 'white' }}
+          >
+            <Text style={{ color: 'rgba(255,255,255,.82)' }}>初始化</Text>
+          </Button>
           <Button
             type="text"
             icon={<LogoutOutlined />}
             onClick={handleLogout}
             style={{ color: 'white' }}
           >
-            退出登录
+            <Text style={{ color: 'rgba(255,255,255,.82)' }}>退出</Text>
           </Button>
         </Space>
       </Header>
-      <Content style={{ padding: '24px', minWidth: '1024px' }}>
-        <Dashboard />
+      <Content className="app-content">
+        {showInit || setup?.initialized === false ? (
+          <InitPage onDone={() => setShowInit(false)} />
+        ) : (
+          <Dashboard />
+        )}
       </Content>
     </Layout>
   )

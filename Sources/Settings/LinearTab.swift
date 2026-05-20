@@ -45,6 +45,40 @@ struct LinearTab: View {
                 }
             }
 
+            Section("使用状态") {
+                SettingsStatusRow(
+                    title: "入口",
+                    value: store.linearConfig.enabled ? "已启用" : "未启用",
+                    systemImage: "power",
+                    tint: store.linearConfig.enabled ? .green : .secondary
+                )
+                SettingsStatusRow(
+                    title: "Team",
+                    value: selectedTeamDisplay,
+                    systemImage: "person.3.fill",
+                    tint: store.linearConfig.teamId.isEmpty ? .orange : .green
+                )
+                SettingsStatusRow(
+                    title: "Project",
+                    value: selectedProjectDisplay,
+                    systemImage: "folder.fill",
+                    tint: store.linearConfig.projectId.isEmpty ? .secondary : .green
+                )
+                SettingsStatusRow(
+                    title: "Issue 范围",
+                    value: issueScopeDisplay,
+                    systemImage: "line.3.horizontal.decrease.circle",
+                    tint: store.linearConfig.teamId.isEmpty ? .orange : .blue
+                )
+                SettingsStatusRow(
+                    title: "成员映射",
+                    value: "\(store.linearConfig.assigneeMapping.count) 个",
+                    systemImage: "arrow.left.arrow.right.circle",
+                    tint: store.linearConfig.assigneeMapping.isEmpty ? .orange : .green
+                )
+                SettingsHint(text: "Linear 的同步范围是 Team > Project > Issue。未指定 Project 时会读取当前 Team 下的全部 issues；指定 Project 后只跟踪这个项目里的 issues。")
+            }
+
             Section("入口配置 🔒") {
                 autoSaveSecureField("API Token", text: $tokenInput, saved: $tokenSaved, focused: $isTokenFocused, onSave: saveToken)
                 HStack {
@@ -66,7 +100,7 @@ struct LinearTab: View {
                 }
             }
 
-            Section("团队与项目") {
+            Section {
                 HStack {
                     Picker("团队", selection: Bindable(store).linearConfig.teamId) {
                         Text("未选择").tag("")
@@ -88,7 +122,6 @@ struct LinearTab: View {
                     }
                     store.linearConfig.projectId = ""
                     store.linearConfig.projectName = ""
-                    store.linearConfig.projectMapping = [:]
                     store.linearConfig.defaultAssigneeId = ""
                     store.linearConfig.defaultAssigneeName = ""
                     loadProjectsAndStates()
@@ -96,7 +129,7 @@ struct LinearTab: View {
                 }
 
                 HStack {
-                    Picker("项目", selection: Bindable(store).linearConfig.projectId) {
+                    Picker("项目范围", selection: Bindable(store).linearConfig.projectId) {
                         Text("全部（不限项目）").tag("")
                         ForEach(projects) { project in
                             Text(project.name).tag(project.id)
@@ -108,6 +141,7 @@ struct LinearTab: View {
                             .controlSize(.small)
                     }
                 }
+                .disabled(store.linearConfig.teamId.isEmpty)
                 .onChange(of: store.linearConfig.projectId) { _, newId in
                     if let project = projects.first(where: { $0.id == newId }) {
                         store.linearConfig.projectName = project.name
@@ -137,49 +171,12 @@ struct LinearTab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
-
-            Section("项目映射") {
-                if projects.isEmpty {
-                    Text("选择 Team 后 Linear Project 会自动加载，届时可配置本地项目映射。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if store.departments.isEmpty {
-                    Text("先在通用设置中添加本地项目。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("创建 Linear Issue 时优先使用本地项目映射；远端 Project 回流时也会按映射更新本地项目。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ForEach(store.departments, id: \.self) { department in
-                        HStack {
-                            Text(department)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Image(systemName: "arrow.right")
-                                .foregroundStyle(.tertiary)
-                            Picker("", selection: Binding(
-                                get: { store.linearConfig.projectMapping[department] ?? "" },
-                                set: { newValue in
-                                    if newValue.isEmpty {
-                                        store.linearConfig.projectMapping.removeValue(forKey: department)
-                                    } else {
-                                        store.linearConfig.projectMapping[department] = newValue
-                                    }
-                                    saveState.triggerSave()
-                                }
-                            )) {
-                                Text("未映射").tag("")
-                                ForEach(projects) { project in
-                                    Text(project.name).tag(project.id)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: 160)
-                        }
-                    }
-                }
+            } header: {
+                Text("团队与项目")
+            } footer: {
+                Text(store.linearConfig.projectId.isEmpty ? "当前没有限定 Project，会同步 Team 下所有符合条件的 issues。" : "当前只同步所选 Project 下的 issues。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("成员映射") {
@@ -408,6 +405,7 @@ struct LinearTab: View {
             }
         }
         .formStyle(.grouped)
+        .tunedForResponsiveScroll()
         .autoSaveIndicator(saveState)
         .onChange(of: isActive) { _, active in
             if active { loadTokenIfNeeded() }
@@ -425,6 +423,30 @@ struct LinearTab: View {
             tokenInput = str
             loadTeams()
         }
+    }
+
+    private var selectedTeamDisplay: String {
+        if !store.linearConfig.teamName.isEmpty {
+            return store.linearConfig.teamName
+        }
+        return store.linearConfig.teamId.isEmpty ? "未选择" : "已选择"
+    }
+
+    private var selectedProjectDisplay: String {
+        if !store.linearConfig.projectName.isEmpty {
+            return store.linearConfig.projectName
+        }
+        return store.linearConfig.projectId.isEmpty ? "全部 Project" : "已选择"
+    }
+
+    private var issueScopeDisplay: String {
+        if store.linearConfig.teamId.isEmpty {
+            return "先选择 Team"
+        }
+        if store.linearConfig.projectId.isEmpty {
+            return "Team 下全部 issues"
+        }
+        return "所选 Project issues"
     }
 
     private func saveToken() {

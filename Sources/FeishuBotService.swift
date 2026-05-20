@@ -448,6 +448,9 @@ final class FeishuBotService {
         let scheduled: [TrackedIssue]
         let testing: [TrackedIssue]
         let observing: [TrackedIssue]
+        let myReportedToday: [TrackedIssue]
+        let focusTagged: [TrackedIssue]
+        let focusTag: String
         let todayRecords: [String: Int]
         let todayTotal: Int
         let dailyNote: String
@@ -459,23 +462,42 @@ final class FeishuBotService {
         let config = store.feishuBotConfig
         let todayKey = store.todayKey
         let allIssues = store.issuesVisibleForKey(todayKey)
+        let currentMemberId = store.currentMemberId
+        let currentMemberName = store.currentMemberName
+        let pushIssues = allIssues.filter {
+            !isReportedByCurrentMember($0, currentMemberId: currentMemberId, currentMemberName: currentMemberName)
+        }
+        let focusTag = config.focusIssueTag.trimmingCharacters(in: .whitespacesAndNewlines)
         return ReportData(
             todayKey: todayKey,
-            newIssues: allIssues.filter { $0.dateKey == todayKey && !$0.status.isResolved },
-            resolvedToday: allIssues.filter { issue in
+            newIssues: pushIssues.filter { $0.dateKey == todayKey && !$0.status.isResolved },
+            resolvedToday: pushIssues.filter { issue in
                 guard issue.status.isResolved, let resolvedAt = issue.resolvedAt else { return false }
                 return DataStore.dateKey(from: resolvedAt) == todayKey
             },
-            pending: allIssues.filter { !$0.status.isResolved && $0.status != .observing && $0.status != .scheduled && $0.status != .testing },
-            scheduled: allIssues.filter { $0.status == .scheduled },
-            testing: allIssues.filter { $0.status == .testing },
-            observing: allIssues.filter { $0.status == .observing },
+            pending: pushIssues.filter { !$0.status.isResolved && $0.status != .observing && $0.status != .scheduled && $0.status != .testing },
+            scheduled: pushIssues.filter { $0.status == .scheduled },
+            testing: pushIssues.filter { $0.status == .testing },
+            observing: pushIssues.filter { $0.status == .observing },
+            myReportedToday: [],
+            focusTagged: focusTag.isEmpty ? [] : pushIssues.filter { $0.issueTags.contains(focusTag) },
+            focusTag: focusTag,
             todayRecords: store.todayRecords,
             todayTotal: store.todayTotal,
             dailyNote: store.dailyNotes[todayKey] ?? "",
             config: config,
             jiraServerURL: store.jiraConfig.serverURL
         )
+    }
+
+    private func isReportedByCurrentMember(_ issue: TrackedIssue, currentMemberId: String, currentMemberName: String) -> Bool {
+        if !currentMemberId.isEmpty, issue.reporterId == currentMemberId {
+            return true
+        }
+        if !currentMemberName.isEmpty, issue.reporterName == currentMemberName {
+            return true
+        }
+        return false
     }
 
     // MARK: - Rich Text (post) Report
@@ -584,6 +606,24 @@ final class FeishuBotService {
             lines.append([text("")])
         }
 
+        // === 我今日提交 ===
+        if d.config.showMyReported && !d.myReportedToday.isEmpty {
+            lines.append([text("🙋 我今日提交：")])
+            for issue in d.myReportedToday {
+                lines.append(richTextIssueLine(issue, showStatus: d.config.fieldStatus, config: d.config, jiraServerURL: d.jiraServerURL))
+            }
+            lines.append([text("")])
+        }
+
+        // === 今日重点 tag ===
+        if d.config.showFocusTag && !d.focusTag.isEmpty && !d.focusTagged.isEmpty {
+            lines.append([text("🏷 今日重点（\(d.focusTag)）：")])
+            for issue in d.focusTagged {
+                lines.append(richTextIssueLine(issue, showStatus: d.config.fieldStatus, config: d.config, jiraServerURL: d.jiraServerURL))
+            }
+            lines.append([text("")])
+        }
+
         // === 日报文字 ===
         if d.config.showDailyNote && !d.dailyNote.isEmpty {
             lines.append([text("📝 日报：")])
@@ -675,6 +715,9 @@ final class FeishuBotService {
             "观测中列表": formatIssueListMd(d.observing, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
             "已排期列表": formatIssueListMd(d.scheduled, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
             "测试中列表": formatIssueListMd(d.testing, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
+            "我提交列表": formatIssueListMd(d.myReportedToday, showStatus: true, config: d.config, jiraServerURL: d.jiraServerURL),
+            "重点Tag": d.focusTag.isEmpty ? "未配置" : d.focusTag,
+            "重点列表": formatIssueListMd(d.focusTagged, showStatus: true, config: d.config, jiraServerURL: d.jiraServerURL),
             "日报内容": d.dailyNote.isEmpty ? "无" : d.dailyNote,
             "当前时间": timeFmt.string(from: Date()),
         ]
@@ -826,6 +869,26 @@ final class FeishuBotService {
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
 
+        // 我今日提交
+        if d.config.showMyReported && !d.myReportedToday.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**我今日提交：**"
+            for issue in d.myReportedToday {
+                content += "\n" + Self.formatIssue(issue, showStatus: d.config.fieldStatus, config: d.config, jiraServerURL: d.jiraServerURL)
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
+        // 今日重点 tag
+        if d.config.showFocusTag && !d.focusTag.isEmpty && !d.focusTagged.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**今日重点（\(d.focusTag)）：**"
+            for issue in d.focusTagged {
+                content += "\n" + Self.formatIssue(issue, showStatus: d.config.fieldStatus, config: d.config, jiraServerURL: d.jiraServerURL)
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
         // 日报文字
         if d.config.showDailyNote && !d.dailyNote.isEmpty {
             elements.append(["tag": "hr"])
@@ -840,6 +903,8 @@ final class FeishuBotService {
             || (d.config.showScheduled && !d.scheduled.isEmpty)
             || (d.config.showTesting && !d.testing.isEmpty)
             || (d.config.showResolved && !d.resolvedToday.isEmpty)
+            || (d.config.showMyReported && !d.myReportedToday.isEmpty)
+            || (d.config.showFocusTag && !d.focusTag.isEmpty && !d.focusTagged.isEmpty)
         if !hasContent {
             elements.append(["tag": "hr"])
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": "今日暂无工单记录"]])
@@ -979,14 +1044,32 @@ final class FeishuBotService {
     nonisolated(unsafe) private static var didLoadCredentials = false
     nonisolated(unsafe) private static var didCheckLegacySecret = false
 
-    static func saveAppSecret(_ secret: String) {
+    @discardableResult
+    static func saveAppSecret(_ secret: String) -> Bool {
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return deleteAppSecret()
+        }
         credentialsLock.lock()
         defer { credentialsLock.unlock() }
         var creds = FeishuCredentials.load()
-        creds.appSecret = secret
-        guard FeishuCredentials.save(creds) else { return }
-        cachedAppSecret = secret
+        creds.appSecret = trimmed
+        guard FeishuCredentials.save(creds) else { return false }
+        cachedAppSecret = trimmed
         didLoadCredentials = true
+        return true
+    }
+
+    @discardableResult
+    static func deleteAppSecret() -> Bool {
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        var creds = FeishuCredentials.load()
+        creds.appSecret = nil
+        guard FeishuCredentials.save(creds) else { return false }
+        cachedAppSecret = nil
+        didLoadCredentials = true
+        return true
     }
 
     static func loadAppSecret() -> String? {
@@ -1058,22 +1141,32 @@ final class FeishuBotService {
         }
     }
 
-    static func deleteSecret(for webhookID: UUID) {
+    @discardableResult
+    static func deleteSecret(for webhookID: UUID) -> Bool {
         credentialsLock.lock()
         defer { credentialsLock.unlock() }
         var creds = FeishuCredentials.load()
         creds.webhookSecrets.removeValue(forKey: webhookID.uuidString)
-        guard FeishuCredentials.save(creds) else { return }
+        guard FeishuCredentials.save(creds) else { return false }
         cachedWebhookSecrets.removeValue(forKey: webhookID)
+        didLoadCredentials = true
+        return true
     }
 
-    static func saveSecret(for webhookID: UUID, secret: String) {
+    @discardableResult
+    static func saveSecret(for webhookID: UUID, secret: String) -> Bool {
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return deleteSecret(for: webhookID)
+        }
         credentialsLock.lock()
         defer { credentialsLock.unlock() }
         var creds = FeishuCredentials.load()
-        creds.webhookSecrets[webhookID.uuidString] = secret
-        guard FeishuCredentials.save(creds) else { return }
-        cachedWebhookSecrets[webhookID] = secret
+        creds.webhookSecrets[webhookID.uuidString] = trimmed
+        guard FeishuCredentials.save(creds) else { return false }
+        cachedWebhookSecrets[webhookID] = trimmed
+        didLoadCredentials = true
+        return true
     }
 
     static func warmUpSecrets() {

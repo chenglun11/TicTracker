@@ -61,7 +61,21 @@ func trimPtr(in *string) *string {
 	return &v
 }
 
-func HandleGetStatus(store *Store) gin.HandlerFunc {
+func normalizeIssueTags(tags []string) []string {
+	seen := make(map[string]bool, len(tags))
+	out := make([]string, 0, len(tags))
+	for _, raw := range tags {
+		tag := strings.TrimSpace(raw)
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		out = append(out, tag)
+	}
+	return out
+}
+
+func HandleGetStatus(store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		payload, err := store.Load(c.Request.Context())
 		if err != nil {
@@ -136,7 +150,7 @@ func HandleGetStatus(store *Store) gin.HandlerFunc {
 	}
 }
 
-func HandleGetIssues(store *Store) gin.HandlerFunc {
+func HandleGetIssues(store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		payload, err := store.Load(c.Request.Context())
 		if err != nil {
@@ -187,7 +201,7 @@ func HandleGetIssues(store *Store) gin.HandlerFunc {
 	}
 }
 
-func HandleUpdateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFunc {
+func HandleUpdateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		issueID := c.Param("id")
 		if !issueIDRegexp.MatchString(issueID) {
@@ -196,11 +210,14 @@ func HandleUpdateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFu
 		}
 
 		var body struct {
-			Status         *string `json:"status"`
-			Assignee       *string `json:"assignee"`
-			Department     *string `json:"department"`
-			TicketURL      *string `json:"ticketURL"`
-			FeishuTaskGUID *string `json:"feishuTaskGuid"`
+			Status         *string  `json:"status"`
+			Assignee       *string  `json:"assignee"`
+			Department     *string  `json:"department"`
+			TicketURL      *string  `json:"ticketURL"`
+			FeishuTaskGUID *string  `json:"feishuTaskGuid"`
+			ReporterID     *string  `json:"reporterId"`
+			ReporterName   *string  `json:"reporterName"`
+			IssueTags      []string `json:"issueTags"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -225,6 +242,20 @@ func HandleUpdateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFu
 						issue.FeishuTaskGUID = nil
 					} else {
 						issue.FeishuTaskGUID = &trimmed
+						issue.Source = "飞书任务"
+						issue.FeishuTaskSummary = nil
+						issue.FeishuTaskCompletedAt = nil
+						issue.FeishuTasklistGUIDs = nil
+						issue.FeishuTaskAssigneeIDs = nil
+						issue.JiraKey = nil
+						issue.TicketURL = nil
+						issue.IsEscalated = false
+						issue.LinearIssueID = nil
+						issue.LinearKey = nil
+						issue.LinearURL = nil
+						issue.LinearProjectID = nil
+						issue.LinearProjectName = nil
+						issue.LinearAssignee = nil
 						feishuTaskGUID = trimmed
 						refreshBoundTask = true
 					}
@@ -241,6 +272,18 @@ func HandleUpdateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFu
 				}
 				if body.TicketURL != nil {
 					issue.TicketURL = trimPtr(body.TicketURL)
+				}
+				if body.ReporterID != nil {
+					issue.ReporterID = trimPtr(body.ReporterID)
+				}
+				if body.ReporterName != nil {
+					issue.ReporterName = trimPtr(body.ReporterName)
+					if issue.ReporterName != nil && issue.ReportedAt == nil {
+						issue.ReportedAt = &now
+					}
+				}
+				if body.IssueTags != nil {
+					issue.IssueTags = normalizeIssueTags(body.IssueTags)
 				}
 				issue.UpdatedAt = &now
 				if issue.FeishuTaskGUID != nil {
@@ -264,7 +307,7 @@ func HandleUpdateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFu
 			if detail, err := feishuTask.getTaskDetail(ctx, feishuTaskGUID); err == nil && detail != nil {
 				completed := detail.CompletedAt != "" && detail.CompletedAt != "0"
 				UpsertIssueFromFeishuTask(ctx, store, feishuTaskGUID,
-					strings.TrimSpace(detail.Summary), detail.Description, completed)
+					strings.TrimSpace(detail.Summary), detail.Description, detail.CompletedAt, completed)
 			}
 		}
 
@@ -272,7 +315,7 @@ func HandleUpdateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFu
 	}
 }
 
-func HandleAddComment(store *Store) gin.HandlerFunc {
+func HandleAddComment(store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		issueID := c.Param("id")
 		if !issueIDRegexp.MatchString(issueID) {
@@ -321,13 +364,16 @@ func HandleAddComment(store *Store) gin.HandlerFunc {
 	}
 }
 
-func HandleCreateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFunc {
+func HandleCreateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
-			Title      string  `json:"title"`
-			Type       string  `json:"type"`
-			Department *string `json:"department"`
-			TicketURL  *string `json:"ticketURL"`
+			Title        string   `json:"title"`
+			Type         string   `json:"type"`
+			Department   *string  `json:"department"`
+			TicketURL    *string  `json:"ticketURL"`
+			ReporterID   *string  `json:"reporterId"`
+			ReporterName *string  `json:"reporterName"`
+			IssueTags    []string `json:"issueTags"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -364,6 +410,19 @@ func HandleCreateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFu
 			}
 			createdIssue.Department = trimPtr(body.Department)
 			createdIssue.TicketURL = trimPtr(body.TicketURL)
+			createdIssue.ReporterID = trimPtr(body.ReporterID)
+			createdIssue.ReporterName = trimPtr(body.ReporterName)
+			if createdIssue.ReporterID == nil && payload.CurrentMemberID != "" {
+				createdIssue.ReporterID = &payload.CurrentMemberID
+			}
+			if createdIssue.ReporterName == nil && payload.CurrentMemberName != "" {
+				createdIssue.ReporterName = &payload.CurrentMemberName
+			}
+			if createdIssue.ReporterID != nil || createdIssue.ReporterName != nil {
+				reportedAt := createdIssue.CreatedAt
+				createdIssue.ReportedAt = &reportedAt
+			}
+			createdIssue.IssueTags = normalizeIssueTags(body.IssueTags)
 
 			payload.TrackedIssues = append(payload.TrackedIssues, createdIssue)
 			return nil
@@ -379,7 +438,7 @@ func HandleCreateIssue(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFu
 	}
 }
 
-func HandleDeleteIssue(store *Store) gin.HandlerFunc {
+func HandleDeleteIssue(store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		issueID := c.Param("id")
 		if !issueIDRegexp.MatchString(issueID) {
@@ -413,7 +472,7 @@ func HandleDeleteIssue(store *Store) gin.HandlerFunc {
 	}
 }
 
-func HandleListFeishuTasks(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFunc {
+func HandleListFeishuTasks(store PayloadStore, feishuTask *FeishuTaskClient) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_ = store
 		_ = feishuTask
@@ -421,7 +480,7 @@ func HandleListFeishuTasks(store *Store, feishuTask *FeishuTaskClient) gin.Handl
 	}
 }
 
-func HandleTestFeishuTasks(store *Store, feishuTask *FeishuTaskClient) gin.HandlerFunc {
+func HandleTestFeishuTasks(store PayloadStore, feishuTask *FeishuTaskClient) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_ = store
 		_ = feishuTask
@@ -429,7 +488,7 @@ func HandleTestFeishuTasks(store *Store, feishuTask *FeishuTaskClient) gin.Handl
 	}
 }
 
-func HandleSendFeishu(store *Store) gin.HandlerFunc {
+func HandleSendFeishu(store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		feishuSendMu.Lock()
 		defer feishuSendMu.Unlock()

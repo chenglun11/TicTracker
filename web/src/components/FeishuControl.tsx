@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Card, Button, Space, Typography, message, Divider } from 'antd'
-import { SendOutlined, ClockCircleOutlined } from '@ant-design/icons'
+import { Button, Typography, message } from 'antd'
+import { ClockCircleOutlined, SendOutlined } from '@ant-design/icons'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { sendFeishu } from '../api/client'
 import SendHistory from './SendHistory'
 
-const { Text, Title } = Typography
+const { Text } = Typography
 
 interface FeishuControlProps {
   lastSentTime?: string
@@ -67,42 +67,39 @@ function FeishuControl({ lastSentTime, cooldownRemain, feishuEnabled }: FeishuCo
     return minutes > 0 ? `${minutes}分${secs}秒` : `${secs}秒`
   }
 
+  const statusText = !feishuEnabled ? '未启用' : formatCountdown(countdown)
+  const statusTone = !feishuEnabled ? 'var(--tt-gold)' : countdown > 0 ? 'var(--tt-gold)' : 'var(--tt-green)'
+
   return (
-    <Card title="飞书通知控制">
-      <Space direction="vertical" style={{ width: '100%' }} size="large">
-        <div>
-          <Title level={5}>发送状态</Title>
-          {!feishuEnabled && (
-            <Text type="warning">飞书通知未启用</Text>
-          )}
-          {feishuEnabled && countdown > 0 && (
-            <Space>
-              <ClockCircleOutlined style={{ color: '#faad14' }} />
-              <Text type="warning">冷却中: {formatCountdown(countdown)}</Text>
-            </Space>
-          )}
-          {feishuEnabled && countdown <= 0 && (
-            <Text type="success">可以发送</Text>
-          )}
-        </div>
+    <div className="side-panel">
+      <div className="side-panel-title">飞书日报</div>
+      <div className="side-panel-copy">
+        手动发送和定时发送使用同一份日报快照；重点 Tag 只影响额外分组，不改变完整统计。
+      </div>
 
-        <Button
-          type="primary"
-          icon={<SendOutlined />}
-          onClick={handleSend}
-          loading={mutation.isPending}
-          disabled={!feishuEnabled || countdown > 0}
-          block
-          size="large"
-        >
-          发送飞书通知
-        </Button>
+      <div className="feishu-status-line">
+        <span className="status-pill" style={{ color: statusTone }}>
+          <ClockCircleOutlined />
+          {statusText}
+        </span>
+      </div>
 
-        <Divider />
+      <Button
+        type="primary"
+        icon={<SendOutlined />}
+        onClick={handleSend}
+        loading={mutation.isPending}
+        disabled={!feishuEnabled || countdown > 0}
+        block
+      >
+        立即发送日报
+      </Button>
 
+      <div style={{ marginTop: 14 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>最近发送</Text>
         <SendHistory lastSentTime={lastSentTime} />
-      </Space>
-    </Card>
+      </div>
+    </div>
   )
 }
 

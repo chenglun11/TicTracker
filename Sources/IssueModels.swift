@@ -97,11 +97,21 @@ enum IssueSource: String, Codable, Sendable, CaseIterable {
     case manual = "手动"
     case jira = "Jira"
     case meta = "Meta Direct Support"
-    case feishu = "飞书文档"
+    case feishu = "飞书任务"
     case linear = "Linear"
 
     var isReadOnly: Bool {
         false
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "飞书文档", "飞书任务":
+            self = .feishu
+        default:
+            self = IssueSource(rawValue: raw) ?? .manual
+        }
     }
 }
 
@@ -132,11 +142,21 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     var hasDevActivity: Bool = false     // 检测到 GitLab bot 等开发活动
     var isEscalated: Bool = false        // Meta Support 是否已 Escalate
     var feishuTaskGuid: String?          // 对应飞书任务 GUID（新 issue 自动创建）
+    var feishuTaskSummary: String?       // 飞书任务标题快照
+    var feishuTaskCompletedAt: String?   // 飞书任务完成时间，原样保存
+    var feishuTasklistGuids: [String] = [] // 飞书任务所属清单 GUID
+    var feishuTaskAssigneeIds: [String] = [] // 飞书任务负责人 ID
     var linearIssueId: String?           // Linear issue UUID
     var linearKey: String?               // Linear issue identifier (如 LIN-123)
     var linearUrl: String?               // Linear issue URL
+    var linearProjectId: String?         // Linear project UUID
+    var linearProjectName: String?       // Linear project name
     var linearAssignee: String?          // Linear 当前负责人名称，用于变更检测
     var followers: [String] = []         // 关注人列表（本地成员名）
+    var reporterId: String?              // 本地提交人 ID
+    var reporterName: String?            // 本地提交人名称
+    var reportedAt: Date?                // 本地提交时间
+    var issueTags: [String] = []         // 本地标签，用于工作台筛选和日报重点分组
 
     init(title: String, type: IssueType = .bug) {
         self.title = title
@@ -146,8 +166,10 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
     // MARK: - Custom Codable for migration
 
     private enum CodingKeys: String, CodingKey {
-        case id, issueNumber, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt, hasDevActivity, isEscalated, feishuTaskGuid
-        case linearIssueId, linearKey, linearUrl, linearAssignee, followers
+        case id, issueNumber, type, title, dateKey, createdAt, updatedAt, diaryBadge, status, source, assignee, jiraKey, ticketURL, department, comments, resolvedAt, hasDevActivity, isEscalated
+        case feishuTaskGuid, feishuTaskSummary, feishuTaskCompletedAt, feishuTasklistGuids, feishuTaskAssigneeIds
+        case linearIssueId, linearKey, linearUrl, linearProjectId, linearProjectName, linearAssignee, followers
+        case reporterId, reporterName, reportedAt, issueTags
         case note       // legacy single-note field
         case isFixed    // legacy BugEntry field
         case fixedAt    // legacy BugEntry field
@@ -227,11 +249,21 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
         hasDevActivity = (try? container.decodeIfPresent(Bool.self, forKey: .hasDevActivity)) ?? false
         isEscalated = (try? container.decodeIfPresent(Bool.self, forKey: .isEscalated)) ?? false
         feishuTaskGuid = try? container.decodeIfPresent(String.self, forKey: .feishuTaskGuid)
+        feishuTaskSummary = try? container.decodeIfPresent(String.self, forKey: .feishuTaskSummary)
+        feishuTaskCompletedAt = try? container.decodeIfPresent(String.self, forKey: .feishuTaskCompletedAt)
+        feishuTasklistGuids = (try? container.decodeIfPresent([String].self, forKey: .feishuTasklistGuids)) ?? []
+        feishuTaskAssigneeIds = (try? container.decodeIfPresent([String].self, forKey: .feishuTaskAssigneeIds)) ?? []
         linearIssueId = try? container.decodeIfPresent(String.self, forKey: .linearIssueId)
         linearKey = try? container.decodeIfPresent(String.self, forKey: .linearKey)
         linearUrl = try? container.decodeIfPresent(String.self, forKey: .linearUrl)
+        linearProjectId = try? container.decodeIfPresent(String.self, forKey: .linearProjectId)
+        linearProjectName = try? container.decodeIfPresent(String.self, forKey: .linearProjectName)
         linearAssignee = try? container.decodeIfPresent(String.self, forKey: .linearAssignee)
         followers = (try? container.decodeIfPresent([String].self, forKey: .followers)) ?? []
+        reporterId = try? container.decodeIfPresent(String.self, forKey: .reporterId)
+        reporterName = try? container.decodeIfPresent(String.self, forKey: .reporterName)
+        reportedAt = try? container.decodeIfPresent(Date.self, forKey: .reportedAt)
+        issueTags = (try? container.decodeIfPresent([String].self, forKey: .issueTags)) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -265,12 +297,28 @@ struct TrackedIssue: Identifiable, Codable, Sendable {
             try container.encode(isEscalated, forKey: .isEscalated)
         }
         try container.encodeIfPresent(feishuTaskGuid, forKey: .feishuTaskGuid)
+        try container.encodeIfPresent(feishuTaskSummary, forKey: .feishuTaskSummary)
+        try container.encodeIfPresent(feishuTaskCompletedAt, forKey: .feishuTaskCompletedAt)
+        if !feishuTasklistGuids.isEmpty {
+            try container.encode(feishuTasklistGuids, forKey: .feishuTasklistGuids)
+        }
+        if !feishuTaskAssigneeIds.isEmpty {
+            try container.encode(feishuTaskAssigneeIds, forKey: .feishuTaskAssigneeIds)
+        }
         try container.encodeIfPresent(linearIssueId, forKey: .linearIssueId)
         try container.encodeIfPresent(linearKey, forKey: .linearKey)
         try container.encodeIfPresent(linearUrl, forKey: .linearUrl)
+        try container.encodeIfPresent(linearProjectId, forKey: .linearProjectId)
+        try container.encodeIfPresent(linearProjectName, forKey: .linearProjectName)
         try container.encodeIfPresent(linearAssignee, forKey: .linearAssignee)
         if !followers.isEmpty {
             try container.encode(followers, forKey: .followers)
+        }
+        try container.encodeIfPresent(reporterId, forKey: .reporterId)
+        try container.encodeIfPresent(reporterName, forKey: .reporterName)
+        try container.encodeIfPresent(reportedAt, forKey: .reportedAt)
+        if !issueTags.isEmpty {
+            try container.encode(issueTags, forKey: .issueTags)
         }
     }
 }

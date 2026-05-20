@@ -42,3 +42,42 @@ func autoSaveSecureField(
             }
         }
 }
+
+struct SettingsStatusRow: View {
+    let title: String
+    let value: String
+    var systemImage: String = "circle"
+    var tint: Color = .secondary
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundStyle(tint)
+                .frame(width: 18)
+            Text(title)
+            Spacer(minLength: 12)
+            Text(value)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(.caption)
+    }
+}
+
+struct SettingsHint: View {
+    let text: String
+    var systemImage: String = "info.circle"
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}

@@ -31,7 +31,7 @@ func validTaskGUID(s string) bool {
 //   - 已进入细分状态（已排期/测试中/观测中）的 issue，若飞书端仍未完成，不会被打回"待处理"
 //   - 只有"完成↔未完成"真正翻转时才推进状态
 //   - summary/description 为空时不覆盖旧值
-func UpsertIssueFromFeishuTask(ctx context.Context, store *Store, taskGUID, summary, description string, completed bool) {
+func UpsertIssueFromFeishuTask(ctx context.Context, store PayloadStore, taskGUID, summary, description, completedAt string, completed bool) {
 	if taskGUID == "" {
 		return
 	}
@@ -45,6 +45,14 @@ func UpsertIssueFromFeishuTask(ctx context.Context, store *Store, taskGUID, summ
 			}
 			if summary != "" && summary != issue.Title {
 				issue.Title = summary
+			}
+			if summary != "" {
+				issue.FeishuTaskSummary = &summary
+			}
+			if completedAt != "" && completedAt != "0" {
+				issue.FeishuTaskCompletedAt = &completedAt
+			} else {
+				issue.FeishuTaskCompletedAt = nil
 			}
 			if description != "" {
 				ensureFeishuTaskComment(issue, description, now)
@@ -74,18 +82,23 @@ func UpsertIssueFromFeishuTask(ctx context.Context, store *Store, taskGUID, summ
 			}
 		}
 		guid := taskGUID
+		taskSummary := summary
 		newIssue := TrackedIssue{
-			ID:             fmt.Sprintf("%d", time.Now().UnixNano()),
-			IssueNumber:    maxNumber + 1,
-			Type:           "Support",
-			Title:          summary,
-			DateKey:        time.Now().Format("2006-01-02"),
-			CreatedAt:      now,
-			UpdatedAt:      &now,
-			Status:         StatusPending,
-			Source:         "手动",
-			Comments:       []IssueComment{},
-			FeishuTaskGUID: &guid,
+			ID:                fmt.Sprintf("%d", time.Now().UnixNano()),
+			IssueNumber:       maxNumber + 1,
+			Type:              "Support",
+			Title:             summary,
+			DateKey:           time.Now().Format("2006-01-02"),
+			CreatedAt:         now,
+			UpdatedAt:         &now,
+			Status:            StatusPending,
+			Source:            "飞书任务",
+			Comments:          []IssueComment{},
+			FeishuTaskGUID:    &guid,
+			FeishuTaskSummary: &taskSummary,
+		}
+		if completedAt != "" && completedAt != "0" {
+			newIssue.FeishuTaskCompletedAt = &completedAt
 		}
 		if completed {
 			applyIssueStatus(&newIssue, StatusResolved)

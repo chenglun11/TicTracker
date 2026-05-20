@@ -20,10 +20,14 @@ type SyncPayload struct {
 	Departments          []string                       `json:"departments,omitempty"`
 	Records              map[string]map[string]int      `json:"records,omitempty"`
 	DailyNotes           map[string]string              `json:"dailyNotes,omitempty"`
+	CurrentMemberID      string                         `json:"currentMemberId,omitempty"`
+	CurrentMemberName    string                         `json:"currentMemberName,omitempty"`
 	TapTimestamps        map[string]map[string][]string `json:"tapTimestamps,omitempty"`
 	TrackedIssues        []TrackedIssue                 `json:"trackedIssues,omitempty"`
 	BugTeamMembers       []string                       `json:"bugTeamMembers,omitempty"`
+	TeamMembers          json.RawMessage                `json:"teamMembers,omitempty"`
 	JiraConfig           json.RawMessage                `json:"jiraConfig,omitempty"`
+	LinearConfig         json.RawMessage                `json:"linearConfig,omitempty"`
 	FeishuBotConfig      *FeishuBotConfig               `json:"feishuBotConfig,omitempty"`
 	FeishuWebhookSecrets map[string]string              `json:"feishuWebhookSecrets,omitempty"`
 	AIConfig             json.RawMessage                `json:"aiConfig,omitempty"`
@@ -32,24 +36,40 @@ type SyncPayload struct {
 }
 
 type TrackedIssue struct {
-	ID             string         `json:"id"`
-	IssueNumber    int            `json:"issueNumber"`
-	Type           string         `json:"type"`
-	Title          string         `json:"title"`
-	DateKey        string         `json:"dateKey"`
-	CreatedAt      FlexTime       `json:"createdAt"`
-	UpdatedAt      *FlexTime      `json:"updatedAt,omitempty"`
-	DiaryBadge     string         `json:"diaryBadge"`
-	Status         string         `json:"status"`
-	Source         string         `json:"source"`
-	Assignee       *string        `json:"assignee,omitempty"`
-	JiraKey        *string        `json:"jiraKey,omitempty"`
-	TicketURL      *string        `json:"ticketURL,omitempty"`
-	Department     *string        `json:"department,omitempty"`
-	Comments       []IssueComment `json:"comments"`
-	ResolvedAt     *FlexTime      `json:"resolvedAt,omitempty"`
-	HasDevActivity bool           `json:"hasDevActivity"`
-	FeishuTaskGUID *string        `json:"feishuTaskGuid,omitempty"`
+	ID                    string         `json:"id"`
+	IssueNumber           int            `json:"issueNumber"`
+	Type                  string         `json:"type"`
+	Title                 string         `json:"title"`
+	DateKey               string         `json:"dateKey"`
+	CreatedAt             FlexTime       `json:"createdAt"`
+	UpdatedAt             *FlexTime      `json:"updatedAt,omitempty"`
+	DiaryBadge            string         `json:"diaryBadge"`
+	Status                string         `json:"status"`
+	Source                string         `json:"source"`
+	Assignee              *string        `json:"assignee,omitempty"`
+	JiraKey               *string        `json:"jiraKey,omitempty"`
+	TicketURL             *string        `json:"ticketURL,omitempty"`
+	Department            *string        `json:"department,omitempty"`
+	Comments              []IssueComment `json:"comments"`
+	ResolvedAt            *FlexTime      `json:"resolvedAt,omitempty"`
+	HasDevActivity        bool           `json:"hasDevActivity"`
+	IsEscalated           bool           `json:"isEscalated"`
+	FeishuTaskGUID        *string        `json:"feishuTaskGuid,omitempty"`
+	FeishuTaskSummary     *string        `json:"feishuTaskSummary,omitempty"`
+	FeishuTaskCompletedAt *string        `json:"feishuTaskCompletedAt,omitempty"`
+	FeishuTasklistGUIDs   []string       `json:"feishuTasklistGuids,omitempty"`
+	FeishuTaskAssigneeIDs []string       `json:"feishuTaskAssigneeIds,omitempty"`
+	LinearIssueID         *string        `json:"linearIssueId,omitempty"`
+	LinearKey             *string        `json:"linearKey,omitempty"`
+	LinearURL             *string        `json:"linearUrl,omitempty"`
+	LinearProjectID       *string        `json:"linearProjectId,omitempty"`
+	LinearProjectName     *string        `json:"linearProjectName,omitempty"`
+	LinearAssignee        *string        `json:"linearAssignee,omitempty"`
+	Followers             []string       `json:"followers,omitempty"`
+	ReporterID            *string        `json:"reporterId,omitempty"`
+	ReporterName          *string        `json:"reporterName,omitempty"`
+	ReportedAt            *FlexTime      `json:"reportedAt,omitempty"`
+	IssueTags             []string       `json:"issueTags,omitempty"`
 }
 
 type IssueComment struct {
@@ -118,13 +138,14 @@ type FeishuBotConfig struct {
 	CustomTemplate      string            `json:"customTemplate"`
 	CustomTemplateTitle string            `json:"customTemplateTitle"`
 	CardTitle           string            `json:"cardTitle"`
+	FocusIssueTag       string            `json:"focusIssueTag"`
 	MaxRetries          int               `json:"maxRetries"`
 	WebPortalURL        string            `json:"webPortalURL"`
 	AppID               string            `json:"appID,omitempty"`
-	AppSecret           string            `json:"appSecret,omitempty"`           // 新增：应用密钥（同步方案，优先级低于 yaml/env）
-	VerificationToken   string            `json:"verificationToken,omitempty"`   // 新增：飞书事件订阅 verification token
-	EncryptKey          string            `json:"encryptKey,omitempty"`          // 新增：飞书事件订阅 encrypt key
-	AllowedChatIDs      []string          `json:"allowedChatIDs,omitempty"`      // 新增：机器人命令白名单（空=全部允许）
+	AppSecret           string            `json:"appSecret,omitempty"`         // 新增：应用密钥（同步方案，优先级低于 yaml/env）
+	VerificationToken   string            `json:"verificationToken,omitempty"` // 新增：飞书事件订阅 verification token
+	EncryptKey          string            `json:"encryptKey,omitempty"`        // 新增：飞书事件订阅 encrypt key
+	AllowedChatIDs      []string          `json:"allowedChatIDs,omitempty"`    // 新增：机器人命令白名单（空=全部允许）
 	TasklistGUID        string            `json:"tasklistGUID,omitempty"`
 	ShowSupportStats    bool              `json:"showSupportStats"`
 	ShowOverview        bool              `json:"showOverview"`
@@ -134,6 +155,8 @@ type FeishuBotConfig struct {
 	ShowTesting         bool              `json:"showTesting"`
 	ShowResolved        bool              `json:"showResolved"`
 	ShowDailyNote       bool              `json:"showDailyNote"`
+	ShowMyReported      bool              `json:"showMyReported"`
+	ShowFocusTag        bool              `json:"showFocusTag"`
 	ShowComments        bool              `json:"showComments"`
 	FieldType           bool              `json:"fieldType"`
 	FieldDepartment     bool              `json:"fieldDepartment"`

@@ -41,9 +41,47 @@ struct IssueTrackerTab: View {
                     }
                     .onChange(of: store.jiraSourceMode) { _, _ in saveState.triggerSave() }
                 }
+
+                if !store.teamMembers.isEmpty {
+                    Picker("我是谁", selection: Bindable(store).currentMemberId) {
+                        Text("未选择").tag("")
+                        ForEach(store.teamMembers) { member in
+                            Text(member.name).tag(member.id.uuidString)
+                        }
+                    }
+                    .onChange(of: store.currentMemberId) { _, _ in saveState.triggerSave() }
+                }
             }
 
             if store.issueTrackerEnabled {
+                Section("工作流状态") {
+                    SettingsStatusRow(
+                        title: "当前成员",
+                        value: currentMemberDisplay,
+                        systemImage: "person.crop.circle",
+                        tint: store.currentMemberId.isEmpty ? .orange : .green
+                    )
+                    SettingsStatusRow(
+                        title: "入口数量",
+                        value: "\(enabledSourceCount) 个已启用",
+                        systemImage: "tray.and.arrow.down.fill",
+                        tint: enabledSourceCount == 0 ? .orange : .green
+                    )
+                    SettingsStatusRow(
+                        title: "今日提交",
+                        value: "\(todayReportedCount) 个",
+                        systemImage: "square.and.pencil",
+                        tint: todayReportedCount > 0 ? .blue : .secondary
+                    )
+                    SettingsStatusRow(
+                        title: "我提交未关闭",
+                        value: "\(myOpenReportedCount) 个",
+                        systemImage: "person.badge.clock",
+                        tint: myOpenReportedCount > 0 ? .orange : .secondary
+                    )
+                    SettingsHint(text: "本地项目只作为本机工作台维度，不和 Linear Project 绑定；Linear 的 Team/Project 范围在「Linear 入口」里单独控制。")
+                }
+
                 Section {
                     Toggle("手动", isOn: Bindable(store).issueSourceManualEnabled)
                         .onChange(of: store.issueSourceManualEnabled) { _, _ in saveState.triggerSave() }
@@ -51,8 +89,8 @@ struct IssueTrackerTab: View {
                         .onChange(of: store.issueSourceJiraEnabled) { _, _ in saveState.triggerSave() }
                     Toggle("Meta Direct Support", isOn: Bindable(store).issueSourceMetaEnabled)
                         .onChange(of: store.issueSourceMetaEnabled) { _, _ in saveState.triggerSave() }
-                    Toggle("飞书文档", isOn: Bindable(store).issueSourceFeishuDocEnabled)
-                        .onChange(of: store.issueSourceFeishuDocEnabled) { _, _ in saveState.triggerSave() }
+                    Toggle("飞书任务", isOn: Bindable(store).issueSourceFeishuTaskEnabled)
+                        .onChange(of: store.issueSourceFeishuTaskEnabled) { _, _ in saveState.triggerSave() }
                 } header: {
                     Text("反馈入口")
                 } footer: {
@@ -160,6 +198,7 @@ struct IssueTrackerTab: View {
             }
         }
         .formStyle(.grouped)
+        .tunedForResponsiveScroll()
         .autoSaveIndicator(saveState)
     }
 
@@ -169,6 +208,48 @@ struct IssueTrackerTab: View {
         store.teamMembers.append(TeamMember(name: name))
         newMember = ""
         saveState.triggerSave()
+    }
+
+    private var currentMemberDisplay: String {
+        if let member = store.teamMembers.first(where: { $0.id.uuidString == store.currentMemberId }) {
+            return member.name
+        }
+        return "未选择"
+    }
+
+    private var enabledSourceCount: Int {
+        [
+            store.issueSourceManualEnabled,
+            store.issueSourceJiraEnabled,
+            store.issueSourceMetaEnabled,
+            store.issueSourceFeishuTaskEnabled
+        ].filter { $0 }.count
+    }
+
+    private var todayReportedCount: Int {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let today = formatter.string(from: Date())
+        return store.visibleTrackedIssues.filter { issue in
+            isMine(issue) &&
+                (issue.reportedAt.map { formatter.string(from: $0) } ?? issue.dateKey) == today
+        }.count
+    }
+
+    private var myOpenReportedCount: Int {
+        store.visibleTrackedIssues.filter { issue in
+            isMine(issue) && !issue.status.isResolved
+        }.count
+    }
+
+    private func isMine(_ issue: TrackedIssue) -> Bool {
+        if !store.currentMemberId.isEmpty, issue.reporterId == store.currentMemberId {
+            return true
+        }
+        if let current = store.teamMembers.first(where: { $0.id.uuidString == store.currentMemberId }) {
+            return issue.reporterName == current.name
+        }
+        return false
     }
 
     @ViewBuilder
@@ -182,6 +263,9 @@ struct IssueTrackerTab: View {
             Spacer()
             Button {
                 store.linearConfig.assigneeMapping.removeValue(forKey: member.name)
+                if store.currentMemberId == member.id.uuidString {
+                    store.currentMemberId = ""
+                }
                 store.teamMembers.removeAll { $0.id == member.id }
                 saveState.triggerSave()
             } label: {

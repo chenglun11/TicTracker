@@ -180,18 +180,14 @@ final class LinearService {
             let quoted = ids.map { "\\\"\($0)\\\"" }.joined(separator: ", ")
             inputFields += ", labelIds: [\(quoted)]"
         }
-        let q = "mutation { issueCreate(input: { \(inputFields) }) { success issue { id identifier title url } } }"
+        let q = "mutation { issueCreate(input: { \(inputFields) }) { success issue { id identifier title url project { id name } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else { return nil }
         guard let data = json["data"] as? [String: Any],
               let issueCreate = data["issueCreate"] as? [String: Any],
               let success = issueCreate["success"] as? Bool, success,
               let issue = issueCreate["issue"] as? [String: Any] else { return nil }
-        guard let id = issue["id"] as? String,
-              let identifier = issue["identifier"] as? String,
-              let issueTitle = issue["title"] as? String,
-              let url = issue["url"] as? String else { return nil }
-        return LinearIssue(id: id, identifier: identifier, title: issueTitle, url: url)
+        return parseIssueDetail(issue)
     }
 
     func updateIssueState(issueId: String, stateId: String) async -> Bool {
@@ -439,18 +435,15 @@ final class LinearService {
                 DevLog.shared.info("LinearSync", "\(displayKey): title updated")
             }
 
-            // Project sync. Only apply when the Linear project has an explicit local mapping.
-            if let remoteProjectId = detail.project?.id,
-               let localDepartment = store.linearConfig.projectMapping.first(where: { $0.value == remoteProjectId })?.key,
-               let current = store.trackedIssues.first(where: { $0.id == issue.id }),
-               current.department != localDepartment {
-                let oldDepartment = current.department ?? "未设置"
-                store.updateIssueDepartmentLocally(id: issue.id, department: localDepartment)
-                let commentText = "[Linear] 项目变更: \(oldDepartment) → \(localDepartment)"
-                if !issueHasComment(issueId: issue.id, text: commentText) {
-                    store.addIssueComment(id: issue.id, text: commentText)
+            // Project sync. Keep Linear Project as Linear-only metadata; it is not tied to local department.
+            if let remoteProject = detail.project {
+                if let current = store.trackedIssues.first(where: { $0.id == issue.id }),
+                   current.linearProjectId != remoteProject.id || current.linearProjectName != remoteProject.name {
+                    store.updateIssueLinearProject(id: issue.id, projectId: remoteProject.id, name: remoteProject.name)
                 }
-                DevLog.shared.info("LinearSync", "\(displayKey): project → \(localDepartment)")
+            } else if let current = store.trackedIssues.first(where: { $0.id == issue.id }),
+                      current.linearProjectId != nil || current.linearProjectName != nil {
+                store.updateIssueLinearProject(id: issue.id, projectId: nil, name: nil)
             }
 
             // Assignee sync

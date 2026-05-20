@@ -11,6 +11,8 @@ struct FeishuBotTab: View {
     @State private var sendSuccess = false
     @State private var didLoadSecrets = false
     @State private var appSecretInput = ""
+    @State private var keychainMessage: String?
+    @State private var keychainSuccess = true
 
     private let templateVariables: [(String, String)] = [
         ("{{日期}}", "当天日期，如 2026-04-07"),
@@ -34,7 +36,7 @@ struct FeishuBotTab: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("飞书 Bot") {
+            Section("飞书 Bot") {
                 Toggle(isOn: Bindable(store).feishuBotConfig.enabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("启用飞书 Bot 日报推送")
@@ -51,6 +53,40 @@ struct FeishuBotTab: View {
                     }
                     saveState.triggerSave()
                 }
+            }
+
+            Section("日报出口") {
+                SettingsStatusRow(
+                    title: "主流程",
+                    value: store.feishuBotConfig.enabled ? "定时日报" : "未启用",
+                    systemImage: "clock.badge.checkmark",
+                    tint: store.feishuBotConfig.enabled ? .green : .secondary
+                )
+                SettingsStatusRow(
+                    title: "发送通道",
+                    value: activeWebhookSummary,
+                    systemImage: "paperplane.fill",
+                    tint: activeWebhookCount > 0 ? .green : .orange
+                )
+                SettingsStatusRow(
+                    title: "发送时间",
+                    value: scheduleSummary,
+                    systemImage: "calendar",
+                    tint: store.feishuBotConfig.sendTimes.isEmpty ? .orange : .green
+                )
+                SettingsStatusRow(
+                    title: "我的提交",
+                    value: store.feishuBotConfig.showMyReported ? "进入日报" : "未展示",
+                    systemImage: "person.crop.circle.badge.checkmark",
+                    tint: store.feishuBotConfig.showMyReported ? .green : .secondary
+                )
+                SettingsStatusRow(
+                    title: "重点分组",
+                    value: store.feishuBotConfig.showFocusTag ? focusTagDisplay : "未展示",
+                    systemImage: "tag.fill",
+                    tint: store.feishuBotConfig.showFocusTag ? .green : .secondary
+                )
+                SettingsHint(text: "日报始终统计当天完整数据；重点 Tag 只额外生成一组，推送成功后不会自动移除标签。")
             }
 
             Section("Webhook") {
@@ -109,9 +145,10 @@ struct FeishuBotTab: View {
                                 ))
                                 .textFieldStyle(UnderlineTextFieldStyle())
                                 .onSubmit { saveWebhookSecret(webhook.id) }
-                                Button("保存") { saveWebhookSecret(webhook.id) }
+                                Button((secretInputs[webhook.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "清除" : "保存") {
+                                    saveWebhookSecret(webhook.id)
+                                }
                                     .controlSize(.small)
-                                    .disabled((secretInputs[webhook.id] ?? "").isEmpty)
                             }
                         }
                     }
@@ -298,26 +335,7 @@ struct FeishuBotTab: View {
             }
 
             if store.feishuBotConfig.messageFormat != .customTemplate {
-                Section("卡片模块") {
-                Toggle("项目支持统计", isOn: Bindable(store).feishuBotConfig.showSupportStats)
-                    .onChange(of: store.feishuBotConfig.showSupportStats) { _, _ in saveState.triggerSave() }
-                Toggle("统计概览（新建/解决/待处理）", isOn: Bindable(store).feishuBotConfig.showOverview)
-                    .onChange(of: store.feishuBotConfig.showOverview) { _, _ in saveState.triggerSave() }
-                Toggle("待处理问题列表", isOn: Bindable(store).feishuBotConfig.showPending)
-                    .onChange(of: store.feishuBotConfig.showPending) { _, _ in saveState.triggerSave() }
-                Toggle("观测中问题列表", isOn: Bindable(store).feishuBotConfig.showObserving)
-                    .onChange(of: store.feishuBotConfig.showObserving) { _, _ in saveState.triggerSave() }
-                Toggle("已排期问题列表", isOn: Bindable(store).feishuBotConfig.showScheduled)
-                    .onChange(of: store.feishuBotConfig.showScheduled) { _, _ in saveState.triggerSave() }
-                Toggle("测试中问题列表", isOn: Bindable(store).feishuBotConfig.showTesting)
-                    .onChange(of: store.feishuBotConfig.showTesting) { _, _ in saveState.triggerSave() }
-                Toggle("今日已解决列表", isOn: Bindable(store).feishuBotConfig.showResolved)
-                    .onChange(of: store.feishuBotConfig.showResolved) { _, _ in saveState.triggerSave() }
-                Toggle("日报文字", isOn: Bindable(store).feishuBotConfig.showDailyNote)
-                    .onChange(of: store.feishuBotConfig.showDailyNote) { _, _ in saveState.triggerSave() }
-                Toggle("问题评论（最近2条）", isOn: Bindable(store).feishuBotConfig.showComments)
-                    .onChange(of: store.feishuBotConfig.showComments) { _, _ in saveState.triggerSave() }
-            }
+                reportModuleSections
             }
 
             Section("问题显示字段") {
@@ -346,14 +364,20 @@ struct FeishuBotTab: View {
                     ))
                     .textFieldStyle(UnderlineTextFieldStyle())
                     .onSubmit { saveAppSecret() }
-                    Button("保存") { saveAppSecret() }
+                    Button(appSecretInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "清除" : "保存") {
+                        saveAppSecret()
+                    }
                         .controlSize(.small)
-                        .disabled(appSecretInput.isEmpty)
                 }
 
                 Text("配置后服务端可接收飞书消息和卡片交互回调")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let keychainMessage {
+                    Text(keychainMessage)
+                        .font(.caption)
+                        .foregroundStyle(keychainSuccess ? .green : .red)
+                }
 
                 NavigationLink {
                     FeishuTaskSyncSettingsView(store: store)
@@ -414,6 +438,7 @@ struct FeishuBotTab: View {
             }
         }
         .formStyle(.grouped)
+        .tunedForResponsiveScroll()
         .autoSaveIndicator(saveState)
         .onChange(of: isActive) { _, active in
             if active { loadSecretsIfNeeded() }
@@ -421,6 +446,48 @@ struct FeishuBotTab: View {
         .task {
             if isActive { loadSecretsIfNeeded() }
         }
+        }
+    }
+
+    @ViewBuilder
+    private var reportModuleSections: some View {
+        Section("卡片模块") {
+            Toggle("项目支持统计", isOn: Bindable(store).feishuBotConfig.showSupportStats)
+                .onChange(of: store.feishuBotConfig.showSupportStats) { _, _ in saveState.triggerSave() }
+            Toggle("统计概览（新建/解决/待处理）", isOn: Bindable(store).feishuBotConfig.showOverview)
+                .onChange(of: store.feishuBotConfig.showOverview) { _, _ in saveState.triggerSave() }
+            Toggle("待处理问题列表", isOn: Bindable(store).feishuBotConfig.showPending)
+                .onChange(of: store.feishuBotConfig.showPending) { _, _ in saveState.triggerSave() }
+            Toggle("观测中问题列表", isOn: Bindable(store).feishuBotConfig.showObserving)
+                .onChange(of: store.feishuBotConfig.showObserving) { _, _ in saveState.triggerSave() }
+            Toggle("已排期问题列表", isOn: Bindable(store).feishuBotConfig.showScheduled)
+                .onChange(of: store.feishuBotConfig.showScheduled) { _, _ in saveState.triggerSave() }
+            Toggle("测试中问题列表", isOn: Bindable(store).feishuBotConfig.showTesting)
+                .onChange(of: store.feishuBotConfig.showTesting) { _, _ in saveState.triggerSave() }
+            Toggle("今日已解决列表", isOn: Bindable(store).feishuBotConfig.showResolved)
+                .onChange(of: store.feishuBotConfig.showResolved) { _, _ in saveState.triggerSave() }
+            Toggle("日报文字", isOn: Bindable(store).feishuBotConfig.showDailyNote)
+                .onChange(of: store.feishuBotConfig.showDailyNote) { _, _ in saveState.triggerSave() }
+            Toggle("问题评论（最近2条）", isOn: Bindable(store).feishuBotConfig.showComments)
+                .onChange(of: store.feishuBotConfig.showComments) { _, _ in saveState.triggerSave() }
+        }
+
+        Section {
+            Toggle("我今日提交", isOn: Bindable(store).feishuBotConfig.showMyReported)
+                .onChange(of: store.feishuBotConfig.showMyReported) { _, _ in saveState.triggerSave() }
+            Toggle("重点 Tag 分组", isOn: Bindable(store).feishuBotConfig.showFocusTag)
+                .onChange(of: store.feishuBotConfig.showFocusTag) { _, _ in saveState.triggerSave() }
+            TextField("重点 Tag", text: Bindable(store).feishuBotConfig.focusIssueTag,
+                      prompt: Text("今日Bug"))
+                .textFieldStyle(UnderlineTextFieldStyle())
+                .disabled(!store.feishuBotConfig.showFocusTag)
+                .onChange(of: store.feishuBotConfig.focusIssueTag) { _, _ in saveState.debouncedSave() }
+        } header: {
+            Text("日报分组")
+        } footer: {
+            Text("定时日报始终发送当天完整数据；重点 Tag 只额外高亮一组问题。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -439,14 +506,54 @@ struct FeishuBotTab: View {
         }
     }
 
+    private var activeWebhookCount: Int {
+        store.feishuBotConfig.webhooks.filter {
+            $0.enabled && !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
+    }
+
+    private var activeWebhookSummary: String {
+        if activeWebhookCount == 0 {
+            return "缺 Webhook"
+        }
+        return "\(activeWebhookCount) 个可发送"
+    }
+
+    private var scheduleSummary: String {
+        let times = store.feishuBotConfig.sendTimes
+        guard !times.isEmpty else { return "未设置" }
+        let sorted = times.sorted {
+            if $0.hour == $1.hour { return $0.minute < $1.minute }
+            return $0.hour < $1.hour
+        }
+        return sorted.prefix(3).map { String(format: "%02d:%02d", $0.hour, $0.minute) }.joined(separator: "、") +
+            (sorted.count > 3 ? " 等 \(sorted.count) 个" : "")
+    }
+
+    private var focusTagDisplay: String {
+        let tag = store.feishuBotConfig.focusIssueTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tag.isEmpty ? "今日Bug" : tag
+    }
+
     private func saveWebhookSecret(_ id: UUID) {
-        guard let secret = secretInputs[id], !secret.isEmpty else { return }
-        FeishuBotService.saveSecret(for: id, secret: secret)
+        let secret = secretInputs[id] ?? ""
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ok = FeishuBotService.saveSecret(for: id, secret: trimmed)
+        keychainSuccess = ok
+        keychainMessage = ok ? (trimmed.isEmpty ? "Webhook Secret 已从 Keychain 清除" : "Webhook Secret 已保存到 Keychain") : "Webhook Secret 保存失败"
+        if ok, trimmed.isEmpty {
+            secretInputs[id] = ""
+        }
     }
 
     private func saveAppSecret() {
-        guard !appSecretInput.isEmpty else { return }
-        FeishuBotService.saveAppSecret(appSecretInput)
+        let trimmed = appSecretInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ok = FeishuBotService.saveAppSecret(trimmed)
+        keychainSuccess = ok
+        keychainMessage = ok ? (trimmed.isEmpty ? "App Secret 已从 Keychain 清除" : "App Secret 已保存到 Keychain") : "App Secret 保存失败"
+        if ok {
+            appSecretInput = trimmed
+        }
     }
 
     private func testSend() {
@@ -486,4 +593,3 @@ struct FeishuBotTab: View {
 }
 
 // MARK: - AI Tab
-

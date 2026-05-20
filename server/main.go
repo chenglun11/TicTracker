@@ -28,7 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	store, err := NewStore(cfg.DataDir)
+	store, err := NewSQLiteStore(context.Background(), cfg)
 	if err != nil {
 		slog.Error("failed to init store", "err", err)
 		os.Exit(1)
@@ -60,7 +60,7 @@ func main() {
 	ServeWeb(r)
 
 	// 同步路由（macOS 客户端 → /sync）
-	sync := r.Group("/", AuthMiddleware(cfg.SyncAccessToken()))
+	sync := r.Group("/", WorkspaceAuthMiddleware(store, "sync", cfg.SyncAccessToken()))
 	sync.GET("/sync", HandleGetSync(store))
 	sync.POST("/sync", HandlePostSync(store))
 
@@ -86,8 +86,20 @@ func main() {
 		slog.Warn("feishu encrypt_key not configured — /feishu/event 不会执行签名校验，强烈建议在飞书后台开启加密推送并填充配置")
 	}
 
+	registerPublicAuth := func(group *gin.RouterGroup) {
+		group.GET("/auth/status", HandleAuthStatus(store))
+		group.POST("/auth/init", HandleAuthInit(store))
+		group.POST("/auth/login", HandleAuthLogin(store))
+	}
+	publicAPI := r.Group("/api")
+	registerPublicAuth(publicAPI)
+	publicAPIV1 := r.Group("/api/v1")
+	registerPublicAuth(publicAPIV1)
+
 	registerWebAPI := func(group *gin.RouterGroup) {
 		group.GET("/status", HandleGetStatus(store))
+		group.GET("/setup", HandleGetSetup(store))
+		group.PUT("/setup", HandlePutSetup(store))
 		group.GET("/issues", HandleGetIssues(store))
 		group.GET("/feishu/tasks", HandleListFeishuTasks(store, feishuTask))
 		group.GET("/feishu/tasks/test", HandleTestFeishuTasks(store, feishuTask))
@@ -98,9 +110,9 @@ func main() {
 		group.DELETE("/issues/:id", HandleDeleteIssue(store))
 	}
 
-	api := r.Group("/api", AuthMiddleware(cfg.WebAccessToken()))
+	api := r.Group("/api", WorkspaceAuthMiddleware(store, "web", cfg.WebAccessToken()))
 	registerWebAPI(api)
-	apiV1 := r.Group("/api/v1", AuthMiddleware(cfg.WebAccessToken()))
+	apiV1 := r.Group("/api/v1", WorkspaceAuthMiddleware(store, "web", cfg.WebAccessToken()))
 	registerWebAPI(apiV1)
 
 	// 调度器：可被 ctx 取消

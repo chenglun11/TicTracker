@@ -21,7 +21,7 @@ const feishuAPIBase = "https://open.feishu.cn"
 // FeishuApp 管理飞书应用凭证和 API 调用
 type FeishuApp struct {
 	cfg        *Config
-	store      *Store
+	store      PayloadStore
 	httpClient *http.Client
 
 	mu          sync.RWMutex
@@ -29,7 +29,7 @@ type FeishuApp struct {
 	tokenExpire time.Time
 }
 
-func NewFeishuApp(cfg *Config, store *Store) *FeishuApp {
+func NewFeishuApp(cfg *Config, store PayloadStore) *FeishuApp {
 	return &FeishuApp{
 		cfg:        cfg,
 		store:      store,
@@ -292,7 +292,7 @@ func (f *FeishuApp) getOnce(ctx context.Context, url string, out any) error {
 }
 
 // handleMessageEvent 处理收到的消息事件（异步上下文，body 已通过中间件解密/验签）
-func handleMessageEvent(ctx context.Context, app *FeishuApp, store *Store, body []byte) {
+func handleMessageEvent(ctx context.Context, app *FeishuApp, store PayloadStore, body []byte) {
 	var event struct {
 		Event struct {
 			Message struct {
@@ -352,7 +352,7 @@ func handleMessageEvent(ctx context.Context, app *FeishuApp, store *Store, body 
 	}
 }
 
-func handleListCommand(ctx context.Context, app *FeishuApp, store *Store, chatID string) {
+func handleListCommand(ctx context.Context, app *FeishuApp, store PayloadStore, chatID string) {
 	payload, err := store.Load(ctx)
 	if err != nil {
 		replyText(ctx, app, chatID, "读取数据失败")
@@ -378,7 +378,7 @@ func handleListCommand(ctx context.Context, app *FeishuApp, store *Store, chatID
 	replyText(ctx, app, chatID, fmt.Sprintf("待处理工单（%d个）：\n%s", len(lines), strings.Join(lines, "\n")))
 }
 
-func handleStatsCommand(ctx context.Context, app *FeishuApp, store *Store, chatID string) {
+func handleStatsCommand(ctx context.Context, app *FeishuApp, store PayloadStore, chatID string) {
 	payload, err := store.Load(ctx)
 	if err != nil {
 		replyText(ctx, app, chatID, "读取数据失败")
@@ -414,7 +414,7 @@ func handleStatsCommand(ctx context.Context, app *FeishuApp, store *Store, chatI
 	replyText(ctx, app, chatID, msg)
 }
 
-func handleCardStatusUpdate(ctx context.Context, store *Store, issueID, newStatus string) {
+func handleCardStatusUpdate(ctx context.Context, store PayloadStore, issueID, newStatus string) {
 	if err := store.Update(ctx, func(payload *SyncPayload) error {
 		for i := range payload.TrackedIssues {
 			if payload.TrackedIssues[i].ID == issueID {
@@ -441,7 +441,7 @@ func replyText(ctx context.Context, app *FeishuApp, chatID, text string) {
 // HandleEventCallback 处理飞书事件回调（URL 验证 + 事件分发）
 //
 // 中间件已完成验签/解密/去重，body 通过 c.Get("feishu.body") 取出
-func HandleEventCallback(app *FeishuApp, store *Store) gin.HandlerFunc {
+func HandleEventCallback(app *FeishuApp, store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body []byte
 		if v, exists := c.Get("feishu.body"); exists {
@@ -498,7 +498,7 @@ func HandleEventCallback(app *FeishuApp, store *Store) gin.HandlerFunc {
 // HandleCardAction 处理飞书卡片交互回调
 //
 // 中间件已完成验签/解密/去重，body 通过 c.Get("feishu.body") 取出
-func HandleCardAction(app *FeishuApp, store *Store) gin.HandlerFunc {
+func HandleCardAction(app *FeishuApp, store PayloadStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body []byte
 		if v, exists := c.Get("feishu.body"); exists {
@@ -531,15 +531,28 @@ func HandleCardAction(app *FeishuApp, store *Store) gin.HandlerFunc {
 
 		issueID, _ := action.Action.Value["issue_id"].(string)
 		actionType, _ := action.Action.Value["action"].(string)
+		workspaceID, _ := action.Action.Value["workspace_id"].(string)
+		if workspaceID == "" && issueID != "" {
+			if resolver, ok := store.(interface {
+				FindWorkspaceIDForIssue(context.Context, string) (string, error)
+			}); ok {
+				if resolved, err := resolver.FindWorkspaceIDForIssue(c.Request.Context(), issueID); err == nil {
+					workspaceID = resolved
+				}
+			}
+		}
 
 		if issueID == "" || actionType == "" {
 			c.JSON(http.StatusOK, gin.H{})
 			return
 		}
 
-		slog.Info("feishu card action", "action", actionType, "issue_id", issueID)
+		slog.Info("feishu card action", "action", actionType, "issue_id", issueID, "workspace", workspaceID)
 
 		ctx := c.Request.Context()
+		if workspaceID != "" {
+			ctx = withWorkspaceID(ctx, workspaceID)
+		}
 		switch actionType {
 		case "update_status":
 			newStatus := action.Action.Option
@@ -562,7 +575,7 @@ func HandleCardAction(app *FeishuApp, store *Store) gin.HandlerFunc {
 }
 
 // handleTaskEvent 处理飞书任务事件，回流到本地 issue
-func handleTaskEvent(ctx context.Context, store *Store, body []byte) {
+func handleTaskEvent(ctx context.Context, store PayloadStore, body []byte) {
 	var event struct {
 		Header struct {
 			EventType string `json:"event_type"`
@@ -591,10 +604,18 @@ func handleTaskEvent(ctx context.Context, store *Store, body []byte) {
 		slog.Warn("task event missing guid", "event_type", event.Header.EventType)
 		return
 	}
+	if resolver, ok := store.(interface {
+		FindWorkspaceIDForFeishuTask(context.Context, string) (string, error)
+	}); ok {
+		if workspaceID, err := resolver.FindWorkspaceIDForFeishuTask(ctx, guid); err == nil && workspaceID != "" {
+			ctx = withWorkspaceID(ctx, workspaceID)
+		}
+	}
 	completed := event.Event.Task.Completed ||
 		(event.Event.Task.CompletedAt != "" && event.Event.Task.CompletedAt != "0")
 	UpsertIssueFromFeishuTask(ctx, store, guid,
 		strings.TrimSpace(event.Event.Task.Summary),
 		event.Event.Task.Description,
+		event.Event.Task.CompletedAt,
 		completed)
 }

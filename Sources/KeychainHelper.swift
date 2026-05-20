@@ -48,20 +48,50 @@ enum KeychainHelper {
 
     @discardableResult
     static func save(service: String = service, account: String = account, data: Data) -> Bool {
-        delete(service: service, account: account)
+        let key = cacheKey(service: service, account: account)
+        let lookup: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let attributes: [String: Any] = [
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecValueData as String: data,
+        ]
+
+        let updateStatus = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            cache.set(key, data: data)
+            removeLegacyMirrorDirectory()
+            return true
+        }
+
+        guard updateStatus == errSecItemNotFound else {
+            return false
+        }
+
+        var addQuery = lookup
+        addQuery.merge(attributes) { _, new in new }
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus == errSecSuccess {
+            cache.set(key, data: data)
+            removeLegacyMirrorDirectory()
+            return true
+        }
+        return false
+    }
+
+    static func exists(service: String = service, account: String = account) -> Bool {
+        if cache.get(cacheKey(service: service, account: account)) != nil {
+            return true
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-            kSecValueData as String: data,
+            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        let keychainSuccess = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
-        if keychainSuccess {
-            cache.set(cacheKey(service: service, account: account), data: data)
-        }
-        removeLegacyMirrorDirectory()
-        return keychainSuccess
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     static func load(service: String = service, account: String = account) -> Data? {

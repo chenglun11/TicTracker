@@ -102,6 +102,18 @@ final class DataStore {
     var teamMembers: [TeamMember] {
         didSet { saveTeamMembers() }
     }
+    var currentMemberId: String {
+        didSet { UserDefaults.standard.set(currentMemberId, forKey: "currentMemberId") }
+    }
+
+    var currentMember: TeamMember? {
+        guard !currentMemberId.isEmpty else { return nil }
+        return teamMembers.first { $0.id.uuidString == currentMemberId }
+    }
+
+    var currentMemberName: String {
+        currentMember?.name ?? ""
+    }
 
     /// Backwards-compatible name list (read-only view, derived from teamMembers).
     var bugTeamMembers: [String] {
@@ -164,8 +176,8 @@ final class DataStore {
     var issueSourceMetaEnabled: Bool {
         didSet { UserDefaults.standard.set(issueSourceMetaEnabled, forKey: "issueSourceMetaEnabled") }
     }
-    var issueSourceFeishuDocEnabled: Bool {
-        didSet { UserDefaults.standard.set(issueSourceFeishuDocEnabled, forKey: "issueSourceFeishuDocEnabled") }
+    var issueSourceFeishuTaskEnabled: Bool {
+        didSet { UserDefaults.standard.set(issueSourceFeishuTaskEnabled, forKey: Self.issueSourceFeishuTaskEnabledKey) }
     }
     var diaryShowAllPending: Bool {
         didSet { UserDefaults.standard.set(diaryShowAllPending, forKey: "diaryShowAllPending") }
@@ -196,6 +208,8 @@ final class DataStore {
     private let departmentsKey = "departments"
     private let recordsKey = "records"
     private let dailyNotesKey = "dailyNotes"
+    private static let issueSourceFeishuTaskEnabledKey = "issueSourceFeishuTaskEnabled"
+    private static let legacyIssueSourceFeishuDocEnabledKey = "issueSourceFeishuDocEnabled"
 
     private static let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
@@ -360,6 +374,7 @@ final class DataStore {
         } else {
             teamMembers = []
         }
+        currentMemberId = UserDefaults.standard.string(forKey: "currentMemberId") ?? ""
 
         // Tap timestamps
         if let data = UserDefaults.standard.data(forKey: "tapTimestamps"),
@@ -398,7 +413,13 @@ final class DataStore {
         issueSourceManualEnabled = UserDefaults.standard.object(forKey: "issueSourceManualEnabled") as? Bool ?? true
         issueSourceJiraEnabled = UserDefaults.standard.object(forKey: "issueSourceJiraEnabled") as? Bool ?? true
         issueSourceMetaEnabled = UserDefaults.standard.object(forKey: "issueSourceMetaEnabled") as? Bool ?? true
-        issueSourceFeishuDocEnabled = UserDefaults.standard.object(forKey: "issueSourceFeishuDocEnabled") as? Bool ?? true
+        if let taskEnabled = UserDefaults.standard.object(forKey: Self.issueSourceFeishuTaskEnabledKey) as? Bool {
+            issueSourceFeishuTaskEnabled = taskEnabled
+        } else {
+            let migratedTaskEnabled = UserDefaults.standard.object(forKey: Self.legacyIssueSourceFeishuDocEnabledKey) as? Bool ?? true
+            issueSourceFeishuTaskEnabled = migratedTaskEnabled
+            UserDefaults.standard.set(migratedTaskEnabled, forKey: Self.issueSourceFeishuTaskEnabledKey)
+        }
 
         // AI
         if let data = UserDefaults.standard.data(forKey: "aiConfig"),
@@ -408,6 +429,10 @@ final class DataStore {
             aiConfig = AIConfig()
         }
         aiEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? false
+
+        if !currentMemberId.isEmpty, !teamMembers.contains(where: { $0.id.uuidString == currentMemberId }) {
+            currentMemberId = ""
+        }
 
         // Migrate legacy hotkeyModifier → per-project bindings
         if hotkeyBindings.isEmpty, UserDefaults.standard.string(forKey: "hotkeyModifier") != nil {
@@ -700,7 +725,9 @@ final class DataStore {
         var payload: [String: Any] = [
             "departments": departments,
             "records": records,
-            "dailyNotes": dailyNotes
+            "dailyNotes": dailyNotes,
+            "currentMemberId": currentMemberId,
+            "currentMemberName": currentMemberName
         ]
         if !tapTimestamps.isEmpty {
             payload["tapTimestamps"] = tapTimestamps
@@ -727,7 +754,9 @@ final class DataStore {
             "lastModified": Date().timeIntervalSince1970,
             "departments": departments,
             "records": records,
-            "dailyNotes": dailyNotes
+            "dailyNotes": dailyNotes,
+            "currentMemberId": currentMemberId,
+            "currentMemberName": currentMemberName
         ]
         if !tapTimestamps.isEmpty {
             payload["tapTimestamps"] = tapTimestamps
@@ -846,6 +875,9 @@ final class DataStore {
         } else if let members = obj["bugTeamMembers"] as? [String] {
             bugTeamMembers = members
         }
+        if let memberId = obj["currentMemberId"] as? String {
+            currentMemberId = memberId
+        }
         return true
     }
 
@@ -876,6 +908,9 @@ final class DataStore {
             teamMembers = decoded
         } else if let members = obj["bugTeamMembers"] as? [String] {
             bugTeamMembers = members
+        }
+        if let memberId = obj["currentMemberId"] as? String {
+            currentMemberId = memberId
         }
         // 配置数据
         if let jiraObj = obj["jiraConfig"],
@@ -1104,7 +1139,7 @@ final class DataStore {
         case .meta:
             issueSourceMetaEnabled
         case .feishu:
-            issueSourceFeishuDocEnabled
+            issueSourceFeishuTaskEnabled
         case .linear:
             linearConfig.enabled
         }
@@ -1144,6 +1179,11 @@ final class DataStore {
                   assignee: String? = nil, jiraKey: String? = nil,
                   department: String? = nil) {
         var entry = TrackedIssue(title: title, type: type)
+        if let member = currentMember {
+            entry.reporterId = member.id.uuidString
+            entry.reporterName = member.name
+            entry.reportedAt = Date()
+        }
         entry.issueNumber = nextIssueNumber
         nextIssueNumber += 1
         entry.dateKey = key
@@ -1166,6 +1206,10 @@ final class DataStore {
         entry.dateKey = key
         entry.source = .feishu
         entry.feishuTaskGuid = task.guid
+        entry.feishuTaskSummary = title
+        entry.feishuTaskCompletedAt = completedAt.isEmpty ? nil : completedAt
+        entry.feishuTasklistGuids = Array(task.tasklistGUIDs).sorted()
+        entry.feishuTaskAssigneeIds = task.assigneeIDs
         entry.status = completedAt.isEmpty || completedAt == "0" ? .pending : .fixed
         entry.resolvedAt = entry.status.isResolved ? Date() : nil
         if let assignee = assigneeText(fromFeishuTask: task) {
@@ -1278,6 +1322,30 @@ final class DataStore {
         mutateIssue(id: id) { $0.followers = followers }
     }
 
+    func updateIssueReporter(id: UUID, member: TeamMember?) {
+        mutateIssue(id: id) { issue in
+            issue.reporterId = member?.id.uuidString
+            issue.reporterName = member?.name
+            issue.reportedAt = member == nil ? nil : (issue.reportedAt ?? Date())
+        }
+    }
+
+    func updateIssueTags(id: UUID, tags: [String]) {
+        let normalized = Self.normalizedIssueTags(tags)
+        mutateIssue(id: id) { $0.issueTags = normalized }
+    }
+
+    static func normalizedIssueTags(_ tags: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for raw in tags {
+            let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !tag.isEmpty, seen.insert(tag).inserted else { continue }
+            result.append(tag)
+        }
+        return result
+    }
+
     /// If the issue is linked to Linear and the new assignee maps to a Linear user, push the change upstream.
     private func pushAssigneeToLinearIfNeeded(issueId: UUID, assignee: String?) {
         guard let issue = trackedIssues.first(where: { $0.id == issueId }),
@@ -1342,7 +1410,10 @@ final class DataStore {
     }
 
     func updateIssueSource(id: UUID, source: IssueSource) {
-        mutateIssue(id: id) { $0.source = source }
+        mutateIssue(id: id) { issue in
+            issue.source = source
+            clearBindingsInconsistentWithSource(&issue)
+        }
     }
 
     func updateIssueTicketURL(id: UUID, ticketURL: String?) {
@@ -1350,7 +1421,31 @@ final class DataStore {
     }
 
     func updateIssueFeishuTaskGuid(id: UUID, guid: String?) {
-        mutateIssue(id: id) { $0.feishuTaskGuid = guid }
+        mutateIssue(id: id) {
+            $0.feishuTaskGuid = guid
+            if guid?.isEmpty == false {
+                $0.source = .feishu
+                clearBindingsInconsistentWithSource(&$0)
+            } else {
+                clearFeishuTaskBinding(&$0)
+            }
+        }
+    }
+
+    func updateIssueFeishuTaskBinding(id: UUID, task: FeishuTaskCandidate?) {
+        mutateIssue(id: id) { issue in
+            guard let task else {
+                clearFeishuTaskBinding(&issue)
+                return
+            }
+            issue.source = .feishu
+            issue.feishuTaskGuid = task.guid
+            issue.feishuTaskSummary = task.summary.isEmpty ? nil : task.summary
+            issue.feishuTaskCompletedAt = task.completedAt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? task.completedAt : nil
+            issue.feishuTasklistGuids = Array(task.tasklistGUIDs).sorted()
+            issue.feishuTaskAssigneeIds = task.assigneeIDs
+            clearBindingsInconsistentWithSource(&issue)
+        }
     }
 
     func updateIssueLinearAssignee(id: UUID, assignee: String?) {
@@ -1358,14 +1453,59 @@ final class DataStore {
     }
 
     func updateIssueLinearLink(id: UUID, issueId: String?, key: String?, url: String?) {
-        mutateIssue(id: id) {
-            $0.linearIssueId = issueId
-            $0.linearKey = key
-            $0.linearUrl = url
+        mutateIssue(id: id) { issue in
+            issue.linearIssueId = issueId
+            issue.linearKey = key
+            issue.linearUrl = url
             if issueId == nil {
-                $0.linearAssignee = nil
+                issue.linearAssignee = nil
+            } else {
+                issue.source = .linear
+                clearBindingsInconsistentWithSource(&issue)
             }
         }
+    }
+
+    func updateIssueLinearProject(id: UUID, projectId: String?, name: String?) {
+        mutateIssue(id: id) { issue in
+            issue.linearProjectId = projectId
+            issue.linearProjectName = name
+            if projectId?.isEmpty == false {
+                issue.source = .linear
+                clearBindingsInconsistentWithSource(&issue)
+                issue.linearProjectId = projectId
+                issue.linearProjectName = name
+            }
+        }
+    }
+
+    private func clearBindingsInconsistentWithSource(_ issue: inout TrackedIssue) {
+        if issue.source != .jira {
+            issue.jiraKey = nil
+        }
+        if issue.source != .meta {
+            issue.ticketURL = nil
+            issue.isEscalated = false
+        }
+        if issue.source != .feishu {
+            clearFeishuTaskBinding(&issue)
+        }
+        if issue.source != .linear {
+            issue.linearIssueId = nil
+            issue.linearKey = nil
+            issue.linearUrl = nil
+            issue.linearProjectId = nil
+            issue.linearProjectName = nil
+            issue.linearAssignee = nil
+        }
+    }
+
+    private func clearFeishuTaskBinding(_ issue: inout TrackedIssue) {
+        issue.feishuTaskGuid = nil
+        issue.feishuTaskSummary = nil
+        issue.feishuTaskCompletedAt = nil
+        issue.feishuTasklistGuids = []
+        issue.feishuTaskAssigneeIds = []
     }
 
     func markIssueFeishuTaskDeleted(id: UUID, guid: String) {
@@ -1402,11 +1542,6 @@ final class DataStore {
     }
 
     func updateIssueDepartment(id: UUID, department: String?) {
-        mutateIssue(id: id) { $0.department = department }
-        pushProjectToLinearIfNeeded(issueId: id, department: department)
-    }
-
-    func updateIssueDepartmentLocally(id: UUID, department: String?) {
         mutateIssue(id: id) { $0.department = department }
     }
 
@@ -1475,25 +1610,4 @@ final class DataStore {
         return !systemPrefixes.contains { trimmed.hasPrefix($0) }
     }
 
-    private func pushProjectToLinearIfNeeded(issueId: UUID, department: String?) {
-        guard linearConfig.enabled,
-              let issue = trackedIssues.first(where: { $0.id == issueId }),
-              let linearId = issue.linearIssueId, !linearId.isEmpty else { return }
-        let projectId: String?
-        if let department, !department.isEmpty {
-            guard let mapped = linearConfig.projectMapping[department], !mapped.isEmpty else {
-                DevLog.shared.info("Linear", "本地项目未映射 Linear Project，跳过推送: \(department)")
-                return
-            }
-            projectId = mapped
-        } else {
-            projectId = nil
-        }
-        Task {
-            let ok = await LinearService.shared.updateIssueProject(issueId: linearId, projectId: projectId)
-            if !ok {
-                DevLog.shared.error("Linear", "pushProject failed: \(linearId)")
-            }
-        }
-    }
 }
