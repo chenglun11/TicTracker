@@ -666,7 +666,14 @@ final class FeishuBotService {
         if config.fieldAssignee, let a = issue.assignee, !a.isEmpty { tagParts.append(a) }
         let tagStr = tagParts.isEmpty ? "" : " (\(tagParts.joined(separator: " · ")))"
 
-        if config.fieldJiraKey, let jira = issue.jiraKey, !jira.isEmpty {
+        if config.fieldJiraKey, let linear = Self.linearKeyAndURL(issue) {
+            parts.append(text("· \(statusStr)\(title)\(tagStr) "))
+            if let url = linear.url {
+                parts.append(link(linear.key, href: url))
+            } else {
+                parts.append(text(linear.key))
+            }
+        } else if config.fieldJiraKey, let jira = issue.jiraKey, !jira.isEmpty {
             let (key, url) = Self.jiraKeyAndURL(jira, serverURL: jiraServerURL)
             parts.append(text("· \(statusStr)\(title)\(tagStr) "))
             if let url {
@@ -983,7 +990,9 @@ final class FeishuBotService {
         if config.fieldType { tags.append(issue.type.rawValue) }
         if config.fieldDepartment, let dept = issue.department, !dept.isEmpty { tags.append(dept) }
         if config.fieldJiraKey {
-            if let jira = issue.jiraKey, !jira.isEmpty {
+            if let linear = linearMarkdown(issue) {
+                tags.append(linear)
+            } else if let jira = issue.jiraKey, !jira.isEmpty {
                 tags.append(formatJiraKey(jira, serverURL: jiraServerURL))
             } else if let url = issue.ticketURL, !url.isEmpty {
                 tags.append(url)
@@ -1005,6 +1014,33 @@ final class FeishuBotService {
             return (jiraKey, "\(base)/browse/\(jiraKey)")
         }
         return (jiraKey, nil)
+    }
+
+    /// 提取 Linear 的显示文本和完整 URL
+    private static func linearKeyAndURL(_ issue: TrackedIssue) -> (key: String, url: String?)? {
+        let key = issue.linearKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let url = issue.linearUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !key.isEmpty {
+            return (key, url.isEmpty ? nil : url)
+        }
+        if !url.isEmpty, let parsed = URL(string: url) {
+            let trimmed = url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let fallback = parsed.lastPathComponent.isEmpty ? String(trimmed.split(separator: "/").last ?? "Linear") : parsed.lastPathComponent
+            return (fallback, url)
+        }
+        if let issueID = issue.linearIssueId?.trimmingCharacters(in: .whitespacesAndNewlines), !issueID.isEmpty {
+            return (issueID, nil)
+        }
+        return nil
+    }
+
+    /// 格式化 Linear 链接为 lark_md
+    private static func linearMarkdown(_ issue: TrackedIssue) -> String? {
+        guard let linear = linearKeyAndURL(issue) else { return nil }
+        if let url = linear.url {
+            return "[\(linear.key)](\(url))"
+        }
+        return linear.key
     }
 
     // MARK: - Rich Text Helpers

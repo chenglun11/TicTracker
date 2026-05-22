@@ -75,3 +75,30 @@ func TestFeishuReportIncludesAllIssues(t *testing.T) {
 		t.Fatalf("team issue missing from feishu card: %s", text)
 	}
 }
+
+func TestFeishuIssueFormattingIncludesLinearReference(t *testing.T) {
+	linearKey := "LIN-139"
+	linearURL := "https://linear.app/acme/issue/LIN-139/senddirectly-auth-failure"
+	jiraKey := "JIRA-1"
+	issue := TrackedIssue{
+		IssueNumber: 139,
+		Type:        "Feature",
+		Title:       "[SendDirectly] 增加授信失败API发信拦截",
+		Status:      StatusPending,
+		LinearKey:   &linearKey,
+		LinearURL:   &linearURL,
+		JiraKey:     &jiraKey,
+	}
+
+	got := formatIssue(issue, &FeishuBotConfig{
+		FieldStatus:  true,
+		FieldType:    true,
+		FieldJiraKey: true,
+	})
+	if !strings.Contains(got, "[LIN-139](https://linear.app/acme/issue/LIN-139/senddirectly-auth-failure)") {
+		t.Fatalf("Linear reference missing from formatted issue: %s", got)
+	}
+	if strings.Contains(got, "JIRA-1") {
+		t.Fatalf("Linear should take precedence over Jira in formatted issue: %s", got)
+	}
+}

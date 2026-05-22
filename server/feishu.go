@@ -42,7 +42,9 @@ func formatIssue(issue TrackedIssue, cfg *FeishuBotConfig) string {
 		meta = append(meta, *issue.Department)
 	}
 	if cfg.FieldJiraKey {
-		if issue.JiraKey != nil && *issue.JiraKey != "" {
+		if linear := formatLinearIssueReference(issue); linear != "" {
+			meta = append(meta, linear)
+		} else if issue.JiraKey != nil && *issue.JiraKey != "" {
 			meta = append(meta, *issue.JiraKey)
 		} else if issue.TicketURL != nil && *issue.TicketURL != "" {
 			meta = append(meta, *issue.TicketURL)
@@ -60,6 +62,29 @@ func formatIssue(issue TrackedIssue, cfg *FeishuBotConfig) string {
 		line += " (" + strings.Join(meta, " · ") + ")"
 	}
 	return line
+}
+
+func formatLinearIssueReference(issue TrackedIssue) string {
+	key := strings.TrimSpace(ptrValue(issue.LinearKey))
+	url := strings.TrimSpace(ptrValue(issue.LinearURL))
+	if key == "" && url != "" {
+		if idx := strings.LastIndex(strings.TrimRight(url, "/"), "/"); idx >= 0 && idx < len(strings.TrimRight(url, "/"))-1 {
+			key = strings.TrimRight(url, "/")[idx+1:]
+		}
+		if key == "" {
+			key = "Linear"
+		}
+	}
+	if key == "" {
+		key = strings.TrimSpace(ptrValue(issue.LinearIssueID))
+	}
+	if key == "" {
+		return ""
+	}
+	if url != "" {
+		return fmt.Sprintf("[%s](%s)", key, url)
+	}
+	return key
 }
 
 // reportStats 日报中各状态分组结果
