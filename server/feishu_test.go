@@ -7,13 +7,12 @@ import (
 	"time"
 )
 
-func TestFeishuReportExcludesCurrentMemberIssues(t *testing.T) {
+func TestFeishuReportIncludesAllIssues(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
-	reporterID := "member-max"
 	reporterName := "Max"
 	otherReporter := "Alice"
 	payload := SyncPayload{
-		CurrentMemberID:   reporterID,
+		CurrentMemberID:   "member-max",
 		CurrentMemberName: reporterName,
 		FeishuBotConfig: &FeishuBotConfig{
 			MessageFormat:    "消息卡片",
@@ -21,7 +20,6 @@ func TestFeishuReportExcludesCurrentMemberIssues(t *testing.T) {
 			ShowOverview:     true,
 			ShowPending:      true,
 			ShowResolved:     true,
-			ShowMyReported:   true,
 			ShowFocusTag:     true,
 			FieldStatus:      true,
 			FieldType:        true,
@@ -32,31 +30,19 @@ func TestFeishuReportExcludesCurrentMemberIssues(t *testing.T) {
 		},
 		TrackedIssues: []TrackedIssue{
 			{
-				ID:           "mine-by-id",
+				ID:           "mine-by-name",
 				IssueNumber:  1,
 				Type:         "Bug",
-				Title:        "my private bug",
+				Title:        "my own bug",
 				DateKey:      today,
 				CreatedAt:    FlexTime{Value: today + " 09:00:00"},
 				Status:       StatusPending,
-				ReporterID:   &reporterID,
-				ReporterName: &otherReporter,
-				IssueTags:    []string{"今日Bug"},
-			},
-			{
-				ID:           "mine-by-name",
-				IssueNumber:  2,
-				Type:         "Bug",
-				Title:        "my name bug",
-				DateKey:      today,
-				CreatedAt:    FlexTime{Value: today + " 10:00:00"},
-				Status:       StatusTesting,
 				ReporterName: &reporterName,
 				IssueTags:    []string{"今日Bug"},
 			},
 			{
 				ID:           "team-bug",
-				IssueNumber:  3,
+				IssueNumber:  2,
 				Type:         "Bug",
 				Title:        "team visible bug",
 				DateKey:      today,
@@ -69,14 +55,11 @@ func TestFeishuReportExcludesCurrentMemberIssues(t *testing.T) {
 	}
 
 	stats := calcStats(payload)
-	if len(stats.newIssues) != 1 || stats.newIssues[0].ID != "team-bug" {
-		t.Fatalf("expected only team issue in new issues, got %+v", stats.newIssues)
+	if len(stats.newIssues) != 2 {
+		t.Fatalf("expected 2 new issues (including self-reported), got %d: %+v", len(stats.newIssues), stats.newIssues)
 	}
-	if len(stats.myReported) != 0 {
-		t.Fatalf("current member issues should not be pushed as myReported, got %+v", stats.myReported)
-	}
-	if len(stats.focusTagged) != 1 || stats.focusTagged[0].ID != "team-bug" {
-		t.Fatalf("expected only team issue in focus tag section, got %+v", stats.focusTagged)
+	if len(stats.focusTagged) != 2 {
+		t.Fatalf("expected 2 focus tagged issues, got %d: %+v", len(stats.focusTagged), stats.focusTagged)
 	}
 
 	body := buildCardMessage(payload, payload.FeishuBotConfig)
@@ -85,13 +68,10 @@ func TestFeishuReportExcludesCurrentMemberIssues(t *testing.T) {
 		t.Fatalf("marshal card: %v", err)
 	}
 	text := string(data)
-	if strings.Contains(text, "my private bug") || strings.Contains(text, "my name bug") {
-		t.Fatalf("current member issues leaked into feishu card: %s", text)
+	if !strings.Contains(text, "my own bug") {
+		t.Fatalf("self-reported issue should appear in feishu card: %s", text)
 	}
 	if !strings.Contains(text, "team visible bug") {
 		t.Fatalf("team issue missing from feishu card: %s", text)
-	}
-	if strings.Contains(text, "我今日提交") {
-		t.Fatalf("my reported section should not be present in feishu card: %s", text)
 	}
 }

@@ -155,7 +155,6 @@ type FeishuBotConfig struct {
 	ShowTesting         bool              `json:"showTesting"`
 	ShowResolved        bool              `json:"showResolved"`
 	ShowDailyNote       bool              `json:"showDailyNote"`
-	ShowMyReported      bool              `json:"showMyReported"`
 	ShowFocusTag        bool              `json:"showFocusTag"`
 	ShowComments        bool              `json:"showComments"`
 	FieldType           bool              `json:"fieldType"`

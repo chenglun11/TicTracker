@@ -181,7 +181,6 @@ func applySetup(payload *SyncPayload, req SetupRequest) {
 	cfg.ShowTesting = true
 	cfg.ShowResolved = true
 	cfg.ShowDailyNote = true
-	cfg.ShowMyReported = true
 	cfg.ShowFocusTag = true
 	cfg.ShowComments = true
 	cfg.FieldType = true
@@ -299,7 +298,6 @@ func defaultFeishuBotConfig() *FeishuBotConfig {
 		ShowTesting:      true,
 		ShowResolved:     true,
 		ShowDailyNote:    true,
-		ShowMyReported:   true,
 		ShowFocusTag:     true,
 		ShowComments:     true,
 		FieldType:        true,
