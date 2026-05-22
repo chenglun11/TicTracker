@@ -462,25 +462,20 @@ final class FeishuBotService {
         let config = store.feishuBotConfig
         let todayKey = store.todayKey
         let allIssues = store.issuesVisibleForKey(todayKey)
-        let currentMemberId = store.currentMemberId
-        let currentMemberName = store.currentMemberName
-        let pushIssues = allIssues.filter {
-            !isReportedByCurrentMember($0, currentMemberId: currentMemberId, currentMemberName: currentMemberName)
-        }
         let focusTag = config.focusIssueTag.trimmingCharacters(in: .whitespacesAndNewlines)
         return ReportData(
             todayKey: todayKey,
-            newIssues: pushIssues.filter { $0.dateKey == todayKey && !$0.status.isResolved },
-            resolvedToday: pushIssues.filter { issue in
+            newIssues: allIssues.filter { $0.dateKey == todayKey && !$0.status.isResolved },
+            resolvedToday: allIssues.filter { issue in
                 guard issue.status.isResolved, let resolvedAt = issue.resolvedAt else { return false }
                 return DataStore.dateKey(from: resolvedAt) == todayKey
             },
-            pending: pushIssues.filter { !$0.status.isResolved && $0.status != .observing && $0.status != .scheduled && $0.status != .testing },
-            scheduled: pushIssues.filter { $0.status == .scheduled },
-            testing: pushIssues.filter { $0.status == .testing },
-            observing: pushIssues.filter { $0.status == .observing },
+            pending: allIssues.filter { !$0.status.isResolved && $0.status != .observing && $0.status != .scheduled && $0.status != .testing },
+            scheduled: allIssues.filter { $0.status == .scheduled },
+            testing: allIssues.filter { $0.status == .testing },
+            observing: allIssues.filter { $0.status == .observing },
             myReportedToday: [],
-            focusTagged: focusTag.isEmpty ? [] : pushIssues.filter { $0.issueTags.contains(focusTag) },
+            focusTagged: focusTag.isEmpty ? [] : allIssues.filter { $0.issueTags.contains(focusTag) },
             focusTag: focusTag,
             todayRecords: store.todayRecords,
             todayTotal: store.todayTotal,
@@ -488,16 +483,6 @@ final class FeishuBotService {
             config: config,
             jiraServerURL: store.jiraConfig.serverURL
         )
-    }
-
-    private func isReportedByCurrentMember(_ issue: TrackedIssue, currentMemberId: String, currentMemberName: String) -> Bool {
-        if !currentMemberId.isEmpty, issue.reporterId == currentMemberId {
-            return true
-        }
-        if !currentMemberName.isEmpty, issue.reporterName == currentMemberName {
-            return true
-        }
-        return false
     }
 
     // MARK: - Rich Text (post) Report
@@ -664,6 +649,9 @@ final class FeishuBotService {
         if config.fieldType { tagParts.append(issue.type.rawValue) }
         if config.fieldDepartment, let dept = issue.department, !dept.isEmpty { tagParts.append(dept) }
         if config.fieldAssignee, let a = issue.assignee, !a.isEmpty { tagParts.append(a) }
+        if let reporter = issue.reporterName?.trimmingCharacters(in: .whitespacesAndNewlines), !reporter.isEmpty {
+            tagParts.append("提交 \(reporter)")
+        }
         let tagStr = tagParts.isEmpty ? "" : " (\(tagParts.joined(separator: " · ")))"
 
         if config.fieldJiraKey, let linear = Self.linearKeyAndURL(issue) {
@@ -999,6 +987,9 @@ final class FeishuBotService {
             }
         }
         if config.fieldAssignee, let assignee = issue.assignee, !assignee.isEmpty { tags.append(assignee) }
+        if let reporter = issue.reporterName?.trimmingCharacters(in: .whitespacesAndNewlines), !reporter.isEmpty {
+            tags.append("提交 \(reporter)")
+        }
         let tagPart = tags.isEmpty ? "" : " (\(tags.joined(separator: " · ")))"
         let statusPrefix = showStatus ? "[\(issue.status.rawValue)] " : ""
         return "- \(statusPrefix)\(title)\(tagPart)"
@@ -1020,16 +1011,20 @@ final class FeishuBotService {
     private static func linearKeyAndURL(_ issue: TrackedIssue) -> (key: String, url: String?)? {
         let key = issue.linearKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let url = issue.linearUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let project = issue.linearProjectName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !key.isEmpty {
-            return (key, url.isEmpty ? nil : url)
+            let label = project.isEmpty ? "Linear \(key)" : "Linear \(project) / \(key)"
+            return (label, url.isEmpty ? nil : url)
         }
         if !url.isEmpty, let parsed = URL(string: url) {
             let trimmed = url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let fallback = parsed.lastPathComponent.isEmpty ? String(trimmed.split(separator: "/").last ?? "Linear") : parsed.lastPathComponent
-            return (fallback, url)
+            let label = project.isEmpty ? "Linear \(fallback)" : "Linear \(project) / \(fallback)"
+            return (label, url)
         }
         if let issueID = issue.linearIssueId?.trimmingCharacters(in: .whitespacesAndNewlines), !issueID.isEmpty {
-            return (issueID, nil)
+            let label = project.isEmpty ? "Linear \(issueID)" : "Linear \(project) / \(issueID)"
+            return (label, nil)
         }
         return nil
     }
