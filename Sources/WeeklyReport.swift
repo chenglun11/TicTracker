@@ -3,32 +3,59 @@ import Foundation
 
 @MainActor
 struct WeeklyReport {
+    enum Period {
+        case currentWeek
+        case previousWeek
+    }
+
     private static let commentFmt: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "M/d HH:mm"
         return fmt
     }()
 
-    static func generate(from store: DataStore) -> String {
+    static func generate(from store: DataStore, period: Period = .currentWeek) -> String {
         let calendar = Calendar.current
-        let today = Date()
+        let today = calendar.startOfDay(for: Date())
 
         // Find Monday of this week
         let weekday = calendar.component(.weekday, from: today)
         // .weekday: Sunday=1, Monday=2 ...
         let daysFromMonday = (weekday + 5) % 7
-        let monday = calendar.date(byAdding: .day, value: -daysFromMonday, to: today)!
+        let currentMonday = calendar.date(byAdding: .day, value: -daysFromMonday, to: today)!
+        let rangeStart: Date
+        let rangeEnd: Date
+        switch period {
+        case .currentWeek:
+            rangeStart = currentMonday
+            rangeEnd = today
+        case .previousWeek:
+            rangeEnd = calendar.date(byAdding: .day, value: -1, to: currentMonday)!
+            rangeStart = calendar.date(byAdding: .day, value: -6, to: rangeEnd)!
+        }
+        let rangeEndExclusive = calendar.date(byAdding: .day, value: 1, to: rangeEnd)!
 
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
 
         let displayFmt = DateFormatter()
         displayFmt.dateFormat = "M/d"
+        let startKey = fmt.string(from: rangeStart)
+        let endKey = fmt.string(from: rangeEnd)
 
-        // Collect all days from Monday to today
+        func isDateKeyInRange(_ key: String) -> Bool {
+            key >= startKey && key <= endKey
+        }
+
+        func isDateInRange(_ date: Date?) -> Bool {
+            guard let date else { return false }
+            return date >= rangeStart && date < rangeEndExclusive
+        }
+
+        // Collect all days in the selected report range.
         var totals: [String: Int] = [:]
-        var date = monday
-        while date <= today {
+        var date = rangeStart
+        while date <= rangeEnd {
             let key = fmt.string(from: date)
             if let dayRecords = store.records[key] {
                 for (dept, count) in dayRecords {
@@ -38,10 +65,10 @@ struct WeeklyReport {
             date = calendar.date(byAdding: .day, value: 1, to: date)!
         }
 
-        let mondayStr = displayFmt.string(from: monday)
-        let todayStr = displayFmt.string(from: today)
+        let startStr = displayFmt.string(from: rangeStart)
+        let endStr = displayFmt.string(from: rangeEnd)
 
-        var lines = ["本周技术支持汇总（\(mondayStr) - \(todayStr)）"]
+        var lines = ["技术支持周报（\(startStr) - \(endStr)）"]
 
         let allDepts = Array(Set(store.departments + totals.keys)).sorted {
             let i1 = store.departments.firstIndex(of: $0)
@@ -62,8 +89,8 @@ struct WeeklyReport {
 
         // Jira 入口 counts for the week
         var jiraTotals: [String: Int] = [:]
-        var jiraDate = monday
-        while jiraDate <= today {
+        var jiraDate = rangeStart
+        while jiraDate <= rangeEnd {
             let key = fmt.string(from: jiraDate)
             if let dayCounts = store.jiraIssueCounts[key] {
                 for (issueKey, count) in dayCounts {
@@ -85,9 +112,12 @@ struct WeeklyReport {
         }
 
         // Tracked issues for the week (unified)
-        let weekTracked = store.visibleTrackedIssues.filter { (entry: TrackedIssue) -> Bool in
-            guard let entryDate = fmt.date(from: entry.dateKey) else { return false }
-            return entryDate >= monday && entryDate <= today
+        let weekTracked = store.trackedIssues.filter { (entry: TrackedIssue) -> Bool in
+            isDateKeyInRange(entry.dateKey) ||
+            isDateInRange(entry.reportedAt) ||
+            isDateInRange(entry.updatedAt) ||
+            isDateInRange(entry.resolvedAt) ||
+            entry.comments.contains { isDateInRange($0.createdAt) }
         }
         if !weekTracked.isEmpty {
             let sorted = weekTracked.sorted { $0.dateKey < $1.dateKey }
@@ -129,8 +159,8 @@ struct WeeklyReport {
 
         var detailLines: [String] = []
         let issueMap = Dictionary(uniqueKeysWithValues: store.jiraIssues.map { ($0.key, $0.summary) })
-        var detailDate = monday
-        while detailDate <= today {
+        var detailDate = rangeStart
+        while detailDate <= rangeEnd {
             let key = fmt.string(from: detailDate)
             var parts: [String] = []
             if let dayRecords = store.records[key] {
@@ -160,8 +190,8 @@ struct WeeklyReport {
 
         // Append daily notes
         var noteLines: [String] = []
-        var noteDate = monday
-        while noteDate <= today {
+        var noteDate = rangeStart
+        while noteDate <= rangeEnd {
             let key = fmt.string(from: noteDate)
             if let note = store.dailyNotes[key], !note.isEmpty {
                 let display = displayFmt.string(from: noteDate)
@@ -178,8 +208,8 @@ struct WeeklyReport {
         return lines.joined(separator: "\n")
     }
 
-    static func copyToClipboard(from store: DataStore) {
-        let text = generate(from: store)
+    static func copyToClipboard(from store: DataStore, period: Period = .currentWeek) {
+        let text = generate(from: store, period: period)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }

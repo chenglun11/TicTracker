@@ -4,22 +4,67 @@ import Security
 private final class KeychainCache: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: Data] = [:]
+    private var serviceStorage: [String: [String: Data]] = [:]
+    private var loadedServices: Set<String> = []
 
-    func get(_ key: String) -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage[key]
+    private func cacheKey(service: String, account: String) -> String {
+        "\(service)::\(account)"
     }
 
-    func set(_ key: String, data: Data) {
+    func get(service: String, account: String) -> Data? {
         lock.lock()
-        storage[key] = data
+        defer { lock.unlock() }
+        if let data = storage[cacheKey(service: service, account: account)] {
+            return data
+        }
+        if loadedServices.contains(service) {
+            return serviceStorage[service]?[account]
+        }
+        return nil
+    }
+
+    func getAll(service: String) -> [String: Data]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard loadedServices.contains(service) else { return nil }
+        return serviceStorage[service] ?? [:]
+    }
+
+    func hasLoaded(service: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadedServices.contains(service)
+    }
+
+    func set(service: String, account: String, data: Data) {
+        lock.lock()
+        storage[cacheKey(service: service, account: account)] = data
+        if loadedServices.contains(service) {
+            var items = serviceStorage[service] ?? [:]
+            items[account] = data
+            serviceStorage[service] = items
+        }
         lock.unlock()
     }
 
-    func remove(_ key: String) {
+    func setAll(service: String, items: [String: Data]) {
         lock.lock()
-        storage.removeValue(forKey: key)
+        loadedServices.insert(service)
+        serviceStorage[service] = items
+        for (account, data) in items {
+            storage[cacheKey(service: service, account: account)] = data
+        }
+        lock.unlock()
+    }
+
+    func remove(service: String, account: String) {
+        lock.lock()
+        storage.removeValue(forKey: cacheKey(service: service, account: account))
+        if loadedServices.contains(service) {
+            var items = serviceStorage[service] ?? [:]
+            items.removeValue(forKey: account)
+            serviceStorage[service] = items
+        }
         lock.unlock()
     }
 }
@@ -42,13 +87,8 @@ enum KeychainHelper {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    private static func cacheKey(service: String, account: String) -> String {
-        "\(service)::\(account)"
-    }
-
     @discardableResult
     static func save(service: String = service, account: String = account, data: Data) -> Bool {
-        let key = cacheKey(service: service, account: account)
         let lookup: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -61,7 +101,7 @@ enum KeychainHelper {
 
         let updateStatus = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess {
-            cache.set(key, data: data)
+            cache.set(service: service, account: account, data: data)
             removeLegacyMirrorDirectory()
             return true
         }
@@ -74,7 +114,7 @@ enum KeychainHelper {
         addQuery.merge(attributes) { _, new in new }
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         if addStatus == errSecSuccess {
-            cache.set(key, data: data)
+            cache.set(service: service, account: account, data: data)
             removeLegacyMirrorDirectory()
             return true
         }
@@ -82,8 +122,11 @@ enum KeychainHelper {
     }
 
     static func exists(service: String = service, account: String = account) -> Bool {
-        if cache.get(cacheKey(service: service, account: account)) != nil {
+        if cache.get(service: service, account: account) != nil {
             return true
+        }
+        if cache.hasLoaded(service: service) {
+            return false
         }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -95,9 +138,11 @@ enum KeychainHelper {
     }
 
     static func load(service: String = service, account: String = account) -> Data? {
-        let key = cacheKey(service: service, account: account)
-        if let cached = cache.get(key) {
+        if let cached = cache.get(service: service, account: account) {
             return cached
+        }
+        if cache.hasLoaded(service: service) {
+            return nil
         }
 
         let query: [String: Any] = [
@@ -110,7 +155,7 @@ enum KeychainHelper {
         var result: AnyObject?
         if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
            let data = result as? Data {
-            cache.set(key, data: data)
+            cache.set(service: service, account: account, data: data)
             removeLegacyMirrorDirectory()
             return data
         }
@@ -118,6 +163,10 @@ enum KeychainHelper {
     }
 
     static func loadAll(service: String) -> [String: Data] {
+        if let cached = cache.getAll(service: service) {
+            return cached
+        }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -133,10 +182,10 @@ enum KeychainHelper {
                 if let account = item[kSecAttrAccount as String] as? String,
                    let data = item[kSecValueData as String] as? Data {
                     dict[account] = data
-                    cache.set(cacheKey(service: service, account: account), data: data)
                 }
             }
         }
+        cache.setAll(service: service, items: dict)
         removeLegacyMirrorDirectory()
         return dict
     }
@@ -153,7 +202,7 @@ enum KeychainHelper {
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(query as CFDictionary)
-        cache.remove(cacheKey(service: service, account: account))
+        cache.remove(service: service, account: account)
         removeLegacyMirrorDirectory()
     }
 

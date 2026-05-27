@@ -209,4 +209,3 @@ struct GeneralTab: View {
 }
 
 // MARK: - Issue Tracker Tab
-

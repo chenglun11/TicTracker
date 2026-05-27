@@ -421,6 +421,7 @@ struct LinearTab: View {
         if let data = KeychainHelper.load(service: KeychainHelper.service, account: LinearConfig.keychainTokenKey),
            let str = String(data: data, encoding: .utf8) {
             tokenInput = str
+            LinearService.shared.updateCachedToken(str)
             loadTeams()
         }
     }
@@ -450,8 +451,16 @@ struct LinearTab: View {
     }
 
     private func saveToken() {
-        if let data = tokenInput.data(using: .utf8) {
-            _ = KeychainHelper.save(service: KeychainHelper.service, account: LinearConfig.keychainTokenKey, data: data)
+        let trimmed = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            KeychainHelper.delete(service: KeychainHelper.service, account: LinearConfig.keychainTokenKey)
+            LinearService.shared.updateCachedToken(nil)
+            return
+        }
+
+        if let data = trimmed.data(using: .utf8),
+           KeychainHelper.save(service: KeychainHelper.service, account: LinearConfig.keychainTokenKey, data: data) {
+            LinearService.shared.updateCachedToken(trimmed)
         }
     }
 

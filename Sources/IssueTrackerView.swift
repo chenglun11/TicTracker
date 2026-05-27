@@ -34,6 +34,11 @@ struct IssueTrackerView: View {
     @State private var linearProjects: [LinearProject] = []
     @State private var linearSearchResults: [LinearIssue] = []
     @State private var linearMyIssues: [LinearIssue] = []
+    @State private var linearImportCandidates: [LinearIssue] = []
+    @State private var selectedLinearImportIDs: Set<String> = []
+    @State private var linearImportLoading = false
+    @State private var linearImportMessage: String?
+    @State private var showingLinearImportPage = false
     @State private var linearPickerLoading = false
     @State private var linearProjectLoading = false
     @State private var linearPickerTab: LinearPickerTab = .myIssues
@@ -187,6 +192,9 @@ struct IssueTrackerView: View {
         }
         .onAppear {
             syncFeishuBoundTasks()
+            if store.linearConfig.enabled {
+                refreshLinearImportCandidates()
+            }
             if selectedIssueID == nil, let first = filteredIssues.first {
                 selectedIssueID = first.id
             }
@@ -195,6 +203,7 @@ struct IssueTrackerView: View {
             NSApp.setActivationPolicy(.accessory)
         }
         .onChange(of: selectedIssueID) {
+            showingLinearImportPage = false
             isEditingTitle = false
             isEditingTime = false
             newCommentText = ""
@@ -230,23 +239,28 @@ struct IssueTrackerView: View {
             Divider()
             issueList
         }
-        .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
+        .frame(minWidth: 280, idealWidth: 320, maxWidth: 380)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var sidebarHeader: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("问题追踪")
-                        .font(.headline)
-                    HStack(spacing: 10) {
-                        statBadge(title: "总计", value: store.visibleTrackedIssues.count, color: .blue)
-                        statBadge(title: "未解决", value: unresolvedCount, color: unresolvedCount > 0 ? .orange : .green)
-                        if !store.currentMemberName.isEmpty {
-                            statBadge(title: "我今日", value: myReportedTodayCount, color: .green)
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.blue.opacity(0.12))
+                    Image(systemName: "bubble.left.and.exclamationmark.bubble.right.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.blue)
+                }
+                .frame(width: 32, height: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("问题反馈")
+                        .font(.headline.weight(.semibold))
+                    Text("\(store.visibleTrackedIssues.count) 个已有问题")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
 
                 Spacer(minLength: 8)
@@ -265,6 +279,12 @@ struct IssueTrackerView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .help("新增问题")
+            }
+
+            HStack(spacing: 6) {
+                statBadge(title: "总计", value: store.visibleTrackedIssues.count, color: .blue)
+                statBadge(title: "未解决", value: unresolvedCount, color: unresolvedCount > 0 ? .orange : .green)
+                statBadge(title: "今日", value: myReportedTodayCount, color: .green)
             }
 
             HStack(spacing: 6) {
@@ -289,6 +309,28 @@ struct IssueTrackerView: View {
                 .help("发送完整日报")
 
                 Spacer(minLength: 0)
+
+                if store.linearConfig.enabled {
+                    Button {
+                        showingLinearImportPage = true
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "tray.and.arrow.down")
+                            Text("待确认")
+                            Text("\(linearImportCandidates.count)")
+                                .font(.caption2.monospacedDigit().weight(.bold))
+                                .foregroundStyle(.teal)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.teal.opacity(0.12), in: Capsule())
+                        }
+                        .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(showingLinearImportPage ? .teal : .accentColor)
+                    .controlSize(.small)
+                    .help("查看 Linear 待确认提交")
+                }
             }
 
             if let result = sendResult {
@@ -299,7 +341,7 @@ struct IssueTrackerView: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
     }
 
     private var filterBar: some View {
@@ -354,6 +396,237 @@ struct IssueTrackerView: View {
             }
         }
         .padding(12)
+    }
+
+    @ViewBuilder
+    private var linearImportPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(Color.teal.opacity(0.14))
+                    Image(systemName: "tray.and.arrow.down.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.teal)
+                }
+                .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("候选队列")
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Text("\(linearImportCandidates.count)")
+                            .font(.caption2.monospacedDigit().weight(.bold))
+                            .foregroundStyle(.teal)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.teal.opacity(0.13), in: Capsule())
+                    }
+                    Text(linearImportScopeText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                if linearImportLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Button {
+                    refreshLinearImportCandidates()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.borderless)
+                .disabled(linearImportLoading || store.linearConfig.teamId.isEmpty)
+                .help("刷新 Linear 候选提交")
+            }
+
+            if linearImportCandidates.isEmpty {
+                HStack(spacing: 9) {
+                    Image(systemName: linearImportLoading ? "clock" : "checkmark.seal")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(linearImportLoading ? Color.secondary : Color.green)
+                        .frame(width: 24, height: 24)
+                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+
+                    Text(linearImportMessage ?? "暂无待导入的 LarkQPush 提交")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
+                )
+            } else {
+                HStack(spacing: 7) {
+                    Button {
+                        toggleAllLinearImportCandidates()
+                    } label: {
+                        Label(
+                            selectedLinearImportIDs.count == linearImportCandidates.count ? "取消" : "全选",
+                            systemImage: selectedLinearImportIDs.count == linearImportCandidates.count ? "checkmark.square.fill" : "square"
+                        )
+                    }
+                    .controlSize(.small)
+
+                    Spacer()
+
+                    Text("\(selectedLinearImportIDs.count)/\(linearImportCandidates.count)")
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(selectedLinearImportIDs.isEmpty ? Color.secondary : Color.teal)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.08), in: Capsule())
+
+                    Button {
+                        importSelectedLinearCandidates()
+                    } label: {
+                        Label("导入", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(selectedLinearImportIDs.isEmpty)
+                }
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(linearImportCandidates) { candidate in
+                            linearImportCandidateRow(candidate)
+                        }
+                    }
+                }
+                .frame(maxHeight: 520)
+                .tunedForResponsiveScroll()
+
+                if let linearImportMessage {
+                    Text(linearImportMessage)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .controlBackgroundColor).opacity(0.92),
+                    Color.teal.opacity(0.055)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+
+    @ViewBuilder
+    private func linearImportCandidateRow(_ issue: LinearIssue) -> some View {
+        let selected = selectedLinearImportIDs.contains(issue.id)
+        HStack(alignment: .top, spacing: 9) {
+            Toggle("", isOn: Binding(
+                get: { selectedLinearImportIDs.contains(issue.id) },
+                set: { isOn in
+                    if isOn {
+                        selectedLinearImportIDs.insert(issue.id)
+                    } else {
+                        selectedLinearImportIDs.remove(issue.id)
+                    }
+                }
+            ))
+            .labelsHidden()
+            .toggleStyle(.checkbox)
+            .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 6) {
+                    Text(issue.identifier)
+                        .font(.caption2.monospaced().weight(.bold))
+                        .foregroundStyle(.teal)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+
+                    Text("LarkQPush")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+
+                    Spacer(minLength: 0)
+
+                    if !issue.url.isEmpty {
+                        Button {
+                            openURL(issue.url)
+                        } label: {
+                            Image(systemName: "arrow.up.forward.square")
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(width: 18, height: 18)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("打开 Linear")
+                    }
+                }
+
+                Text(issue.title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 72), spacing: 5, alignment: .leading)],
+                    alignment: .leading,
+                    spacing: 5
+                ) {
+                    linearImportMetaChip(issue.state?.name, systemImage: "circle.dotted", color: .orange)
+                    linearImportMetaChip(issue.project?.name, systemImage: "folder", color: .purple)
+                    linearImportMetaChip(issue.assignee?.name, systemImage: "person", color: .blue)
+                    linearImportMetaChip(linearImportDateText(issue.createdAt), systemImage: "calendar", color: .gray)
+                }
+            }
+        }
+        .padding(9)
+        .background(
+            selected ? Color.teal.opacity(0.12) : Color(nsColor: .textBackgroundColor).opacity(0.70),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(selected ? Color.teal.opacity(0.45) : Color.secondary.opacity(0.10), lineWidth: 1)
+        )
+    }
+
+    private var linearImportScopeText: String {
+        if !store.linearConfig.projectName.isEmpty {
+            return store.linearConfig.projectName
+        }
+        if !store.linearConfig.teamName.isEmpty {
+            return store.linearConfig.teamName
+        }
+        return "Linear"
+    }
+
+    @ViewBuilder
+    private func linearImportMetaChip(_ value: String?, systemImage: String, color: Color) -> some View {
+        if let value, !value.isEmpty {
+            Label(value, systemImage: systemImage)
+                .font(.caption2)
+                .lineLimit(1)
+                .foregroundStyle(color)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+        }
     }
 
     @ViewBuilder
@@ -429,75 +702,91 @@ struct IssueTrackerView: View {
 
     @ViewBuilder
     private func listRow(_ issue: TrackedIssue) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if issue.issueNumber > 0 {
-                    Text("#\(issue.issueNumber)")
-                        .font(.caption.monospaced().weight(.semibold))
-                        .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 9) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(statusColor(issue.status))
+                .frame(width: 3)
+                .padding(.vertical, 3)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if issue.issueNumber > 0 {
+                        Text("#\(issue.issueNumber)")
+                            .font(.caption.monospaced().weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(issue.title)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    Spacer(minLength: 4)
+
+                    Image(systemName: issue.status.icon)
+                        .font(.caption)
+                        .foregroundStyle(statusColor(issue.status))
+                        .help(issue.status.rawValue)
                 }
 
-                Text(issue.title)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 58), spacing: 5, alignment: .leading)],
+                    alignment: .leading,
+                    spacing: 5
+                ) {
+                    issueTag(issue.type.rawValue, systemImage: issue.type.icon, color: issue.type.color)
+                    issueTag(issue.status.rawValue, systemImage: nil, color: statusColor(issue.status))
 
-                Spacer(minLength: 4)
-
-                Image(systemName: issue.status.icon)
-                    .font(.caption)
-                    .foregroundStyle(statusColor(issue.status))
-                    .help(issue.status.rawValue)
-            }
-
-            HStack(spacing: 5) {
-                issueTag(issue.type.rawValue, systemImage: issue.type.icon, color: issue.type.color)
-                issueTag(issue.status.rawValue, systemImage: nil, color: statusColor(issue.status))
-
-                if let assignee = issue.assignee, !assignee.isEmpty {
-                    issueTag(assignee, systemImage: "person", color: .blue)
-                }
-                if let reporter = issue.reporterName, !reporter.isEmpty {
-                    issueTag("提交 \(reporter)", systemImage: "person.crop.circle.badge.checkmark", color: .green)
+                    if let assignee = issue.assignee, !assignee.isEmpty {
+                        issueTag(assignee, systemImage: "person", color: .blue)
+                    }
+                    if let reporter = issue.reporterName, !reporter.isEmpty {
+                        issueTag("提交 \(reporter)", systemImage: "person.crop.circle.badge.checkmark", color: .green)
+                    }
+                    issueTag(issue.dateKey, systemImage: "calendar", color: .gray)
                 }
 
-                Spacer(minLength: 2)
-
-                Text(issue.dateKey)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-
-            if issue.source != .manual || issue.hasDevActivity || issue.isEscalated || issue.feishuTaskGuid?.isEmpty == false || !issue.issueTags.isEmpty {
-                HStack(spacing: 5) {
-                    if issue.source != .manual {
-                        issueTag(issue.source.rawValue, systemImage: "link", color: .secondary)
+                if issue.source != .manual || issue.hasDevActivity || issue.isEscalated || issue.feishuTaskGuid?.isEmpty == false || !issue.issueTags.isEmpty {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 70), spacing: 5, alignment: .leading)],
+                        alignment: .leading,
+                        spacing: 5
+                    ) {
+                        if issue.source != .manual {
+                            issueTag(displaySourceName(issue.source), systemImage: "link", color: .secondary)
+                        }
+                        if issue.hasDevActivity {
+                            issueTag("开发中", systemImage: "hammer", color: .green)
+                        }
+                        if issue.isEscalated {
+                            issueTag("Escalated", systemImage: "exclamationmark.arrow.triangle.2.circlepath", color: .red)
+                        }
+                        if issue.feishuTaskGuid?.isEmpty == false {
+                            issueTag("飞书任务", systemImage: "checklist", color: .indigo)
+                        }
+                        ForEach(issue.issueTags.prefix(2), id: \.self) { tag in
+                            issueTag(tag, systemImage: "tag", color: .pink)
+                        }
                     }
-                    if issue.hasDevActivity {
-                        issueTag("开发中", systemImage: "hammer", color: .green)
-                    }
-                    if issue.isEscalated {
-                        issueTag("Escalated", systemImage: "exclamationmark.arrow.triangle.2.circlepath", color: .red)
-                    }
-                    if issue.feishuTaskGuid?.isEmpty == false {
-                        issueTag("飞书任务", systemImage: "checklist", color: .indigo)
-                    }
-                    ForEach(issue.issueTags.prefix(2), id: \.self) { tag in
-                        issueTag(tag, systemImage: "tag", color: .pink)
-                    }
-                    Spacer(minLength: 0)
                 }
             }
         }
-        .padding(.vertical, 5)
+        .padding(8)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
+        )
+        .padding(.vertical, 2)
     }
 
     // MARK: - Issue Detail
 
     private var detailPane: some View {
         Group {
-            if let issue = selectedIssue {
+            if showingLinearImportPage {
+                linearImportPage
+            } else if let issue = selectedIssue {
                 issueDetail(issue)
             } else {
                 ContentUnavailableView {
@@ -509,7 +798,70 @@ struct IssueTrackerView: View {
             }
         }
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
+    }
+
+    @ViewBuilder
+    private var linearImportPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.teal.opacity(0.13))
+                        Image(systemName: "tray.and.arrow.down.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.teal)
+                    }
+                    .frame(width: 42, height: 42)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Linear 待确认提交")
+                            .font(.title2.weight(.semibold))
+                        Text(linearImportScopeText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        refreshLinearImportCandidates()
+                    } label: {
+                        Label(linearImportLoading ? "刷新中" : "刷新", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(linearImportLoading || store.linearConfig.teamId.isEmpty)
+
+                    Button {
+                        showingLinearImportPage = false
+                    } label: {
+                        Label("返回问题", systemImage: "sidebar.left")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(16)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.80), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+                )
+
+                linearImportPanel
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
+                    )
+            }
+            .padding(18)
+            .frame(maxWidth: 980, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .tunedForResponsiveScroll()
     }
 
     @ViewBuilder
@@ -524,7 +876,8 @@ struct IssueTrackerView: View {
                 commentsSection(issue, isReadOnly: isReadOnly)
                 metadataAndDangerSection(issue, isReadOnly: isReadOnly)
             }
-            .padding(16)
+            .padding(18)
+            .frame(maxWidth: 980, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .tunedForResponsiveScroll()
@@ -532,91 +885,137 @@ struct IssueTrackerView: View {
 
     @ViewBuilder
     private func issueSummaryHeader(_ issue: TrackedIssue, isReadOnly: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                if issue.issueNumber > 0 {
-                    Text("#\(issue.issueNumber)")
-                        .font(.title3.monospaced().weight(.semibold))
-                        .foregroundStyle(.secondary)
+        let accent = statusColor(issue.status)
+
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(accent.opacity(0.13))
+                    Image(systemName: issue.status.icon)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(accent)
                 }
+                .frame(width: 42, height: 42)
 
-                summaryChip(issue.type.rawValue, systemImage: issue.type.icon, color: issue.type.color)
-                summaryChip(issue.status.rawValue, systemImage: issue.status.icon, color: statusColor(issue.status))
-
-                Spacer(minLength: 0)
-            }
-
-            if isEditingTitle {
-                TextEditor(text: $editingTitle)
-                    .font(.title2.weight(.semibold))
-                    .frame(minHeight: 80, maxHeight: 120)
-                    .padding(4)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                    )
-
-                HStack(spacing: 8) {
-                    Button("保存") {
-                        store.updateIssueTitle(id: issue.id, title: editingTitle)
-                        isEditingTitle = false
-                        saveState.triggerSave()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-
-                    Button("取消") {
-                        isEditingTitle = false
-                    }
-                    .controlSize(.small)
-                }
-            } else {
-                Text(issue.title)
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        guard !isReadOnly else { return }
-                        editingTitle = issue.title
-                        isEditingTitle = true
-                    }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    summaryChip(issue.assignee ?? "未指派", systemImage: "person", color: .blue)
-                    if let reporter = issue.reporterName, !reporter.isEmpty {
-                        summaryChip("提交：\(reporter)", systemImage: "person.crop.circle.badge.checkmark", color: .green)
-                    }
-                    if let department = issue.department, !department.isEmpty {
-                        summaryChip(department, systemImage: "folder", color: .teal)
-                    }
-                    if issue.source != .manual {
-                        summaryChip(displaySourceName(issue.source), systemImage: "link", color: .gray)
-                    }
-                    Spacer(minLength: 0)
-                }
-
-                if issue.hasDevActivity || issue.isEscalated || issue.feishuTaskGuid?.isEmpty == false {
-                    HStack(spacing: 6) {
-                        if issue.hasDevActivity {
-                            summaryChip("开发中", systemImage: "hammer", color: .green)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 7) {
+                        if issue.issueNumber > 0 {
+                            Text("#\(issue.issueNumber)")
+                                .font(.caption.monospaced().weight(.bold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 5))
                         }
-                        if issue.isEscalated {
-                            summaryChip("Escalated", systemImage: "exclamationmark.arrow.triangle.2.circlepath", color: .red)
-                        }
-                        if issue.feishuTaskGuid?.isEmpty == false {
-                            summaryChip("飞书任务", systemImage: "checklist", color: .indigo)
+                        summaryChip(issue.type.rawValue, systemImage: issue.type.icon, color: issue.type.color)
+                        summaryChip(issue.status.rawValue, systemImage: issue.status.icon, color: accent)
+                        if issue.source != .manual {
+                            summaryChip(displaySourceName(issue.source), systemImage: "link", color: .gray)
                         }
                         Spacer(minLength: 0)
                     }
+
+                    if isEditingTitle {
+                        TextEditor(text: $editingTitle)
+                            .font(.title2.weight(.semibold))
+                            .frame(minHeight: 86, maxHeight: 130)
+                            .padding(6)
+                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(accent.opacity(0.28), lineWidth: 1)
+                            )
+
+                        HStack(spacing: 8) {
+                            Button("保存") {
+                                store.updateIssueTitle(id: issue.id, title: editingTitle)
+                                isEditingTitle = false
+                                saveState.triggerSave()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+
+                            Button("取消") {
+                                isEditingTitle = false
+                            }
+                            .controlSize(.small)
+                        }
+                    } else {
+                        Text(issue.title)
+                            .font(.title2.weight(.semibold))
+                            .lineLimit(4)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard !isReadOnly else { return }
+                                editingTitle = issue.title
+                                isEditingTitle = true
+                            }
+                    }
+                }
+
+                if !isReadOnly && !isEditingTitle {
+                    Button {
+                        editingTitle = issue.title
+                        isEditingTitle = true
+                    } label: {
+                        Image(systemName: "pencil")
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("编辑标题")
+                }
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 132), spacing: 8, alignment: .leading)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                issueSummaryMetaChip(title: "负责人", value: issue.assignee ?? "未指派", systemImage: "person", color: .blue)
+                if let reporter = issue.reporterName, !reporter.isEmpty {
+                    issueSummaryMetaChip(title: "提交人", value: reporter, systemImage: "person.crop.circle.badge.checkmark", color: .green)
+                }
+                if let department = issue.department, !department.isEmpty {
+                    issueSummaryMetaChip(title: "项目", value: department, systemImage: "folder", color: .teal)
+                }
+                issueSummaryMetaChip(title: "创建", value: Self.timeFmt.string(from: issue.createdAt), systemImage: "calendar", color: .gray)
+                if issue.hasDevActivity {
+                    issueSummaryMetaChip(title: "进展", value: "开发中", systemImage: "hammer", color: .green)
+                }
+                if issue.isEscalated {
+                    issueSummaryMetaChip(title: "升级", value: "Escalated", systemImage: "exclamationmark.arrow.triangle.2.circlepath", color: .red)
+                }
+                if issue.feishuTaskGuid?.isEmpty == false {
+                    issueSummaryMetaChip(title: "任务", value: "飞书任务", systemImage: "checklist", color: .indigo)
                 }
             }
         }
-        .padding(.bottom, 2)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .textBackgroundColor).opacity(0.98),
+                    accent.opacity(0.045)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(accent.opacity(0.18), lineWidth: 1)
+        )
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(accent)
+                .frame(width: 4)
+                .padding(.vertical, 12)
+        }
     }
 
     @ViewBuilder
@@ -1132,15 +1531,29 @@ struct IssueTrackerView: View {
                     }
                 }
 
-                if issue.comments.isEmpty {
-                    Text("暂无备注")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
+	                if issue.comments.isEmpty {
+	                    HStack(spacing: 8) {
+	                        Image(systemName: "text.bubble")
+	                            .foregroundStyle(.secondary)
+	                        Text("暂无备注")
+	                            .font(.caption)
+	                            .foregroundStyle(.secondary)
+	                    }
+	                    .frame(maxWidth: .infinity, alignment: .leading)
+	                    .padding(10)
+	                    .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
                 } else {
                     ForEach(issue.comments.sorted { $0.createdAt > $1.createdAt }) { comment in
-                        HStack(alignment: .top, spacing: 8) {
+                        HStack(alignment: .top, spacing: 10) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.secondary.opacity(0.10))
+                                Image(systemName: "quote.bubble")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(width: 26, height: 26)
+
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 5) {
                                     Text(Self.timeFmt.string(from: comment.createdAt))
@@ -1167,8 +1580,12 @@ struct IssueTrackerView: View {
                                 .help("删除备注")
                             }
                         }
-                        .padding(8)
-                        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                        .padding(10)
+                        .background(Color(nsColor: .textBackgroundColor).opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
+                        )
                     }
                 }
             }
@@ -1264,16 +1681,29 @@ struct IssueTrackerView: View {
         systemImage: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-                .foregroundStyle(.primary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.secondary.opacity(0.10))
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: 24, height: 24)
+
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 0)
+            }
 
             content()
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.78), in: RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1292,11 +1722,13 @@ struct IssueTrackerView: View {
                 .foregroundStyle(.secondary)
                 .labelStyle(.titleAndIcon)
                 .frame(width: 82, alignment: .leading)
-                .padding(.top, 5)
+                .padding(.top, 6)
 
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(8)
+        .background(Color.secondary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
     }
 
     @ViewBuilder
@@ -1360,6 +1792,29 @@ struct IssueTrackerView: View {
     }
 
     @ViewBuilder
+    private func issueSummaryMetaChip(title: String, value: String, systemImage: String, color: Color) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    @ViewBuilder
     private func commentSourceBadge(_ comment: IssueComment) -> some View {
         if let jiraCommentId = comment.jiraCommentId, jiraCommentId.hasPrefix("linear:") {
             Text("Linear")
@@ -1401,14 +1856,17 @@ struct IssueTrackerView: View {
 
     @ViewBuilder
     private func statBadge(title: String, value: Int, color: Color) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             Text(title)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Text("\(value)")
-                .font(.caption.bold())
+                .font(.caption.monospacedDigit().weight(.bold))
                 .foregroundStyle(color)
         }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.09), in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
@@ -1947,9 +2405,69 @@ struct IssueTrackerView: View {
         linearSyncing = true
         Task {
             await LinearService.shared.syncTrackedIssues()
+            await loadLinearImportCandidates()
             linearSyncing = false
             saveState.triggerSave()
         }
+    }
+
+    private func refreshLinearImportCandidates() {
+        guard store.linearConfig.enabled, !linearImportLoading else { return }
+        linearImportLoading = true
+        linearImportMessage = nil
+        Task {
+            await loadLinearImportCandidates()
+            linearImportLoading = false
+        }
+    }
+
+    private func loadLinearImportCandidates() async {
+        guard store.linearConfig.enabled else {
+            linearImportCandidates = []
+            selectedLinearImportIDs = []
+            return
+        }
+        let candidates = await LinearService.shared.fetchImportCandidatesFromConfiguredScope()
+        linearImportCandidates = candidates
+        let candidateIDs = Set(candidates.map(\.id))
+        selectedLinearImportIDs = selectedLinearImportIDs.intersection(candidateIDs)
+        linearImportMessage = candidates.isEmpty ? "暂无待导入的 LarkQPush 提交" : nil
+    }
+
+    private func toggleAllLinearImportCandidates() {
+        let allIDs = Set(linearImportCandidates.map(\.id))
+        if selectedLinearImportIDs == allIDs {
+            selectedLinearImportIDs = []
+        } else {
+            selectedLinearImportIDs = allIDs
+        }
+    }
+
+    private func importSelectedLinearCandidates() {
+        let selected = linearImportCandidates.filter { selectedLinearImportIDs.contains($0.id) }
+        guard !selected.isEmpty else { return }
+        var imported = 0
+        for issue in selected {
+            if store.addIssueFromLinear(issue) {
+                imported += 1
+            }
+        }
+        let importedIDs = Set(selected.map(\.id))
+        linearImportCandidates.removeAll { importedIDs.contains($0.id) || store.hasIssueFromLinear($0) }
+        selectedLinearImportIDs.subtract(importedIDs)
+        linearImportMessage = imported > 0 ? "已导入 \(imported) 个提交" : "没有新的提交被导入"
+        if let latest = store.trackedIssues.last {
+            selectedIssueID = latest.id
+        }
+        if imported > 0 {
+            showingLinearImportPage = false
+        }
+        saveState.triggerSave()
+    }
+
+    private func linearImportDateText(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return String(value.prefix(10))
     }
 
     private func syncAllIssueSources() {

@@ -1223,6 +1223,51 @@ final class DataStore {
         return true
     }
 
+    @discardableResult
+    func addIssueFromLinear(_ issue: LinearIssue, forKey key: String? = nil) -> Bool {
+        guard !issue.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard !hasIssueFromLinear(issue) else { return false }
+        let keyText = issue.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlText = issue.url.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let createdDate = Self.parseLinearTimestamp(issue.createdAt) ?? Date()
+        var entry = TrackedIssue(
+            title: issue.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? keyText.isEmpty ? "Linear Issue" : keyText : issue.title,
+            type: mappedIssueType(from: issue.labels)
+        )
+        entry.issueNumber = nextIssueNumber
+        nextIssueNumber += 1
+        entry.dateKey = key ?? Self.dateKey(from: createdDate)
+        entry.createdAt = createdDate
+        entry.updatedAt = Self.parseLinearTimestamp(issue.updatedAt)
+        entry.status = mappedIssueStatus(from: issue.state?.name)
+        entry.resolvedAt = entry.status.isResolved ? (entry.updatedAt ?? createdDate) : nil
+        entry.source = .linear
+        entry.linearIssueId = issue.id
+        entry.linearKey = keyText.isEmpty ? nil : keyText
+        entry.linearUrl = urlText.isEmpty ? nil : urlText
+        entry.linearProjectId = issue.project?.id
+        entry.linearProjectName = issue.project?.name
+        entry.linearAssignee = issue.assignee?.name
+        entry.assignee = mappedLocalAssignee(from: issue.assignee)
+        entry.comments = [IssueComment(text: "[Linear] 已导入: \(keyText.isEmpty ? issue.id : keyText)")]
+
+        trackedIssues.append(entry)
+        logOperation(module: "问题", action: "Linear同步新增", detail: "#\(entry.issueNumber) \(entry.title) [linear=\(keyText.isEmpty ? issue.id : keyText)]")
+        return true
+    }
+
+    func hasIssueFromLinear(_ issue: LinearIssue) -> Bool {
+        guard !issue.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let keyText = issue.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlText = issue.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trackedIssues.contains(where: { existing in
+            existing.linearIssueId == issue.id ||
+                (!keyText.isEmpty && existing.linearKey == keyText) ||
+                (!urlText.isEmpty && existing.linearUrl == urlText)
+        })
+    }
+
     func assigneeText(fromFeishuTask task: FeishuTaskCandidate) -> String? {
         mergeFeishuUserNameMap(task.assigneeNameByID)
         let ids = task.assigneeIDs
@@ -1246,6 +1291,47 @@ final class DataStore {
         if changed {
             feishuBotConfig.feishuUserNameMap = merged
         }
+    }
+
+    private func mappedIssueStatus(from linearStateName: String?) -> IssueStatus {
+        guard let linearStateName else { return .pending }
+        for (linearName, localCase) in linearConfig.statusMapping {
+            if linearName.localizedCaseInsensitiveCompare(linearStateName) == .orderedSame,
+               let status = IssueStatus.fromCaseName(localCase) {
+                return status
+            }
+        }
+        return .pending
+    }
+
+    private func mappedIssueType(from labels: [String]) -> IssueType {
+        for label in labels {
+            if let raw = linearConfig.labelMapping[label],
+               let type = IssueType(rawValue: raw) {
+                return type
+            }
+        }
+        return .bug
+    }
+
+    private func mappedLocalAssignee(from assignee: LinearUser?) -> String? {
+        guard let assignee else { return nil }
+        if let localName = linearConfig.assigneeMapping.first(where: { $0.value == assignee.id })?.key {
+            return localName
+        }
+        return assignee.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : assignee.name
+    }
+
+    private static func parseLinearTimestamp(_ value: String?) -> Date? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) {
+            return date
+        }
+        let basic = ISO8601DateFormatter()
+        basic.formatOptions = [.withInternetDateTime]
+        return basic.date(from: value)
     }
 
     /// Apply mutations to a tracked issue via copy-modify-writeback to reliably trigger didSet.

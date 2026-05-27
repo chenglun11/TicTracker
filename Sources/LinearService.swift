@@ -7,11 +7,23 @@ final class LinearService {
     private var store: DataStore?
     private var pollingTask: Task<Void, Never>?
     private var isSyncing = false
+    private var cachedToken: String?
+    private var didLoadToken = false
 
     private init() {}
 
     func setup(store: DataStore) {
         self.store = store
+    }
+
+    func updateCachedToken(_ token: String?) {
+        cachedToken = token
+        didLoadToken = true
+    }
+
+    func invalidateCachedToken() {
+        cachedToken = nil
+        didLoadToken = false
     }
 
     // MARK: - Polling
@@ -162,31 +174,64 @@ final class LinearService {
 
     func createIssue(title: String, description: String?, teamId: String, projectId: String?, assigneeId: String?, labelIds: [String]? = nil) async -> LinearIssue? {
         guard let token = loadToken() else { return nil }
-        var inputFields = "title: \\\"\(escapeGraphQL(title))\\\", teamId: \\\"\(teamId)\\\""
-        if let desc = description, !desc.isEmpty {
-            inputFields += ", description: \\\"\(escapeGraphQL(desc))\\\""
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTitle.isEmpty else {
+            DevLog.shared.error("Linear", "createIssue: title is empty")
+            return nil
         }
-        if let pid = projectId, !pid.isEmpty {
-            inputFields += ", projectId: \\\"\(pid)\\\""
+        let normalizedTeamId = teamId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTeamId.isEmpty else {
+            DevLog.shared.error("Linear", "createIssue: teamId is empty")
+            return nil
+        }
+
+        var input: [String: Any] = [
+            "title": normalizedTitle,
+            "teamId": normalizedTeamId
+        ]
+        if let desc = description?.trimmingCharacters(in: .whitespacesAndNewlines), !desc.isEmpty {
+            input["description"] = desc
+        }
+        if let pid = projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !pid.isEmpty {
+            input["projectId"] = pid
         }
         let effectiveAssigneeId = assigneeId ?? {
             let defaultId = store?.linearConfig.defaultAssigneeId ?? ""
             return defaultId.isEmpty ? nil : defaultId
         }()
-        if let aid = effectiveAssigneeId, !aid.isEmpty {
-            inputFields += ", assigneeId: \\\"\(aid)\\\""
+        if let aid = effectiveAssigneeId?.trimmingCharacters(in: .whitespacesAndNewlines), !aid.isEmpty {
+            input["assigneeId"] = aid
         }
-        if let ids = labelIds, !ids.isEmpty {
-            let quoted = ids.map { "\\\"\($0)\\\"" }.joined(separator: ", ")
-            inputFields += ", labelIds: [\(quoted)]"
+        if let ids = labelIds?.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }).filter({ !$0.isEmpty }), !ids.isEmpty {
+            input["labelIds"] = ids
         }
-        let q = "mutation { issueCreate(input: { \(inputFields) }) { success issue { id identifier title url project { id name } } } }"
-        let query = #"{"query":""# + q + #""}"#
-        guard let json = await executeQuery(query: query, token: token) else { return nil }
+
+        let mutation = """
+        mutation CreateIssue($input: IssueCreateInput!) {
+          issueCreate(input: $input) {
+            success
+            issue {
+              id
+              identifier
+              title
+              url
+              createdAt
+              updatedAt
+              project { id name }
+            }
+          }
+        }
+        """
+        guard let json = await executeGraphQL(query: mutation, variables: ["input": input], token: token, operation: "createIssue") else { return nil }
         guard let data = json["data"] as? [String: Any],
               let issueCreate = data["issueCreate"] as? [String: Any],
               let success = issueCreate["success"] as? Bool, success,
-              let issue = issueCreate["issue"] as? [String: Any] else { return nil }
+              let issue = issueCreate["issue"] as? [String: Any] else {
+            if graphQLErrorMessages(from: json).isEmpty {
+                DevLog.shared.error("Linear", "createIssue: unexpected response \(json.keys.sorted())")
+            }
+            return nil
+        }
         return parseIssueDetail(issue)
     }
 
@@ -315,7 +360,7 @@ final class LinearService {
 
     func fetchIssueDetail(issueId: String) async -> LinearIssue? {
         guard let token = loadToken() else { return nil }
-        let q = "{ issue(id: \\\"\(issueId)\\\") { id identifier title description url state { id name type } assignee { id name } project { id name } labels { nodes { name } } } }"
+        let q = "{ issue(id: \\\"\(issueId)\\\") { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } project { id name } labels { nodes { name } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else { return nil }
         guard let data = json["data"] as? [String: Any],
@@ -335,23 +380,41 @@ final class LinearService {
         if let pid = projectId, !pid.isEmpty {
             filterParts.append("project: { id: { eq: \\\"\(pid)\\\" } }")
         }
-        let filterArg = filterParts.isEmpty ? "(first: 50)" : "(filter: { \(filterParts.joined(separator: ", ")) }, first: 50)"
-        let q = "{ issues\(filterArg) { nodes { id identifier title description url state { id name type } assignee { id name } project { id name } labels { nodes { name } } } } }"
-        let query = #"{"query":""# + q + #""}"#
-        guard let json = await executeQuery(query: query, token: token) else {
-            DevLog.shared.error("Linear", "fetchIssues: query failed")
-            return []
-        }
-        guard let data = json["data"] as? [String: Any],
-              let issues = data["issues"] as? [String: Any],
-              let nodes = issues["nodes"] as? [[String: Any]] else {
-            if let errors = json["errors"] as? [[String: Any]] {
-                let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
-                DevLog.shared.error("Linear", "fetchIssues errors: \(msg)")
+        var cursor: String?
+        var result: [LinearIssue] = []
+        for _ in 0..<5 {
+            var args = ["first: 100"]
+            if !filterParts.isEmpty {
+                args.insert("filter: { \(filterParts.joined(separator: ", ")) }", at: 0)
             }
-            return []
+            if let cursor, !cursor.isEmpty {
+                args.append("after: \\\"\(escapeGraphQL(cursor))\\\"")
+            }
+            let q = "{ issues(\(args.joined(separator: ", "))) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } project { id name } labels { nodes { name } } } pageInfo { hasNextPage endCursor } } }"
+            let query = #"{"query":""# + q + #""}"#
+            guard let json = await executeQuery(query: query, token: token) else {
+                DevLog.shared.error("Linear", "fetchIssues: query failed")
+                break
+            }
+            guard let data = json["data"] as? [String: Any],
+                  let issues = data["issues"] as? [String: Any],
+                  let nodes = issues["nodes"] as? [[String: Any]] else {
+                if let errors = json["errors"] as? [[String: Any]] {
+                    let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
+                    DevLog.shared.error("Linear", "fetchIssues errors: \(msg)")
+                }
+                break
+            }
+            result += nodes.compactMap { parseIssueDetail($0) }
+            guard let pageInfo = issues["pageInfo"] as? [String: Any],
+                  pageInfo["hasNextPage"] as? Bool == true,
+                  let nextCursor = pageInfo["endCursor"] as? String,
+                  !nextCursor.isEmpty else {
+                break
+            }
+            cursor = nextCursor
         }
-        return nodes.compactMap { parseIssueDetail($0) }
+        return result
     }
 
     func searchIssues(query searchText: String, teamId: String? = nil) async -> [LinearIssue] {
@@ -364,7 +427,7 @@ final class LinearService {
             filterArg = ", filter: { team: { id: { eq: \\\"\(tid)\\\" } } }"
         }
         let escaped = escapeGraphQL(searchText)
-        let q = "{ issueSearch(query: \\\"\(escaped)\\\"\(filterArg), first: 30) { nodes { id identifier title description url state { id name type } assignee { id name } project { id name } labels { nodes { name } } } } }"
+        let q = "{ issueSearch(query: \\\"\(escaped)\\\"\(filterArg), first: 30) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } project { id name } labels { nodes { name } } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else {
             DevLog.shared.error("Linear", "searchIssues: query failed")
@@ -396,10 +459,13 @@ final class LinearService {
         isSyncing = true
         defer { isSyncing = false }
 
+        let importCandidateCount = await fetchImportCandidatesFromConfiguredScope().count
         let reverseMapping = Dictionary(store.linearConfig.assigneeMapping.map { ($0.value, $0.key) }, uniquingKeysWith: { first, _ in first })
         let issues = store.trackedIssues
+        var syncedCount = 0
         for issue in issues {
             guard let linearId = issue.linearIssueId, !linearId.isEmpty else { continue }
+            syncedCount += 1
             let displayKey = issue.linearKey ?? linearId
             guard let detail = await fetchIssueDetail(issueId: linearId) else {
                 DevLog.shared.info("LinearSync", "\(displayKey) fetch failed, skipped")
@@ -507,16 +573,52 @@ final class LinearService {
                 DevLog.shared.info("LinearSync", "\(displayKey): synced comment \(rc.id)")
             }
         }
+        DevLog.shared.info("LinearSync", "sync completed: import_candidates=\(importCandidateCount), linked_checked=\(syncedCount)")
     }
 
     // MARK: - Private Helpers
 
+    func fetchImportCandidatesFromConfiguredScope() async -> [LinearIssue] {
+        guard let store else { return [] }
+        let teamId = store.linearConfig.teamId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !teamId.isEmpty else {
+            DevLog.shared.info("LinearSync", "candidate fetch skipped: teamId is empty")
+            return []
+        }
+        let projectId = store.linearConfig.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let remoteIssues = await fetchIssues(teamId: teamId, projectId: projectId.isEmpty ? nil : projectId)
+        let candidates = remoteIssues.filter { remote in
+            shouldAutoImportLinearIssue(remote) && !store.hasIssueFromLinear(remote)
+        }
+        DevLog.shared.info("LinearSync", "found \(candidates.count) Linear import candidates")
+        return candidates
+    }
+
+    private func shouldAutoImportLinearIssue(_ issue: LinearIssue) -> Bool {
+        let labels = Set(issue.labels.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        if labels.contains("feedback") && labels.contains("feishu") {
+            return true
+        }
+        let description = issue.description ?? ""
+        return description.contains("来源：飞书多维表反馈工单") ||
+            (description.contains("Record ID：") && description.contains("Event ID："))
+    }
+
     private func loadToken() -> String? {
+        if didLoadToken {
+            return cachedToken
+        }
+        didLoadToken = true
         guard let data = KeychainHelper.load(
             service: KeychainHelper.service,
             account: LinearConfig.keychainTokenKey
-        ) else { return nil }
-        return String(data: data, encoding: .utf8)
+        ) else {
+            cachedToken = nil
+            return nil
+        }
+        let token = String(data: data, encoding: .utf8)
+        cachedToken = token
+        return token
     }
 
     private func performRequest(query: String, token: String) async throws -> (Data, URLResponse) {
@@ -531,20 +633,84 @@ final class LinearService {
         return try await URLSession.shared.data(for: request)
     }
 
+    private func performGraphQLRequest(query: String, variables: [String: Any]? = nil, token: String) async throws -> (Data, URLResponse) {
+        guard let url = URL(string: "https://api.linear.app/graphql") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(token, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var payload: [String: Any] = ["query": query]
+        if let variables {
+            payload["variables"] = variables
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        return try await URLSession.shared.data(for: request)
+    }
+
+    private func executeGraphQL(query: String, variables: [String: Any]? = nil, token: String, operation: String) async -> [String: Any]? {
+        do {
+            let (data, response) = try await performGraphQLRequest(query: query, variables: variables, token: token)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                if let http = response as? HTTPURLResponse {
+                    DevLog.shared.error("Linear", "\(operation) HTTP \(http.statusCode): \(responsePreview(data))")
+                }
+                return nil
+            }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DevLog.shared.error("Linear", "\(operation): invalid JSON response \(responsePreview(data))")
+                return nil
+            }
+            let messages = graphQLErrorMessages(from: json)
+            if !messages.isEmpty {
+                DevLog.shared.error("Linear", "\(operation) GraphQL errors: \(messages.joined(separator: "; "))")
+            }
+            return json
+        } catch {
+            DevLog.shared.error("Linear", "\(operation) request failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     private func executeQuery(query: String, token: String) async -> [String: Any]? {
         do {
             let (data, response) = try await performRequest(query: query, token: token)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 if let http = response as? HTTPURLResponse {
-                    DevLog.shared.error("Linear", "HTTP \(http.statusCode)")
+                    DevLog.shared.error("Linear", "HTTP \(http.statusCode): \(responsePreview(data))")
                 }
                 return nil
             }
-            return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DevLog.shared.error("Linear", "invalid JSON response \(responsePreview(data))")
+                return nil
+            }
+            let messages = graphQLErrorMessages(from: json)
+            if !messages.isEmpty {
+                DevLog.shared.error("Linear", "GraphQL errors: \(messages.joined(separator: "; "))")
+            }
+            return json
         } catch {
             DevLog.shared.error("Linear", "request failed: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    private nonisolated func graphQLErrorMessages(from json: [String: Any]) -> [String] {
+        guard let errors = json["errors"] as? [[String: Any]] else { return [] }
+        return errors.compactMap { error in
+            if let message = error["message"] as? String {
+                return message
+            }
+            return String(describing: error)
+        }
+    }
+
+    private nonisolated func responsePreview(_ data: Data, maxLength: Int = 500) -> String {
+        let body = String(data: data, encoding: .utf8) ?? "(non-utf8 body, \(data.count) bytes)"
+        guard body.count > maxLength else { return body }
+        return "\(body.prefix(maxLength))…"
     }
 
     private func classifyHTTPStatus(_ code: Int) -> LinearError {
@@ -627,6 +793,8 @@ final class LinearService {
               let title = node["title"] as? String,
               let url = node["url"] as? String else { return nil }
         let description = node["description"] as? String
+        let createdAt = node["createdAt"] as? String
+        let updatedAt = node["updatedAt"] as? String
         var state: LinearState?
         if let stateObj = node["state"] as? [String: Any] {
             state = parseState(stateObj)
@@ -649,6 +817,7 @@ final class LinearService {
             labels = labelNodes.compactMap { $0["name"] as? String }
         }
         return LinearIssue(id: id, identifier: identifier, title: title, description: description,
-                           state: state, assignee: assignee, project: project, labels: labels, url: url)
+                           state: state, assignee: assignee, project: project, labels: labels, url: url,
+                           createdAt: createdAt, updatedAt: updatedAt)
     }
 }
