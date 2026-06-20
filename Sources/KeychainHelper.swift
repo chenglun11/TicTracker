@@ -14,13 +14,7 @@ private final class KeychainCache: @unchecked Sendable {
     func get(service: String, account: String) -> Data? {
         lock.lock()
         defer { lock.unlock() }
-        if let data = storage[cacheKey(service: service, account: account)] {
-            return data
-        }
-        if loadedServices.contains(service) {
-            return serviceStorage[service]?[account]
-        }
-        return nil
+        return storage[cacheKey(service: service, account: account)]
     }
 
     func getAll(service: String) -> [String: Data]? {
@@ -28,12 +22,6 @@ private final class KeychainCache: @unchecked Sendable {
         defer { lock.unlock() }
         guard loadedServices.contains(service) else { return nil }
         return serviceStorage[service] ?? [:]
-    }
-
-    func hasLoaded(service: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return loadedServices.contains(service)
     }
 
     func set(service: String, account: String, data: Data) {
@@ -74,6 +62,11 @@ enum KeychainHelper {
     static let account = "api-token"
     private static let migrationFlagKey = "keychainMigrationDone"
     private static let cache = KeychainCache()
+    private static let legacyServiceAccounts: [String: Set<String>] = [
+        "com.tictracker.jira": ["api-token"],
+        "com.tictracker.ai": ["api-key", "base-url", "model"],
+        "com.tictracker.feishu-bot": ["webhook-secret"],
+    ]
 
     private static func legacyMirrorDirectoryURL() -> URL? {
         guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -125,9 +118,6 @@ enum KeychainHelper {
         if cache.get(service: service, account: account) != nil {
             return true
         }
-        if cache.hasLoaded(service: service) {
-            return false
-        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -141,10 +131,21 @@ enum KeychainHelper {
         if let cached = cache.get(service: service, account: account) {
             return cached
         }
-        if cache.hasLoaded(service: service) {
-            return nil
+
+        if let data = loadDirect(service: service, account: account) {
+            return data
         }
 
+        for legacyService in legacyServices(for: service, account: account) {
+            let migrated = migrateLegacyService(legacyService, to: service)
+            if let data = migrated[account] {
+                return data
+            }
+        }
+        return nil
+    }
+
+    private static func loadDirect(service: String, account: String) -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -167,6 +168,17 @@ enum KeychainHelper {
             return cached
         }
 
+        let (status, dict) = loadAllDirect(service: service)
+        if status == errSecSuccess {
+            cache.setAll(service: service, items: dict)
+        } else if status == errSecItemNotFound {
+            cache.setAll(service: service, items: [:])
+        }
+        removeLegacyMirrorDirectory()
+        return dict
+    }
+
+    private static func loadAllDirect(service: String) -> (OSStatus, [String: Data]) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -176,7 +188,8 @@ enum KeychainHelper {
         ]
         var dict: [String: Data] = [:]
         var result: AnyObject?
-        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess,
            let items = result as? [[String: Any]] {
             for item in items {
                 if let account = item[kSecAttrAccount as String] as? String,
@@ -185,9 +198,33 @@ enum KeychainHelper {
                 }
             }
         }
-        cache.setAll(service: service, items: dict)
-        removeLegacyMirrorDirectory()
-        return dict
+        return (status, dict)
+    }
+
+    private static func legacyServices(for service: String, account: String) -> [String] {
+        guard service == Self.service else { return [] }
+        return legacyServiceAccounts.compactMap { legacyService, accounts in
+            accounts.contains(account) ? legacyService : nil
+        }
+    }
+
+    private static func migrateLegacyService(_ legacyService: String, to targetService: String) -> [String: Data] {
+        let (status, items) = loadAllDirect(service: legacyService)
+        guard status == errSecSuccess, !items.isEmpty else { return [:] }
+
+        var migrated: [String: Data] = [:]
+        for (account, data) in items {
+            if let existing = loadDirect(service: targetService, account: account) {
+                migrated[account] = existing
+                delete(service: legacyService, account: account)
+                continue
+            }
+            if save(service: targetService, account: account, data: data) {
+                migrated[account] = data
+                delete(service: legacyService, account: account)
+            }
+        }
+        return migrated
     }
 
     static func warmUpAccess() {

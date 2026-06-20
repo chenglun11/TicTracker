@@ -393,7 +393,8 @@ final class AIChatViewModel: ObservableObject {
         guard !isLoading else { return }
 
         let rawReport = WeeklyReport.generate(from: store, period: period)
-        let userMessage = ChatMessage(role: .user, content: "请根据以下数据生成周报：\n\n\(rawReport)", attachments: [])
+        let reportName = period.reportName
+        let userMessage = ChatMessage(role: .user, content: "请根据以下数据生成\(reportName)：\n\n\(rawReport)", attachments: [])
         sessions[sessionIndex].messages.append(userMessage)
         sessions[sessionIndex].updatedAt = Date()
         errorMessage = nil
@@ -404,7 +405,7 @@ final class AIChatViewModel: ObservableObject {
             defer { isLoading = false }
 
             do {
-                let response = try await aiService.generateWeeklyReport(rawReport: rawReport, config: store.aiConfig)
+                let response = try await aiService.generateWeeklyReport(rawReport: rawReport, config: store.aiConfig, reportName: reportName)
                 guard let finalIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
                 let assistantMessage = ChatMessage(role: .assistant, content: response)
                 sessions[finalIndex].messages.append(assistantMessage)
@@ -412,7 +413,7 @@ final class AIChatViewModel: ObservableObject {
                 scrollTrigger = UUID()
                 saveSessions()
             } catch {
-                log.error("AIChat", "周报生成失败: \(error.localizedDescription)")
+                log.error("AIChat", "\(reportName)生成失败: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
             }
         }
@@ -467,9 +468,11 @@ struct AIChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .generateWeeklyReport)) { _ in
             if !viewModel.isLoading { showWeeklyReportPeriodPicker = true }
         }
-        .confirmationDialog("选择周报范围", isPresented: $showWeeklyReportPeriodPicker) {
+        .confirmationDialog("选择报表范围", isPresented: $showWeeklyReportPeriodPicker) {
             Button("本周") { viewModel.generateWeeklyReport(period: .currentWeek) }
             Button("上周") { viewModel.generateWeeklyReport(period: .previousWeek) }
+            Button("本月") { viewModel.generateWeeklyReport(period: .currentMonth) }
+            Button("上月") { viewModel.generateWeeklyReport(period: .previousMonth) }
             Button("取消", role: .cancel) {}
         }
         .fileImporter(
@@ -594,11 +597,11 @@ struct AIChatView: View {
             }
             Spacer()
             Button(action: { showWeeklyReportPeriodPicker = true }) {
-                Label("生成周报", systemImage: "doc.text")
+                Label("生成报表", systemImage: "doc.text")
             }
             .buttonStyle(.borderless)
             .disabled(viewModel.isLoading)
-            .help("选择范围并生成技术支持周报")
+            .help("选择范围并生成技术支持报表")
 
             Button(action: { showClearConfirmation = true }) {
                 Label("清空", systemImage: "trash")
@@ -740,7 +743,7 @@ struct AIChatView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
             Button(action: { showWeeklyReportPeriodPicker = true }) {
-                Label("生成周报", systemImage: "doc.text.fill")
+                Label("生成报表", systemImage: "doc.text.fill")
             }
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.isLoading)

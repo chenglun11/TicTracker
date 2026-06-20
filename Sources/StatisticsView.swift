@@ -9,6 +9,12 @@ struct StatisticsView: View {
     @State private var showStartPicker = false
     @State private var showEndPicker = false
 
+    private enum Mode: String, CaseIterable {
+        case support = "技术支持"
+        case issues = "问题提交"
+    }
+    @State private var mode: Mode = .support
+
     private func computeFilteredData() -> [(dept: String, count: Int)] {
         var totals: [String: Int] = [:]
         let calendar = Calendar.current
@@ -73,9 +79,35 @@ struct StatisticsView: View {
     }()
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Mode toggle
+            Picker("", selection: $mode) {
+                ForEach(Mode.allCases, id: \.self) { m in
+                    Text(m.rawValue).tag(m)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+
+            switch mode {
+            case .support:
+                supportBody
+            case .issues:
+                IssueStatisticsView(store: store)
+            }
+        }
+        .frame(minWidth: 500, minHeight: 400)
+        .onDisappear {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private var supportBody: some View {
         let items = computeFilteredData()
         let grandTotal = items.reduce(0) { $0 + $1.count }
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             // Header with stats cards
             VStack(spacing: 16) {
                 // Stats cards
@@ -204,10 +236,6 @@ struct StatisticsView: View {
                 }
                 .listStyle(.inset)
             }
-        }
-        .frame(minWidth: 500, minHeight: 400)
-        .onDisappear {
-            NSApp.setActivationPolicy(.accessory)
         }
     }
 

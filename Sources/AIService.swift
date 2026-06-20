@@ -17,13 +17,13 @@ struct AIConfig: Codable {
     var chatModel: String = ""
 
     static let defaultPrompt = """
-    你是一个技术支持团队的周报助手。根据提供的原始数据，生成一份简洁专业的周报摘要。
+    你是一个技术支持团队的报表助手。根据提供的原始数据，生成一份简洁专业的周期报表摘要。
     要求：
     1. 用中文撰写
-    2. 包含本周工作概览（总量、趋势）
+    2. 包含本周期工作概览（总量、趋势）
     3. 按项目/部门总结重点
     4. 如有日报笔记，提炼关键事项
-    5. 只总结本周实际完成的工作，不要写展望或计划
+    5. 只总结本周期实际完成的工作，不要写展望或计划
     6. 保持简洁，不要过度展开
     """
 
@@ -44,7 +44,7 @@ struct AIConfig: Codable {
     var effectiveChatModel: String {
         let trimmed = chatModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
-        return effectiveModel // 默认使用周报的模型
+        return effectiveModel // 默认使用报表模型
     }
 
     var effectiveBaseURL: String {
@@ -87,11 +87,10 @@ final class AIService {
 
     func loadAll() -> StoredConfig {
         if let cachedConfig { return cachedConfig }
-        let all = KeychainHelper.loadAll(service: keychainService)
         let stored = StoredConfig(
-            apiKey: all[keychainAccount].flatMap { String(data: $0, encoding: .utf8) } ?? "",
-            baseURL: all[keychainBaseURLAccount].flatMap { String(data: $0, encoding: .utf8) } ?? "",
-            model: all[keychainModelAccount].flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            apiKey: loadValue(keychainAccount),
+            baseURL: loadValue(keychainBaseURLAccount),
+            model: loadValue(keychainModelAccount)
         )
         cachedConfig = stored
         return stored
@@ -147,6 +146,14 @@ final class AIService {
         }
     }
 
+    private func loadValue(_ account: String) -> String {
+        guard let data = KeychainHelper.load(service: keychainService, account: account),
+              let value = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+        return value
+    }
+
     enum AIError: LocalizedError {
         case noAPIKey
         case requestFailed(String)
@@ -161,15 +168,15 @@ final class AIService {
         }
     }
 
-    func generateWeeklyReport(rawReport: String, config: AIConfig) async throws -> String {
-        log.info(mod, "开始生成周报，服务商: \(config.provider.rawValue)")
+    func generateWeeklyReport(rawReport: String, config: AIConfig, reportName: String = "周报") async throws -> String {
+        log.info(mod, "开始生成\(reportName)，服务商: \(config.provider.rawValue)")
         guard let apiKey = loadAPIKey(), !apiKey.isEmpty else {
             log.error(mod, "未配置 API Key")
             throw AIError.noAPIKey
         }
 
         let systemPrompt = config.effectivePrompt
-        let userPrompt = "以下是本周的原始技术支持数据，请生成周报摘要：\n\n\(rawReport)"
+        let userPrompt = "以下是\(reportName)周期内的原始技术支持数据，请生成\(reportName)摘要：\n\n\(rawReport)"
 
         do {
             let result: String
@@ -177,10 +184,10 @@ final class AIService {
             case .claude: result = try await callClaude(apiKey: apiKey, config: config, system: systemPrompt, user: userPrompt)
             case .openai: result = try await callOpenAI(apiKey: apiKey, config: config, system: systemPrompt, user: userPrompt)
             }
-            log.info(mod, "周报生成成功，长度: \(result.count) 字符")
+            log.info(mod, "\(reportName)生成成功，长度: \(result.count) 字符")
             return result
         } catch {
-            log.error(mod, "周报生成失败: \(error.localizedDescription)")
+            log.error(mod, "\(reportName)生成失败: \(error.localizedDescription)")
             throw error
         }
     }
@@ -272,7 +279,7 @@ final class AIService {
         return userContent
     }
 
-    // MARK: - Claude API (非流式，用于周报等)
+    // MARK: - Claude API (非流式，用于报表等)
 
     private func callClaude(apiKey: String, config: AIConfig, system: String, user: String) async throws -> String {
         let messages = [["role": "user", "content": user]]

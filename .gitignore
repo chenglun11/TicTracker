@@ -11,3 +11,7 @@ server/config.yaml
 server/data/
 server/tictacker-server
 web/node_modules/
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/

@@ -245,6 +245,18 @@ struct MenuBarView: View {
 
                 Spacer()
 
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "issue-month-report")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "calendar.badge.clock")
+                }
+                .buttonStyle(.borderless)
+                .help("问题月报")
+
+                Spacer()
+
                 if store.rssEnabled {
                     Button {
                         NSApp.setActivationPolicy(.regular)

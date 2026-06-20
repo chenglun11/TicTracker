@@ -9,8 +9,19 @@ final class FeishuBotService {
     private var store: DataStore?
     private var schedulerTask: Task<Void, Never>?
     private var schedulerFailureAt: [String: Date] = [:]
+    private var issuePreSyncSentinel: [String: String] = [:]
+    private var lastIssuePreSyncAt: Date?
+    private var issuePreSyncInProgress = false
+    private var cachedTenantToken: TenantTokenBundle?
     private var wakeObserver: NSObjectProtocol?
     private let schedulerFailureCooldown: TimeInterval = 10 * 60
+    private let issuePreSyncLeadTime: TimeInterval = 5 * 60
+    private let issuePreSyncMinInterval: TimeInterval = 5 * 60
+
+    private struct TenantTokenBundle {
+        let token: String
+        let expireAt: Date
+    }
 
     private static let keychainService = "com.tictracker.keychain"
     private static let keychainAccount = "webhook-secret"
@@ -143,8 +154,16 @@ final class FeishuBotService {
         for scheduleTime in config.sendTimes {
             let key = scheduleTime.key
             guard scheduleTime.shouldSendOn(weekday: weekday),
-                  isScheduleDue(scheduleTime, currentHour: hour, currentMinute: minute),
                   config.lastSentTimes[scheduleTime.key] != todayKey else { continue }
+
+            await syncIssuesBeforeScheduledSendIfNeeded(
+                scheduleTime,
+                currentHour: hour,
+                currentMinute: minute,
+                todayKey: todayKey
+            )
+
+            guard isScheduleDue(scheduleTime, currentHour: hour, currentMinute: minute) else { continue }
 
             if let failedAt = schedulerFailureAt[key],
                now.timeIntervalSince(failedAt) < schedulerFailureCooldown {
@@ -171,6 +190,122 @@ final class FeishuBotService {
         let current = currentHour * 60 + currentMinute
         let scheduled = scheduleTime.hour * 60 + scheduleTime.minute
         return current >= scheduled
+    }
+
+    private func syncIssuesBeforeScheduledSendIfNeeded(
+        _ scheduleTime: ScheduleTime,
+        currentHour: Int,
+        currentMinute: Int,
+        todayKey: String
+    ) async {
+        let currentSeconds = (currentHour * 60 + currentMinute) * 60
+        let scheduledSeconds = (scheduleTime.hour * 60 + scheduleTime.minute) * 60
+        let secondsUntilSend = scheduledSeconds - currentSeconds
+        guard secondsUntilSend >= 0,
+              TimeInterval(secondsUntilSend) <= issuePreSyncLeadTime else { return }
+
+        let sentinelKey = "\(todayKey):\(scheduleTime.key)"
+        guard issuePreSyncSentinel[sentinelKey] != todayKey else { return }
+        issuePreSyncSentinel[sentinelKey] = todayKey
+        await syncIssueSourcesBeforeReport(reason: "飞书定时发送前 \(Int(issuePreSyncLeadTime / 60)) 分钟同步", force: false)
+    }
+
+    private func syncIssueSourcesBeforeReport(reason: String, force: Bool) async {
+        guard let store else { return }
+        if issuePreSyncInProgress {
+            DevLog.shared.info("FeishuBot", "\(reason)：已有问题同步正在进行，跳过")
+            return
+        }
+        if !force,
+           let lastIssuePreSyncAt,
+           Date().timeIntervalSince(lastIssuePreSyncAt) < issuePreSyncMinInterval {
+            DevLog.shared.info("FeishuBot", "\(reason)：距离上次同步不足 \(Int(issuePreSyncMinInterval / 60)) 分钟，跳过")
+            return
+        }
+
+        issuePreSyncInProgress = true
+        defer {
+            issuePreSyncInProgress = false
+            lastIssuePreSyncAt = Date()
+        }
+
+        DevLog.shared.info("FeishuBot", "\(reason)：开始同步问题反馈")
+
+        if canSyncFeishuTasks(store: store) {
+            await syncFeishuIssueTasksBeforeReport(store: store)
+        }
+        if store.jiraConfig.enabled {
+            _ = await JiraService.shared.fetchByMode()
+            await JiraService.shared.syncTrackedIssues()
+        }
+        if store.linearConfig.enabled {
+            await LinearService.shared.syncTrackedIssues()
+        }
+
+        DevLog.shared.info("FeishuBot", "\(reason)：问题反馈同步完成")
+    }
+
+    private func canSyncFeishuTasks(store: DataStore) -> Bool {
+        switch store.feishuBotConfig.taskAuthMode {
+        case .botTenant:
+            return !store.feishuBotConfig.appID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && Self.loadAppSecret()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        case .userOAuth:
+            return FeishuOAuthService.shared.isAuthorized
+        }
+    }
+
+    private func syncFeishuIssueTasksBeforeReport(store: DataStore) async {
+        let boundGUIDs = store.trackedIssues.compactMap { issue -> String? in
+            guard let guid = issue.feishuTaskGuid, !guid.isEmpty else { return nil }
+            return guid
+        }
+
+        do {
+            let boundResult = try await FeishuTaskService.shared.syncBoundTasks(store: store, boundGUIDs: boundGUIDs)
+            for guid in boundResult.deletedGUIDs {
+                if let issue = store.trackedIssues.first(where: { $0.feishuTaskGuid == guid }) {
+                    store.markIssueFeishuTaskDeleted(id: issue.id, guid: guid)
+                }
+            }
+            for (guid, task) in boundResult.tasks {
+                if let issue = store.trackedIssues.first(where: { $0.feishuTaskGuid == guid }) {
+                    store.updateIssueFeishuTaskBinding(id: issue.id, task: task)
+                    applyFeishuTaskCompletionStatus(store: store, issueID: issue.id, candidate: task)
+                    applyFeishuTaskAssignee(store: store, issueID: issue.id, candidate: task)
+                }
+            }
+
+            let tasklistResult = try await FeishuTaskService.shared.listTasks(store: store)
+            var importedCount = 0
+            for task in tasklistResult.tasks {
+                if store.addIssueFromFeishuTask(task, forKey: store.todayKey) {
+                    importedCount += 1
+                }
+            }
+            DevLog.shared.info("FeishuBot", "飞书任务预同步完成：新增 \(importedCount) 个本地问题")
+        } catch {
+            DevLog.shared.error("FeishuBot", "飞书任务预同步失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func applyFeishuTaskCompletionStatus(store: DataStore, issueID: UUID, candidate: FeishuTaskCandidate) {
+        let isCompleted = (candidate.completedAt ?? "").trimmingCharacters(in: .whitespaces).isEmpty == false
+            && candidate.completedAt != "0"
+        if isCompleted {
+            store.updateIssueStatus(id: issueID, status: .fixed)
+        } else if let issue = store.trackedIssues.first(where: { $0.id == issueID }), issue.status.isResolved {
+            store.updateIssueStatus(id: issueID, status: .pending)
+        }
+    }
+
+    private func applyFeishuTaskAssignee(store: DataStore, issueID: UUID, candidate: FeishuTaskCandidate) {
+        guard let assignee = store.assigneeText(fromFeishuTask: candidate),
+              let issue = store.trackedIssues.first(where: { $0.id == issueID }) else { return }
+        let boundGUID = issue.feishuTaskGuid?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard boundGUID == candidate.guid || issue.source == .feishu else { return }
+        guard issue.assignee != assignee else { return }
+        store.updateIssueAssigneeLocally(id: issueID, assignee: assignee)
     }
 
     // MARK: - Send
@@ -209,6 +344,7 @@ final class FeishuBotService {
         guard !store.feishuBotConfig.webhooks.isEmpty else {
             return (false, "Webhook URL 为空")
         }
+        await syncIssueSourcesBeforeReport(reason: "飞书发送前同步", force: false)
         let result = await sendReportOnce(store: store)
         addHistory(store: store, success: result.success, message: result.message, retryCount: 0)
         return result
@@ -300,6 +436,8 @@ final class FeishuBotService {
     }
 
     private func sendReport(store: DataStore) async -> (success: Bool, message: String) {
+        await syncIssueSourcesBeforeReport(reason: "飞书定时发送前兜底同步", force: false)
+
         var retryCount = 0
         var lastError = ""
 
@@ -333,13 +471,17 @@ final class FeishuBotService {
 
     private func sendReportOnce(store: DataStore) async -> (success: Bool, message: String) {
         ensureSecretsMigrated(store: store)
-        let payload = generateDailyReport(store: store)
+        var payload = generateDailyReport(store: store)
         let webhooks = store.feishuBotConfig.webhooks.filter {
             $0.enabled && !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
         guard !webhooks.isEmpty else {
             return (false, "没有启用的 Webhook")
+        }
+
+        if let imageKey = await uploadReportImageIfNeeded(store: store) {
+            attachReportImage(imageKey: imageKey, to: &payload)
         }
 
         var successCount = 0
@@ -436,6 +578,126 @@ final class FeishuBotService {
         case .customTemplate:
             return generateCustomTemplateReport(store: store)
         }
+    }
+
+    private func uploadReportImageIfNeeded(store: DataStore) async -> String? {
+        guard store.feishuBotConfig.includeVisualReportImage else { return nil }
+        guard store.feishuBotConfig.messageFormat != .richText else { return nil }
+        guard let pngData = ReportVisualRenderer.pngData(for: ReportVisualRenderer.renderDailyReport(store: store)) else {
+            DevLog.shared.warn("FeishuBot", "可视化报表图生成失败，跳过附图")
+            return nil
+        }
+
+        do {
+            let token = try await tenantAccessToken(store: store)
+            return try await uploadImage(pngData, tenantAccessToken: token)
+        } catch {
+            DevLog.shared.warn("FeishuBot", "可视化报表图上传失败，跳过附图：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func attachReportImage(imageKey: String, to payload: inout [String: Any]) {
+        guard payload["msg_type"] as? String == "interactive",
+              var card = payload["card"] as? [String: Any],
+              var elements = card["elements"] as? [[String: Any]]
+        else { return }
+
+        let imageElement: [String: Any] = [
+            "tag": "img",
+            "img_key": imageKey,
+            "alt": ["tag": "plain_text", "content": "可视化报表"],
+            "mode": "fit_horizontal"
+        ]
+        let insertIndex = min(1, elements.count)
+        elements.insert(["tag": "hr"], at: insertIndex)
+        elements.insert(imageElement, at: insertIndex + 1)
+        card["elements"] = elements
+        payload["card"] = card
+    }
+
+    private func tenantAccessToken(store: DataStore) async throws -> String {
+        let now = Date()
+        if let cachedTenantToken, cachedTenantToken.expireAt.timeIntervalSince(now) > 300 {
+            return cachedTenantToken.token
+        }
+
+        let appID = store.feishuBotConfig.appID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let appSecret = Self.loadAppSecret()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !appID.isEmpty, !appSecret.isEmpty else {
+            throw NSError(domain: "FeishuBot", code: 1, userInfo: [NSLocalizedDescriptionKey: "App ID 或 App Secret 缺失"])
+        }
+        guard let url = URL(string: "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal") else {
+            throw NSError(domain: "FeishuBot", code: 2, userInfo: [NSLocalizedDescriptionKey: "tenant token URL 无效"])
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "app_id": appID,
+            "app_secret": appSecret
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+        guard status == 200,
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (payload["code"] as? Int ?? 0) == 0,
+              let token = payload["tenant_access_token"] as? String,
+              !token.isEmpty
+        else {
+            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["msg"] as? String ?? body
+            throw NSError(domain: "FeishuBot", code: status, userInfo: [NSLocalizedDescriptionKey: "获取 tenant_access_token 失败：\(message.prefix(200))"])
+        }
+
+        let expire = (payload["expire"] as? NSNumber)?.doubleValue ?? 7200
+        cachedTenantToken = TenantTokenBundle(token: token, expireAt: now.addingTimeInterval(expire))
+        return token
+    }
+
+    private func uploadImage(_ data: Data, tenantAccessToken: String) async throws -> String {
+        guard let url = URL(string: "https://open.feishu.cn/open-apis/im/v1/images") else {
+            throw NSError(domain: "FeishuBot", code: 3, userInfo: [NSLocalizedDescriptionKey: "图片上传 URL 无效"])
+        }
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+        func append(_ string: String) {
+            body.append(Data(string.utf8))
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"image_type\"\r\n\r\n")
+        append("message\r\n")
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"image\"; filename=\"report.png\"\r\n")
+        append("Content-Type: image/png\r\n\r\n")
+        body.append(data)
+        append("\r\n--\(boundary)--\r\n")
+
+        var request = URLRequest(url: url, timeoutInterval: 45)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(tenantAccessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let rawBody = String(data: responseData, encoding: .utf8) ?? "<non-utf8>"
+        guard status == 200,
+              let payload = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              (payload["code"] as? Int ?? 0) == 0,
+              let data = payload["data"] as? [String: Any],
+              let imageKey = data["image_key"] as? String,
+              !imageKey.isEmpty
+        else {
+            let message = (try? JSONSerialization.jsonObject(with: responseData) as? [String: Any])?["msg"] as? String ?? rawBody
+            throw NSError(domain: "FeishuBot", code: status, userInfo: [NSLocalizedDescriptionKey: "图片上传失败：\(message.prefix(200))"])
+        }
+        DevLog.shared.info("FeishuBot", "可视化报表图已上传")
+        return imageKey
     }
 
     // MARK: - Shared Data

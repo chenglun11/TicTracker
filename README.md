@@ -1,121 +1,188 @@
-<div align="center">
+# TicTracker
 
-# 🎯 TicTracker
+TicTracker 是一个面向技术支持、产品运营和研发协作的 macOS 菜单栏工作台。它从“今天帮了哪些项目、处理了哪些问题”这个最小动作出发，把快捷计数、问题追踪、日报周报、AI 总结、Jira / Linear / 飞书 / RSS 集成放在一个轻量工具里。
 
-**轻量级 macOS 菜单栏技术支持计数器**
+项目当前包含三部分：
 
-快捷键一键记录 · 日报提醒 · AI 周报 · Jira 入口 · RSS 订阅
+- **macOS 客户端**：SwiftUI 菜单栏应用，是主要使用入口。
+- **同步服务端**：Go + SQLite，用于多端同步、Web 后台、飞书事件回调和定时推送。
+- **Web / Tauri 前端**：React 工作台，用于浏览和管理同步后的团队问题流。
 
-[![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
-[![Swift](https://img.shields.io/badge/Swift-6.0-orange?logo=swift&logoColor=white)](https://swift.org)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.16.0-brightgreen)](https://github.com/chenglun11/TicTracker/releases)
+![菜单栏主界面](image/menubar.png)
+![设置界面](image/settings.png)
 
-<p>
-  <img src="image/menubar.png" width="320" alt="菜单栏主界面" />
-  &nbsp;&nbsp;
-  <img src="image/settings.png" width="320" alt="设置界面" />
-</p>
+## 主要能力
 
-</div>
+### 日常支持记录
 
----
+- 菜单栏常驻显示今日总数。
+- 为不同项目配置独立计数项，一键或快捷键 `+1`。
+- 自动记录点击时间戳，方便回看当天发生过什么。
+- 支持每日小记，Markdown 内容会出现在最近日记和报表里。
+- 最近日记按周归档，支持搜索、查看单日明细和复制报表。
 
-## ✨ 功能亮点
+### 问题追踪
 
-### 📊 计数与记录
-- 菜单栏常驻，点击或快捷键即时 +1
-- 自定义项目分类，独立计数
-- 每次 +1 自动记录时间戳，日报视图 hover 查看
-- 日期切换，回看和编辑历史数据
-- 每日小记，支持 Markdown 语法
+- 统一管理 Bug、Feature、Support 三类问题。
+- 支持待处理、处理中、测试中、已排期、观测中、已修复、已忽略等状态。
+- 记录负责人、部门、Jira Key、Linear Key、提交人、标签和关注人。
+- 可从 Jira、Linear、飞书任务等外部来源同步问题。
+- 日报和报表会按有效问题活动生成摘要，不把普通评论当成 AI 报告的有效输入。
 
-### ⌨️ 快捷键
-- 每个项目可录制独立快捷键组合（如 `⌃⇧1`、`⌘⌥A`）
-- `修饰键 + 0` 呼出快速日报弹窗
-- 从旧版全局修饰键自动迁移
+### 报表与 AI
 
-### 📈 统计与趋势
-- 本周趋势图 — 按项目堆叠彩色柱状图，点击查看明细
-- 日期范围统计视图（Swift Charts）
-- 连续打卡天数 🔥
-- 一键复制周报汇总
-- AI 周报生成 — 支持 Claude / OpenAI，自定义 Prompt，Markdown 富文本渲染
+- 一键复制技术支持周报。
+- 支持本周、上周、本月、上月报表范围。
+- AI 报告支持 Claude / OpenAI，配置项在「设置 → AI」。
+- 月总结提供可视化详情页，可先查看每日明细、项目排行和问题列表，再复制文本、复制图片或导出 PNG。
+- 可生成日报、周报、月报图片，用于飞书或手动分享。
 
-### 🔔 智能通知
-| 通知类型 | 操作按钮 | 说明 |
-|---------|---------|------|
-| 日报提醒 | 打开日报 · 稍后提醒 | 每天定时提醒，稍后 15 分钟再次推送 |
-| 每日摘要 | 复制周报 · 查看详情 | 日报提醒后 30 分钟推送今日统计 |
-| RSS 新条目 | 打开链接 | 直接在浏览器打开对应 URL |
+### 集成能力
 
-### 🔗 Jira 入口
-- 工单列表查看与搜索
-- 工单计数（手动 +1 / -1）
-- 状态流转（一键流转到下一状态）
-- 自动映射规则 — 按字段关联到项目
-- 流转自动计数（每天每工单仅一次）
+- **Jira**：拉取经办 / 提交工单，支持计数、搜索和状态流转。
+- **Linear**：同步 Linear issue、项目和负责人信息。
+- **飞书 Bot**：定时发送日报，支持消息卡片、富文本、自定义模板和图片报表。
+- **飞书任务**：支持用户 OAuth 或应用身份同步任务。
+- **RSS**：订阅多个来源，新条目通知、已读和收藏管理。
+- **同步服务**：通过本地或自托管 Go 服务同步 macOS 客户端和 Web 后台数据。
 
-### 📡 RSS 订阅
-- 多源订阅，每个订阅源可独立配置轮询间隔
-- 新条目桌面通知，支持直接打开链接
-- 已读/收藏标记，左滑快速操作
-- 全部/未读/收藏筛选器
+## 系统要求
 
-### ⌨️ 快捷键视觉反馈
-- 快捷键触发时按钮动画反馈（放大 + 颜色变化）
-- 实时视觉确认，提升操作体验
+- macOS 14.0 或更高版本
+- Swift 6.0
+- Go 1.22（仅服务端需要）
+- Node.js 18+（仅 Web / Tauri 前端需要）
 
-### 🎛️ 功能模块开关
-- 日报记录、趋势图、时间戳、快捷键、RSS 可独立启停
-- 所有设置自动保存，凭证失焦即存入 Keychain
+## 快速开始
 
-### 💾 数据管理
-- 数据导出 / 导入（JSON、CSV）
-- 开机自动启动
-- 所有数据本地存储（`UserDefaults`）
-
----
-
-## 🚀 快速开始
-
-### 系统要求
-
-- macOS 14.0+（Sonoma），macOS 15+ 体验更佳
-- Swift 6.0+
-
-### 构建与运行
+### 运行 macOS 客户端
 
 ```bash
-# 编译并打包为 .app（release 编译 + ad-hoc 签名）
-bash build.sh
-
-# 启动
-open TicTracker.app
+swift build
+swift run TicTracker
 ```
 
----
+打包为 `.app` 并启动：
 
-## ⌨️ 快捷键参考
+```bash
+bash build.sh
+```
 
-在「设置 → 通用 → 快捷键」中为每个项目录制快捷键：
+脚本会执行 release 构建、组装 `TicTracker.app`、使用 ad-hoc 签名，然后自动打开应用。
 
-| 操作 | 说明 |
-|------|------|
-| 点击录制框 → 按下组合键 | 为项目绑定快捷键 |
-| ✕ 按钮 | 清除快捷键 |
-| `修饰键 + 0` | 打开快速日报弹窗 |
+### 运行同步服务端
 
-> 快速日报的修饰键取自第一个已绑定项目。例如第一个项目绑了 `⌃⇧1`，则 `⌃⇧0` 打开日报。未绑定时默认 `⌃⇧0`。
+```bash
+cd server
+go run .
+```
 
----
+默认监听 `127.0.0.1:9999`。健康检查：
 
-## 📄 License
+```bash
+curl http://127.0.0.1:9999/healthz
+```
 
-[MIT](LICENSE)
+服务端配置文件为 `server/config.yaml`，可参考 `server/config.example.yaml`。更多部署、安全和接口说明见 [server/README.md](server/README.md)。
 
----
+### 运行 Web 后台
 
-<div align="center">
-  <sub>Made with ☕ by Max Li</sub>
-</div>
+```bash
+cd web
+npm install
+npm run dev
+```
+
+构建 Web 静态资源：
+
+```bash
+cd web
+npm run build
+```
+
+### 运行 Tauri 前端
+
+根目录还包含一个 Tauri + Vite 原型：
+
+```bash
+npm install
+npm run tauri:dev
+```
+
+## 常用命令
+
+| 场景 | 命令 |
+| --- | --- |
+| Swift 调试构建 | `swift build` |
+| Swift release 打包 | `bash build.sh` |
+| 服务端启动 | `cd server && go run .` |
+| 服务端测试 | `cd server && go test ./...` |
+| 服务端静态检查 | `cd server && go vet ./...` |
+| Web 开发 | `cd web && npm run dev` |
+| Web 构建 | `cd web && npm run build` |
+| Tauri 开发 | `npm run tauri:dev` |
+
+## 配置入口
+
+macOS 客户端的主要配置都在「设置」窗口：
+
+- **项目**：维护项目分类和计数项。
+- **通用**：提醒、启动项、快捷键和基础行为。
+- **问题追踪**：问题状态、提交人、标签和工作台偏好。
+- **Linear / Jira 入口**：外部工单系统接入。
+- **飞书 Bot**：Webhook、定时发送、消息格式、任务同步和卡片模块。
+- **AI**：Provider、模型、Base URL、Prompt 和开关。
+- **数据**：导入、导出和本地数据管理。
+- **同步**：连接自托管同步服务。
+
+敏感凭证会尽量写入 Keychain；普通偏好和业务数据主要保存在本机用户数据区。
+
+## 快捷键
+
+每个项目都可以录制独立快捷键。常见用法：
+
+- 点击录制框，然后按下组合键，例如 `Control + Shift + 1`。
+- 点击清除按钮移除绑定。
+- `修饰键 + 0` 会打开快速日报弹窗。
+
+快速日报的修饰键来自第一个已绑定项目；如果尚未绑定项目快捷键，默认使用 `Control + Shift + 0`。
+
+## 数据与同步
+
+macOS 客户端默认本地存储，适合个人使用。需要团队协作或 Web 后台时，可以启用同步服务：
+
+1. 在 `server/config.yaml` 中配置 `sync_token`、`web_token` 和数据目录。
+2. 启动 `server`。
+3. 在 macOS 客户端「设置 → 同步」中填入服务地址和 token。
+4. 使用 Web 后台查看同步后的问题、日报和飞书发送状态。
+
+服务端当前以 SQLite 为主存储。旧版 `sync.json` 会在首次启动时导入，并保留备份。
+
+## 飞书与安全
+
+如果只在本机使用，可以保持服务端默认 `127.0.0.1` 监听。若要开放到局域网或公网，请至少完成：
+
+- 使用强随机值替换 `sync_token` 和 `web_token`。
+- 收紧 `server/config.yaml` 和 `server/data/` 文件权限。
+- 飞书事件回调启用 Verification Token、Encrypt Key 和签名校验。
+- 公网访问建议放在 Caddy、Nginx 或 Cloudflare Tunnel 后面，并启用 HTTPS。
+
+详细清单见 [server/README.md](server/README.md)。
+
+## 目录结构
+
+```text
+.
+├── Sources/          # SwiftUI macOS 菜单栏客户端
+├── server/           # Go 同步服务、Web API、飞书回调和 SQLite 存储
+├── web/              # React + Ant Design Web 后台
+├── src/              # Tauri / Vite 前端原型
+├── src-tauri/        # Tauri Rust 壳
+├── image/            # README 截图资源
+├── build.sh          # macOS .app 打包脚本
+└── Package.swift     # Swift Package 配置
+```
+
+## 许可证
+
+当前仓库未包含独立许可证文件。如需对外分发，请先补充 `LICENSE`。

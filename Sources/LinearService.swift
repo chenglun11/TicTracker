@@ -8,7 +8,6 @@ final class LinearService {
     private var pollingTask: Task<Void, Never>?
     private var isSyncing = false
     private var cachedToken: String?
-    private var didLoadToken = false
 
     private init() {}
 
@@ -18,12 +17,10 @@ final class LinearService {
 
     func updateCachedToken(_ token: String?) {
         cachedToken = token
-        didLoadToken = true
     }
 
     func invalidateCachedToken() {
         cachedToken = nil
-        didLoadToken = false
     }
 
     // MARK: - Polling
@@ -368,6 +365,51 @@ final class LinearService {
         return parseIssueDetail(issue)
     }
 
+    func fetchIssueByIdentifier(_ identifier: String) async -> LinearIssue? {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !normalized.isEmpty else { return nil }
+        if let direct = await fetchIssueDetail(issueId: normalized),
+           direct.identifier.localizedCaseInsensitiveCompare(normalized) == .orderedSame {
+            return direct
+        }
+        if let exact = await fetchIssueByTeamKeyAndNumber(identifier: normalized) {
+            return exact
+        }
+        let results = await searchIssues(query: normalized, teamId: nil)
+        return results.first {
+            $0.identifier.localizedCaseInsensitiveCompare(normalized) == .orderedSame
+        }
+    }
+
+    private func fetchIssueByTeamKeyAndNumber(identifier: String) async -> LinearIssue? {
+        guard let token = loadToken() else {
+            DevLog.shared.error("Linear", "fetchIssueByIdentifier: no token")
+            return nil
+        }
+        let parts = identifier.split(separator: "-", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let number = Int(parts[1]) else { return nil }
+        let teamKey = escapeGraphQL(parts[0])
+        let q = "{ issues(first: 1, filter: { team: { key: { eq: \\\"\(teamKey)\\\" } }, number: { eq: \(number) } }) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } project { id name } labels { nodes { name } } } } }"
+        let query = #"{"query":""# + q + #""}"#
+        guard let json = await executeQuery(query: query, token: token) else {
+            DevLog.shared.error("Linear", "fetchIssueByIdentifier: exact query failed")
+            return nil
+        }
+        guard let data = json["data"] as? [String: Any],
+              let issues = data["issues"] as? [String: Any],
+              let nodes = issues["nodes"] as? [[String: Any]] else {
+            if let errors = json["errors"] as? [[String: Any]] {
+                let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
+                DevLog.shared.error("Linear", "fetchIssueByIdentifier errors: \(msg)")
+            }
+            return nil
+        }
+        return nodes.compactMap { parseIssueDetail($0) }.first {
+            $0.identifier.localizedCaseInsensitiveCompare(identifier) == .orderedSame
+        }
+    }
+
     func fetchIssues(teamId: String? = nil, projectId: String? = nil) async -> [LinearIssue] {
         guard let token = loadToken() else {
             DevLog.shared.error("Linear", "fetchIssues: no token")
@@ -464,11 +506,30 @@ final class LinearService {
         let issues = store.trackedIssues
         var syncedCount = 0
         for issue in issues {
-            guard let linearId = issue.linearIssueId, !linearId.isEmpty else { continue }
+            var linearId = issue.linearIssueId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            var detail: LinearIssue?
+            if linearId.isEmpty,
+               issue.source == .linear,
+               let linearKey = issue.linearKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !linearKey.isEmpty {
+                if let hydrated = await fetchIssueByIdentifier(linearKey) {
+                    store.applyLinearIssueRemote(hydrated, to: issue.id)
+                    detail = hydrated
+                    linearId = hydrated.id
+                    DevLog.shared.info("LinearSync", "\(linearKey): hydrated linked issue id=\(hydrated.id)")
+                } else {
+                    DevLog.shared.info("LinearSync", "\(linearKey): hydrate failed, skipped")
+                    continue
+                }
+            }
+            guard !linearId.isEmpty else { continue }
             syncedCount += 1
             let displayKey = issue.linearKey ?? linearId
-            guard let detail = await fetchIssueDetail(issueId: linearId) else {
-                DevLog.shared.info("LinearSync", "\(displayKey) fetch failed, skipped")
+            if detail == nil {
+                detail = await fetchIssueDetail(issueId: linearId)
+            }
+            guard let detail else {
+                DevLog.shared.info("LinearSync", "\(displayKey): fetch failed, skipped")
                 continue
             }
 
@@ -501,11 +562,12 @@ final class LinearService {
                 DevLog.shared.info("LinearSync", "\(displayKey): title updated")
             }
 
-            // Project sync. Keep Linear Project as Linear-only metadata; it is not tied to local department.
+            // Project sync. Keep Linear metadata and the local project field aligned.
             if let remoteProject = detail.project {
                 if let current = store.trackedIssues.first(where: { $0.id == issue.id }),
-                   current.linearProjectId != remoteProject.id || current.linearProjectName != remoteProject.name {
+                   current.linearProjectId != remoteProject.id || current.linearProjectName != remoteProject.name || current.department != remoteProject.name {
                     store.updateIssueLinearProject(id: issue.id, projectId: remoteProject.id, name: remoteProject.name)
+                    store.updateIssueDepartment(id: issue.id, department: remoteProject.name)
                 }
             } else if let current = store.trackedIssues.first(where: { $0.id == issue.id }),
                       current.linearProjectId != nil || current.linearProjectName != nil {
@@ -605,15 +667,13 @@ final class LinearService {
     }
 
     private func loadToken() -> String? {
-        if didLoadToken {
+        if let cachedToken {
             return cachedToken
         }
-        didLoadToken = true
         guard let data = KeychainHelper.load(
             service: KeychainHelper.service,
             account: LinearConfig.keychainTokenKey
         ) else {
-            cachedToken = nil
             return nil
         }
         let token = String(data: data, encoding: .utf8)

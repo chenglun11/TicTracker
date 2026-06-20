@@ -14,7 +14,7 @@ struct AITab: View {
     @State private var saveState = AutoSaveState()
     @State private var didLoadAIConfig = false
 
-    // 周报 Prompt 编辑状态
+    // 报表 Prompt 编辑状态
     @State private var customPromptDraft = ""
     @State private var customPromptSaved = false
 
@@ -74,7 +74,7 @@ struct AITab: View {
                 Toggle(isOn: Bindable(store).aiEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("启用 AI 功能")
-                        Text("关闭后隐藏 AI 对话入口和周报生成功能")
+                        Text("关闭后隐藏 AI 对话入口和报表生成功能")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -82,7 +82,7 @@ struct AITab: View {
                 .onChange(of: store.aiEnabled) { _, _ in saveState.triggerSave() }
             }
 
-            Section("周报 Prompt") {
+            Section("报表 Prompt") {
                 TextEditor(text: $customPromptDraft)
                     .font(.callout)
                     .frame(height: 120)
@@ -99,7 +99,7 @@ struct AITab: View {
 
                 HStack {
                     if customPromptDraft.isEmpty {
-                        Text("默认: 生成简洁周报摘要，按项目总结，提炼日报要点，不写展望")
+                        Text("默认: 生成简洁周期报表摘要，按项目总结，提炼日报要点，不写展望")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
@@ -157,7 +157,7 @@ struct AITab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    TextField("对话模型（留空使用周报模型）", text: Bindable(store).aiConfig.chatModel)
+                    TextField("对话模型（留空使用报表模型）", text: Bindable(store).aiConfig.chatModel)
                         .textFieldStyle(UnderlineTextFieldStyle())
                         .font(.callout.monospaced())
                         .onChange(of: store.aiConfig.chatModel) { _, _ in saveState.debouncedSave() }
@@ -267,4 +267,3 @@ struct AITab: View {
 }
 
 // MARK: - Data Tab
-

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private struct MarkdownContentView: View {
@@ -184,6 +185,25 @@ struct RecentNotesView: View {
         return filteredEntries.first { $0.id == id }
     }
 
+    private func copyReportImage(_ period: WeeklyReport.Period) {
+        WeeklyReport.copyImageToClipboard(from: store, period: period)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            copied = false
+        }
+    }
+
+    private func exportReportImage(_ period: WeeklyReport.Period) {
+        let image = ReportVisualRenderer.renderPeriodReport(store: store, period: period)
+        guard let pngData = ReportVisualRenderer.pngData(for: image) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "技术支持\(period.reportName).png"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? pngData.write(to: url)
+    }
+
     var body: some View {
         HSplitView {
             // Left sidebar
@@ -226,6 +246,31 @@ struct RecentNotesView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Menu {
+                        Button("复制本周图片") {
+                            copyReportImage(.currentWeek)
+                        }
+                        Button("导出本周 PNG") {
+                            exportReportImage(.currentWeek)
+                        }
+                        Divider()
+                        Button("复制本月图片") {
+                            copyReportImage(.currentMonth)
+                        }
+                        Button("导出本月 PNG") {
+                            exportReportImage(.currentMonth)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "photo")
+                            Text("报表图片")
+                                .font(.caption)
+                        }
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
                 .padding(.horizontal, 12)

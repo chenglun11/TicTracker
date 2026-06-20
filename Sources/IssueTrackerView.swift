@@ -39,6 +39,10 @@ struct IssueTrackerView: View {
     @State private var linearImportLoading = false
     @State private var linearImportMessage: String?
     @State private var showingLinearImportPage = false
+    @State private var linearPasteText = ""
+    @State private var linearPasteLoading = false
+    @State private var linearPasteMessage: String?
+    @State private var linearPasteSuccess = false
     @State private var linearPickerLoading = false
     @State private var linearProjectLoading = false
     @State private var linearPickerTab: LinearPickerTab = .myIssues
@@ -47,6 +51,14 @@ struct IssueTrackerView: View {
         case myIssues = "全部 Issues"
         case search = "搜索"
     }
+
+    private struct LinearPasteReference {
+        var identifier: String
+        var title: String?
+        var url: String
+    }
+
+    private let workbenchQuickFiltersEnabled = false
 
     private enum StatusFilter: String, CaseIterable {
         case all = "全部"
@@ -157,6 +169,10 @@ struct IssueTrackerView: View {
     private var selectedIssue: TrackedIssue? {
         guard let id = selectedIssueID else { return nil }
         return store.visibleTrackedIssues.first { $0.id == id }
+    }
+
+    private var parsedLinearPaste: LinearPasteReference? {
+        Self.parseLinearPaste(linearPasteText)
     }
 
     private var canSyncFeishuTasks: Bool {
@@ -287,6 +303,56 @@ struct IssueTrackerView: View {
                 statBadge(title: "今日", value: myReportedTodayCount, color: .green)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "link.badge.plus")
+                        .font(.caption)
+                        .foregroundStyle(.teal)
+                    TextField("粘贴 Linear 链接或 Markdown", text: $linearPasteText)
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            importLinearIssueFromPaste()
+                        }
+                    if !linearPasteText.isEmpty {
+                        Button {
+                            linearPasteText = ""
+                            linearPasteMessage = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("清空")
+                    }
+                    Button {
+                        importLinearIssueFromPaste()
+                    } label: {
+                        if linearPasteLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 16, height: 16)
+                        } else {
+                            Image(systemName: "plus")
+                                .frame(width: 16, height: 16)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(linearPasteLoading || parsedLinearPaste == nil)
+                    .help("从 Linear 链接创建追踪")
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+
+                if let linearPasteMessage {
+                    Text(linearPasteMessage)
+                        .font(.caption2)
+                        .foregroundStyle(linearPasteSuccess ? .green : .orange)
+                        .lineLimit(2)
+                }
+            }
+
             HStack(spacing: 6) {
                 Button {
                     syncAllIssueSources()
@@ -346,7 +412,9 @@ struct IssueTrackerView: View {
 
     private var filterBar: some View {
         VStack(alignment: .leading, spacing: 10) {
-            workbenchQuickFilters
+            if workbenchQuickFiltersEnabled {
+                workbenchQuickFilters
+            }
 
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -2366,12 +2434,189 @@ struct IssueTrackerView: View {
         NSWorkspace.shared.open(url)
     }
 
+    private static func parseLinearPaste(_ rawText: String) -> LinearPasteReference? {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        let markdownPattern = #"\[([^\]]+)\]\((https?://linear\.app/[^\s\)]+)\)"#
+        if let match = firstMatch(in: text, pattern: markdownPattern),
+           match.count >= 3 {
+            let label = match[1]
+            let url = match[2]
+            if let identifier = linearIdentifier(in: label) ?? linearIdentifier(in: url) {
+                let title = titleFromLinearLabel(label, identifier: identifier) ?? titleFromLinearURL(url, identifier: identifier)
+                return LinearPasteReference(
+                    identifier: identifier,
+                    title: title,
+                    url: url
+                )
+            }
+        }
+
+        guard let url = firstMatch(in: text, pattern: #"(https?://linear\.app/[^\s\)]+)"#)?.first else {
+            if let identifier = linearIdentifier(in: text) {
+                return LinearPasteReference(identifier: identifier, title: titleFromLinearLabel(text, identifier: identifier), url: "")
+            }
+            return nil
+        }
+        guard let identifier = linearIdentifier(in: url) ?? linearIdentifier(in: text) else { return nil }
+        let label = text.replacingOccurrences(of: url, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return LinearPasteReference(
+            identifier: identifier,
+            title: titleFromLinearLabel(label, identifier: identifier) ?? titleFromLinearURL(url, identifier: identifier),
+            url: url
+        )
+    }
+
+    private static func firstMatch(in text: String, pattern: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else { return nil }
+        return (0..<match.numberOfRanges).compactMap { index in
+            guard let swiftRange = Range(match.range(at: index), in: text) else { return nil }
+            return String(text[swiftRange])
+        }
+    }
+
+    private static func linearIdentifier(in text: String) -> String? {
+        firstMatch(in: text, pattern: #"\b([A-Z][A-Z0-9]+-\d+)\b"#)?.dropFirst().first?.uppercased()
+    }
+
+    private static func titleFromLinearLabel(_ label: String, identifier: String) -> String? {
+        var title = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = [
+            "\(identifier):",
+            "\(identifier)：",
+            identifier
+        ]
+        for prefix in prefixes {
+            if title.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil {
+                title = String(title.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+        return title.isEmpty ? nil : title
+    }
+
+    private static func titleFromLinearURL(_ url: String, identifier: String) -> String? {
+        let cleaned = url.trimmingCharacters(in: CharacterSet(charactersIn: " \n\t\r)>]"))
+        let parts = cleaned.split(separator: "/").map(String.init)
+        guard let issueIndex = parts.firstIndex(where: { $0.localizedCaseInsensitiveCompare("issue") == .orderedSame }),
+              parts.indices.contains(issueIndex + 2) else { return nil }
+
+        let slug = parts[issueIndex + 2]
+        let decoded = slug.removingPercentEncoding ?? slug
+        let title = decoded
+            .replacingOccurrences(of: "-", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return nil }
+        return titleFromLinearLabel(title, identifier: identifier) ?? title
+    }
+
     private func addNewIssue() {
         store.addIssue("新问题", type: .bug, forKey: store.todayKey)
         if let newIssue = store.trackedIssues.last {
             selectedIssueID = newIssue.id
         }
         saveState.triggerSave()
+    }
+
+    private func importLinearIssueFromPaste() {
+        guard let reference = parsedLinearPaste else {
+            linearPasteMessage = "没有识别到 Linear 链接或 Issue 编号"
+            linearPasteSuccess = false
+            return
+        }
+        guard !linearPasteLoading else { return }
+        linearPasteLoading = true
+        linearPasteMessage = nil
+
+        Task {
+            let existing = store.issueMatchingLinearReference(identifier: reference.identifier, url: reference.url)
+            if let existing {
+                if let remote = await LinearService.shared.fetchIssueByIdentifier(reference.identifier) {
+                    applyLinearRemote(remote, to: existing.id)
+                    linearPasteMessage = "已补全：#\(existing.issueNumber) \(remote.identifier)\(linearProjectMessage(remote.project))\(linearAssigneeMessage(remote.assignee))"
+                    saveState.triggerSave()
+                } else {
+                    linearPasteMessage = "已存在：#\(existing.issueNumber) \(existing.title)"
+                }
+                selectedIssueID = existing.id
+                showingLinearImportPage = false
+                linearPasteSuccess = true
+                linearPasteLoading = false
+                return
+            }
+
+            if let remote = await LinearService.shared.fetchIssueByIdentifier(reference.identifier) {
+                if store.addIssueFromLinear(remote, forKey: store.todayKey),
+                   let imported = store.trackedIssues.first(where: { $0.linearIssueId == remote.id }) {
+                    selectedIssueID = imported.id
+                    linearPasteText = ""
+                    linearPasteMessage = "已创建：#\(imported.issueNumber) \(remote.identifier)\(linearProjectMessage(remote.project))\(linearAssigneeMessage(remote.assignee))"
+                    linearPasteSuccess = true
+                    showingLinearImportPage = false
+                    saveState.triggerSave()
+                } else if let duplicate = store.trackedIssues.first(where: { $0.linearIssueId == remote.id || $0.linearKey == remote.identifier }) {
+                    applyLinearRemote(remote, to: duplicate.id)
+                    selectedIssueID = duplicate.id
+                    linearPasteMessage = "已补全：#\(duplicate.issueNumber) \(remote.identifier)\(linearProjectMessage(remote.project))\(linearAssigneeMessage(remote.assignee))"
+                    linearPasteSuccess = true
+                    saveState.triggerSave()
+                } else {
+                    linearPasteMessage = "Linear Issue 导入失败"
+                    linearPasteSuccess = false
+                }
+            } else if let id = store.addIssueFromLinearReference(
+                identifier: reference.identifier,
+                title: reference.title,
+                url: reference.url,
+                forKey: store.todayKey
+            ), let imported = store.trackedIssues.first(where: { $0.id == id }) {
+                selectedIssueID = imported.id
+                linearPasteText = ""
+                linearPasteMessage = "已按链接创建：#\(imported.issueNumber) \(reference.identifier)"
+                linearPasteSuccess = true
+                showingLinearImportPage = false
+                saveState.triggerSave()
+            } else if let duplicate = store.issueMatchingLinearReference(identifier: reference.identifier, url: reference.url) {
+                selectedIssueID = duplicate.id
+                linearPasteMessage = "已存在：#\(duplicate.issueNumber) \(duplicate.title)"
+                linearPasteSuccess = true
+            } else {
+                linearPasteMessage = "创建失败，请检查链接格式"
+                linearPasteSuccess = false
+            }
+
+            linearPasteLoading = false
+        }
+    }
+
+    private func applyLinearRemote(_ remote: LinearIssue, to issueID: UUID) {
+        store.applyLinearIssueRemote(remote, to: issueID)
+    }
+
+    private func mappedLinearAssignee(_ assignee: LinearUser?) -> String? {
+        guard let assignee else { return nil }
+        if let localName = store.linearConfig.assigneeMapping.first(where: { $0.value == assignee.id })?.key {
+            return localName
+        }
+        let name = assignee.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    private func linearAssigneeMessage(_ assignee: LinearUser?) -> String {
+        guard let name = mappedLinearAssignee(assignee), !name.isEmpty else {
+            return "，未指派"
+        }
+        return "，负责人：\(name)"
+    }
+
+    private func linearProjectMessage(_ project: LinearProject?) -> String {
+        guard let name = project?.name.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+            return "，无 Project"
+        }
+        return "，Project：\(name)"
     }
 
     private func keepSelectionVisible() {

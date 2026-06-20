@@ -98,6 +98,10 @@ struct FeishuBotTab: View {
                 .pickerStyle(.segmented)
                 .onChange(of: store.feishuBotConfig.messageFormat) { _, _ in saveState.triggerSave() }
 
+                Toggle("附带可视化报表图", isOn: Bindable(store).feishuBotConfig.includeVisualReportImage)
+                    .disabled(store.feishuBotConfig.messageFormat == .richText)
+                    .onChange(of: store.feishuBotConfig.includeVisualReportImage) { _, _ in saveState.triggerSave() }
+
                 if store.feishuBotConfig.messageFormat != .customTemplate {
                     TextField("卡片标题", text: Bindable(store).feishuBotConfig.cardTitle,
                               prompt: Text("每日工单报告"))

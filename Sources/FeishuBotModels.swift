@@ -112,6 +112,7 @@ struct FeishuBotConfig: Codable, Sendable {
     var customTemplate: String = Self.defaultTemplate
     var customTemplateTitle: String = "每日工单报告"
     var cardTitle: String = "每日工单报告"
+    var includeVisualReportImage: Bool = true
     var focusIssueTag: String = "今日Bug"
     var sendHistory: [SendHistory] = []
     var maxRetries: Int = 3
@@ -156,7 +157,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case enabled, webhookURL, webhookURLs, webhooks, signEnabled
         case sendTimes, lastSentTimes, lastSentDateTime
         case sendHour, sendMinute, lastSentDate  // legacy
-        case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle, focusIssueTag
+        case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle, includeVisualReportImage, focusIssueTag
         case appID
         case appSecret
         case verificationToken
@@ -191,6 +192,7 @@ struct FeishuBotConfig: Codable, Sendable {
         customTemplate = try c.decodeIfPresent(String.self, forKey: .customTemplate) ?? Self.defaultTemplate
         customTemplateTitle = try c.decodeIfPresent(String.self, forKey: .customTemplateTitle) ?? "每日工单报告"
         cardTitle = try c.decodeIfPresent(String.self, forKey: .cardTitle) ?? "每日工单报告"
+        includeVisualReportImage = try c.decodeIfPresent(Bool.self, forKey: .includeVisualReportImage) ?? true
         focusIssueTag = try c.decodeIfPresent(String.self, forKey: .focusIssueTag) ?? "今日Bug"
         sendHistory = try c.decodeIfPresent([SendHistory].self, forKey: .sendHistory) ?? []
         maxRetries = try c.decodeIfPresent(Int.self, forKey: .maxRetries) ?? 3
@@ -254,6 +256,7 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(customTemplate, forKey: .customTemplate)
         try c.encode(customTemplateTitle, forKey: .customTemplateTitle)
         try c.encode(cardTitle, forKey: .cardTitle)
+        try c.encode(includeVisualReportImage, forKey: .includeVisualReportImage)
         try c.encode(focusIssueTag, forKey: .focusIssueTag)
         try c.encode(sendHistory, forKey: .sendHistory)
         try c.encode(maxRetries, forKey: .maxRetries)

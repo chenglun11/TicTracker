@@ -204,5 +204,10 @@ struct TicTrackerApp: App {
             IssueTrackerView(store: store)
         }
         .defaultSize(width: 650, height: 500)
+
+        Window("问题月报", id: "issue-month-report") {
+            ReportPeriodSummaryView(store: store)
+        }
+        .defaultSize(width: 920, height: 760)
     }
 }

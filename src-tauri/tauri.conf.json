@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TicTracker",
+  "version": "0.1.0",
+  "identifier": "com.maxli.TicTracker.tauri",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "TicTracker",
+        "width": 380,
+        "height": 620,
+        "minWidth": 360,
+        "minHeight": 520,
+        "visible": false,
+        "center": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "decorations": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": ["../AppIcon.icns"],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "entitlements": null
+    }
+  }
+}

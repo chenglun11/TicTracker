@@ -1248,6 +1248,7 @@ final class DataStore {
         entry.linearUrl = urlText.isEmpty ? nil : urlText
         entry.linearProjectId = issue.project?.id
         entry.linearProjectName = issue.project?.name
+        entry.department = issue.project?.name
         entry.linearAssignee = issue.assignee?.name
         entry.assignee = mappedLocalAssignee(from: issue.assignee)
         entry.comments = [IssueComment(text: "[Linear] 已导入: \(keyText.isEmpty ? issue.id : keyText)")]
@@ -1266,6 +1267,69 @@ final class DataStore {
                 (!keyText.isEmpty && existing.linearKey == keyText) ||
                 (!urlText.isEmpty && existing.linearUrl == urlText)
         })
+    }
+
+    func applyLinearIssueRemote(_ remote: LinearIssue, to id: UUID, syncDepartmentFromProject: Bool = true) {
+        let titleText = remote.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyText = remote.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlText = remote.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectName = remote.project?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        mutateIssue(id: id) { issue in
+            if !titleText.isEmpty {
+                issue.title = titleText
+            }
+            issue.source = .linear
+            issue.linearIssueId = remote.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? issue.linearIssueId : remote.id
+            issue.linearKey = keyText.isEmpty ? issue.linearKey : keyText
+            issue.linearUrl = urlText.isEmpty ? issue.linearUrl : urlText
+            issue.linearProjectId = remote.project?.id
+            issue.linearProjectName = projectName?.isEmpty == false ? projectName : nil
+            if syncDepartmentFromProject, let projectName, !projectName.isEmpty {
+                issue.department = projectName
+            }
+            issue.linearAssignee = remote.assignee?.name
+            issue.assignee = mappedLocalAssignee(from: remote.assignee)
+            issue.updatedAt = Self.parseLinearTimestamp(remote.updatedAt) ?? issue.updatedAt
+            issue.status = mappedIssueStatus(from: remote.state?.name)
+            issue.resolvedAt = issue.status.isResolved ? (issue.updatedAt ?? Date()) : nil
+            let mappedType = mappedIssueType(from: remote.labels)
+            if !remote.labels.isEmpty {
+                issue.type = mappedType
+            }
+            clearBindingsInconsistentWithSource(&issue)
+        }
+    }
+
+    func issueMatchingLinearReference(identifier: String, url: String?) -> TrackedIssue? {
+        let keyText = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlText = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trackedIssues.first { existing in
+            (!keyText.isEmpty && existing.linearKey?.localizedCaseInsensitiveCompare(keyText) == .orderedSame) ||
+                (!urlText.isEmpty && existing.linearUrl == urlText)
+        }
+    }
+
+    @discardableResult
+    func addIssueFromLinearReference(identifier: String, title: String?, url: String?, forKey key: String? = nil) -> UUID? {
+        let keyText = identifier.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let titleText = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let urlText = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !keyText.isEmpty else { return nil }
+        guard issueMatchingLinearReference(identifier: keyText, url: urlText) == nil else { return nil }
+
+        var entry = TrackedIssue(title: titleText.isEmpty ? keyText : titleText, type: .bug)
+        entry.issueNumber = nextIssueNumber
+        nextIssueNumber += 1
+        entry.dateKey = key ?? todayKey
+        entry.source = .linear
+        entry.linearKey = keyText
+        entry.linearUrl = urlText.isEmpty ? nil : urlText
+        entry.comments = [IssueComment(text: "[Linear] 已通过链接导入: \(keyText)")]
+
+        trackedIssues.append(entry)
+        logOperation(module: "问题", action: "Linear链接新增", detail: "#\(entry.issueNumber) \(entry.title) [linear=\(keyText)]")
+        return entry.id
     }
 
     func assigneeText(fromFeishuTask task: FeishuTaskCandidate) -> String? {

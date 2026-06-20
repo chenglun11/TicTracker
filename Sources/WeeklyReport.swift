@@ -6,33 +6,46 @@ struct WeeklyReport {
     enum Period {
         case currentWeek
         case previousWeek
+        case currentMonth
+        case previousMonth
+
+        var reportName: String {
+            switch self {
+            case .currentWeek, .previousWeek:
+                return "周报"
+            case .currentMonth, .previousMonth:
+                return "月报"
+            }
+        }
     }
 
-    private static let commentFmt: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "M/d HH:mm"
-        return fmt
-    }()
+    static func dateRange(for period: Period, now: Date = Date()) -> (start: Date, end: Date) {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let weekday = calendar.component(.weekday, from: today)
+        let daysFromMonday = (weekday + 5) % 7
+        let currentMonday = calendar.date(byAdding: .day, value: -daysFromMonday, to: today)!
+        let currentMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: today))!
+
+        switch period {
+        case .currentWeek:
+            return (currentMonday, today)
+        case .previousWeek:
+            let end = calendar.date(byAdding: .day, value: -1, to: currentMonday)!
+            return (calendar.date(byAdding: .day, value: -6, to: end)!, end)
+        case .currentMonth:
+            return (currentMonthStart, today)
+        case .previousMonth:
+            let end = calendar.date(byAdding: .day, value: -1, to: currentMonthStart)!
+            return (calendar.date(from: calendar.dateComponents([.year, .month], from: end))!, end)
+        }
+    }
 
     static func generate(from store: DataStore, period: Period = .currentWeek) -> String {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
 
-        // Find Monday of this week
-        let weekday = calendar.component(.weekday, from: today)
-        // .weekday: Sunday=1, Monday=2 ...
-        let daysFromMonday = (weekday + 5) % 7
-        let currentMonday = calendar.date(byAdding: .day, value: -daysFromMonday, to: today)!
-        let rangeStart: Date
-        let rangeEnd: Date
-        switch period {
-        case .currentWeek:
-            rangeStart = currentMonday
-            rangeEnd = today
-        case .previousWeek:
-            rangeEnd = calendar.date(byAdding: .day, value: -1, to: currentMonday)!
-            rangeStart = calendar.date(byAdding: .day, value: -6, to: rangeEnd)!
-        }
+        let (rangeStart, rangeEnd) = dateRange(for: period, now: today)
         let rangeEndExclusive = calendar.date(byAdding: .day, value: 1, to: rangeEnd)!
 
         let fmt = DateFormatter()
@@ -68,7 +81,7 @@ struct WeeklyReport {
         let startStr = displayFmt.string(from: rangeStart)
         let endStr = displayFmt.string(from: rangeEnd)
 
-        var lines = ["技术支持周报（\(startStr) - \(endStr)）"]
+        var lines = ["技术支持\(period.reportName)（\(startStr) - \(endStr)）"]
 
         let allDepts = Array(Set(store.departments + totals.keys)).sorted {
             let i1 = store.departments.firstIndex(of: $0)
@@ -116,8 +129,7 @@ struct WeeklyReport {
             isDateKeyInRange(entry.dateKey) ||
             isDateInRange(entry.reportedAt) ||
             isDateInRange(entry.updatedAt) ||
-            isDateInRange(entry.resolvedAt) ||
-            entry.comments.contains { isDateInRange($0.createdAt) }
+            isDateInRange(entry.resolvedAt)
         }
         if !weekTracked.isEmpty {
             let sorted = weekTracked.sorted { $0.dateKey < $1.dateKey }
@@ -130,10 +142,6 @@ struct WeeklyReport {
                 if let assignee = issue.assignee { detail.append(assignee) }
                 let suffix = " (\(detail.joined(separator: " · ")))"
                 lines.append("[\(issue.status.rawValue)] \(issue.title)\(suffix)")
-                for comment in issue.comments {
-                    let time = Self.commentFmt.string(from: comment.createdAt)
-                    lines.append("  [\(time)] \(comment.text)")
-                }
             }
             // Summary by type
             let byType = Dictionary(grouping: weekTracked, by: \.type)
@@ -212,5 +220,125 @@ struct WeeklyReport {
         let text = generate(from: store, period: period)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    static func generateIssueTrackingReport(from store: DataStore, period: Period = .currentMonth) -> String {
+        let calendar = Calendar.current
+        let (rangeStart, rangeEnd) = dateRange(for: period)
+        let rangeEndExclusive = calendar.date(byAdding: .day, value: 1, to: rangeEnd)!
+        let keyFmt = DateFormatter()
+        keyFmt.dateFormat = "yyyy-MM-dd"
+        let displayFmt = DateFormatter()
+        displayFmt.dateFormat = "M/d"
+
+        let startKey = keyFmt.string(from: rangeStart)
+        let endKey = keyFmt.string(from: rangeEnd)
+        let issues = store.visibleTrackedIssues
+            .filter { issue in
+                let keyInRange = issue.dateKey >= startKey && issue.dateKey <= endKey
+                let createdInRange = issue.createdAt >= rangeStart && issue.createdAt < rangeEndExclusive
+                let reportedInRange = issue.reportedAt.map { $0 >= rangeStart && $0 < rangeEndExclusive } ?? false
+                let updatedInRange = issue.updatedAt.map { $0 >= rangeStart && $0 < rangeEndExclusive } ?? false
+                let resolvedInRange = issue.resolvedAt.map { $0 >= rangeStart && $0 < rangeEndExclusive } ?? false
+                return keyInRange || createdInRange || reportedInRange || updatedInRange || resolvedInRange
+            }
+            .sorted {
+                if $0.status.isResolved != $1.status.isResolved { return !$0.status.isResolved }
+                return $0.dateKey > $1.dateKey
+            }
+
+        let startStr = displayFmt.string(from: rangeStart)
+        let endStr = displayFmt.string(from: rangeEnd)
+        var lines = ["问题追踪\(period.reportName)（\(startStr) - \(endStr)）"]
+        lines.append("问题总数: \(issues.count)")
+        let openCount = issues.filter { !$0.status.isResolved }.count
+        let resolvedCount = issues.filter { $0.status.isResolved }.count
+        let createdCount = issues.filter {
+            ($0.dateKey >= startKey && $0.dateKey <= endKey) ||
+            (DataStore.dateKey(from: $0.createdAt) >= startKey && DataStore.dateKey(from: $0.createdAt) <= endKey) ||
+            ($0.reportedAt.map { DataStore.dateKey(from: $0) >= startKey && DataStore.dateKey(from: $0) <= endKey } == true)
+        }.count
+        let updatedCount = issues.filter {
+            guard let updatedAt = $0.updatedAt else { return false }
+            let key = DataStore.dateKey(from: updatedAt)
+            let createdInRange = ($0.dateKey >= startKey && $0.dateKey <= endKey) ||
+                (DataStore.dateKey(from: $0.createdAt) >= startKey && DataStore.dateKey(from: $0.createdAt) <= endKey) ||
+                ($0.reportedAt.map { DataStore.dateKey(from: $0) >= startKey && DataStore.dateKey(from: $0) <= endKey } == true)
+            return key >= startKey && key <= endKey && !createdInRange
+        }.count
+        let referenceDate = min(Date(), rangeEndExclusive)
+        let staleThreshold = calendar.date(byAdding: .day, value: -7, to: referenceDate) ?? referenceDate
+        let staleCount = issues.filter { !$0.status.isResolved && $0.status != .observing && $0.createdAt < staleThreshold }.count
+        let unassignedCount = issues.filter { issue in
+            guard !issue.status.isResolved else { return false }
+            let assignee = issue.assignee?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let linearAssignee = issue.linearAssignee?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return assignee.isEmpty && linearAssignee.isEmpty
+        }.count
+        lines.append("新增: \(createdCount)")
+        lines.append("更新: \(updatedCount)")
+        lines.append("未关闭: \(openCount)")
+        lines.append("已关闭: \(resolvedCount)")
+        lines.append("超过 7 天未关闭: \(staleCount)")
+        lines.append("未分配负责人: \(unassignedCount)")
+
+        lines.append("")
+        lines.append("--- 分析摘要 ---")
+        let net = createdCount - resolvedCount
+        if net > 0 {
+            lines.append("本期净增加 \(net) 个问题，积压压力上升。")
+        } else if net < 0 {
+            lines.append("本期净减少 \(abs(net)) 个问题，问题消化速度较好。")
+        } else {
+            lines.append("本期新增与关闭持平。")
+        }
+        if staleCount > 0 {
+            lines.append("\(staleCount) 个未关闭问题已超过 7 天，建议优先复盘。")
+        }
+        if unassignedCount > 0 {
+            lines.append("\(unassignedCount) 个未关闭问题未分配负责人。")
+        }
+
+        let byType = Dictionary(grouping: issues, by: \.type)
+        if !byType.isEmpty {
+            lines.append("")
+            lines.append("--- 类型分布 ---")
+            for type in IssueType.allCases {
+                if let items = byType[type], !items.isEmpty {
+                    lines.append("\(type.rawValue): \(items.count)")
+                }
+            }
+        }
+
+        lines.append("")
+        lines.append("--- 问题明细 ---")
+        if issues.isEmpty {
+            lines.append("暂无问题记录")
+        } else {
+            for issue in issues {
+                var meta = [issue.type.rawValue, issue.dateKey]
+                if let dept = issue.department, !dept.isEmpty { meta.append(dept) }
+                if let jira = issue.jiraKey, !jira.isEmpty { meta.append(jira) }
+                if let linear = issue.linearKey, !linear.isEmpty { meta.append(linear) }
+                if let assignee = issue.assignee, !assignee.isEmpty { meta.append("负责人 \(assignee)") }
+                if let reporter = issue.reporterName, !reporter.isEmpty { meta.append("提交 \(reporter)") }
+                if !issue.issueTags.isEmpty { meta.append("标签 \(issue.issueTags.joined(separator: ","))") }
+                lines.append("[\(issue.status.rawValue)] \(issue.title)（\(meta.joined(separator: " · "))）")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    static func copyIssueTrackingReportToClipboard(from store: DataStore, period: Period = .currentMonth) {
+        let text = generateIssueTrackingReport(from: store, period: period)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    static func copyImageToClipboard(from store: DataStore, period: Period = .currentWeek) {
+        let image = ReportVisualRenderer.renderPeriodReport(store: store, period: period)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
     }
 }
