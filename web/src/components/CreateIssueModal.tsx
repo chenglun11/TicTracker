@@ -1,6 +1,7 @@
 import { Modal, Form, Input, Select, message } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { createIssue } from '../api/client'
+import { createIssue } from '../features/issues/api/issues'
+import { queryKeys } from '../shared/api/queryKeys'
 
 interface CreateIssueModalProps {
   open: boolean
@@ -15,8 +16,8 @@ function CreateIssueModal({ open, onClose, departments }: CreateIssueModalProps)
   const mutation = useMutation({
     mutationFn: createIssue,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['issues'] })
-      queryClient.invalidateQueries({ queryKey: ['status'] })
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.all })
+    queryClient.invalidateQueries({ queryKey: queryKeys.status })
       message.success('工单创建成功')
       form.resetFields()
       onClose()

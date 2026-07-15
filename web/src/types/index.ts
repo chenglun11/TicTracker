@@ -1,45 +1,12 @@
-export type IssueSource = 'Web' | '手动' | 'Jira' | 'Meta Direct Support' | '飞书任务' | string
-
-export interface TrackedIssue {
-  id: string
-  issueNumber: number
-  type: string
-  title: string
-  dateKey: string
-  createdAt: string | number
-  status: string
-  source: IssueSource
-  assignee?: string
-  jiraKey?: string
-  ticketURL?: string
-  department?: string
-  resolvedAt?: string | number
-  hasDevActivity: boolean
-  isEscalated?: boolean
-  comments: Comment[]
-  feishuTaskGuid?: string
-  feishuTaskSummary?: string
-  feishuTaskCompletedAt?: string
-  feishuTasklistGuids?: string[]
-  feishuTaskAssigneeIds?: string[]
-  linearIssueId?: string
-  linearKey?: string
-  linearUrl?: string
-  linearProjectId?: string
-  linearProjectName?: string
-  linearAssignee?: string
-  followers?: string[]
-  reporterId?: string
-  reporterName?: string
-  reportedAt?: string | number
-  issueTags?: string[]
-}
-
-export interface Comment {
-  id: string
-  text: string
-  createdAt: string | number
-}
+export type {
+  AddCommentRequest,
+  CreateIssueRequest,
+  IssueComment as Comment,
+  IssuesResponse,
+  IssueSource,
+  TrackedIssue,
+  UpdateIssueRequest
+} from '../entities/issue/model/types'
 
 export interface StatusResponse {
   statistics: {
@@ -57,39 +24,32 @@ export interface StatusResponse {
   departments: string[]
 }
 
-export interface IssuesResponse {
-  issues: TrackedIssue[]
+export interface SyncMetaResponse {
+  revision: number
+  lastModified: number
+  lastModifiedBy?: string
+}
+
+export interface SyncAdminStatus {
+  revision: number
+  lastModified: number
+  lastModifiedBy?: string
+  eventCursor: number
+  syncTokenConfigured: boolean
+  syncTokenHint?: string
+  checkedAt: string
+}
+
+export interface RotateSyncTokenResponse {
+  token: string
+  tokenHint: string
+  rotatedAt: string
 }
 
 export interface SendFeishuResponse {
   success: boolean
   message: string
   nextAvailable?: string
-}
-
-export interface UpdateIssueRequest {
-  status?: string
-  assignee?: string
-  department?: string
-  ticketURL?: string
-  feishuTaskGuid?: string | null
-  reporterId?: string
-  reporterName?: string
-  issueTags?: string[]
-}
-
-export interface CreateIssueRequest {
-  title: string
-  type: string
-  department?: string
-  ticketURL?: string
-  reporterId?: string
-  reporterName?: string
-  issueTags?: string[]
-}
-
-export interface AddCommentRequest {
-  text: string
 }
 
 export interface SetupConfig {
@@ -100,14 +60,18 @@ export interface SetupConfig {
   feishu: {
     enabled: boolean
     webhookCount: number
+    webhookURL: string
     webhookSecretConfigured: boolean
+    webhookSecretHint?: string
     sendTime: string
     focusIssueTag: string
     appID: string
     appSecretConfigured: boolean
+    appSecretHint?: string
     verificationTokenPresent: boolean
+    verificationTokenHint?: string
     encryptKeyPresent: boolean
-    tasklistGUID: string
+    encryptKeyHint?: string
   }
   linear: {
     enabled: boolean
@@ -133,7 +97,6 @@ export interface SetupRequest {
     appSecret: string
     verificationToken: string
     encryptKey: string
-    tasklistGUID: string
   }
   linear: {
     enabled: boolean
@@ -155,6 +118,7 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   token: string
+  user: import('../entities/member/model/types').AuthUser
 }
 
 export interface InitRequest {

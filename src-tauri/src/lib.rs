@@ -2,8 +2,7 @@ use chrono::{Local, NaiveDate, SecondsFormat};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    env,
-    fs,
+    env, fs,
     path::PathBuf,
     process::Command,
     sync::Mutex,
@@ -104,6 +103,9 @@ impl AppSnapshot {
     fn issue_counts(&self) -> IssueCounts {
         let mut counts = IssueCounts::default();
         for issue in &self.tracked_issues {
+            if issue.deleted_at.is_some() {
+                continue;
+            }
             if issue.status.is_resolved() {
                 counts.resolved += 1;
             } else if issue.status == IssueStatus::Observing {
@@ -180,6 +182,8 @@ struct IssueComment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrackedIssue {
+    #[serde(default = "default_issue_revision")]
+    revision: i64,
     id: Uuid,
     issue_number: i32,
     issue_type: IssueType,
@@ -187,6 +191,10 @@ struct TrackedIssue {
     date_key: String,
     created_at: String,
     updated_at: Option<String>,
+    #[serde(default)]
+    updated_by: Option<String>,
+    #[serde(default)]
+    deleted_at: Option<String>,
     status: IssueStatus,
     source: String,
     assignee: Option<String>,
@@ -195,6 +203,10 @@ struct TrackedIssue {
     comments: Vec<IssueComment>,
     followers: Vec<String>,
     tags: Vec<String>,
+}
+
+fn default_issue_revision() -> i64 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,7 +385,11 @@ fn save_snapshot(snapshot: AppSnapshot, state: State<'_, AppState>) -> AppResult
 }
 
 #[tauri::command]
-fn increment_count(date_key: String, department: String, state: State<'_, AppState>) -> AppResult<AppSnapshot> {
+fn increment_count(
+    date_key: String,
+    department: String,
+    state: State<'_, AppState>,
+) -> AppResult<AppSnapshot> {
     validate_date_key(&date_key)?;
     state.mutate(|snapshot| {
         let day = snapshot.records.entry(date_key.clone()).or_default();
@@ -390,7 +406,11 @@ fn increment_count(date_key: String, department: String, state: State<'_, AppSta
 }
 
 #[tauri::command]
-fn decrement_count(date_key: String, department: String, state: State<'_, AppState>) -> AppResult<AppSnapshot> {
+fn decrement_count(
+    date_key: String,
+    department: String,
+    state: State<'_, AppState>,
+) -> AppResult<AppSnapshot> {
     validate_date_key(&date_key)?;
     state.mutate(|snapshot| {
         if let Some(day) = snapshot.records.get_mut(&date_key) {
@@ -415,7 +435,11 @@ fn set_note(date_key: String, text: String, state: State<'_, AppState>) -> AppRe
 }
 
 #[tauri::command]
-fn create_issue(input: CreateIssueInput, date_key: String, state: State<'_, AppState>) -> AppResult<AppSnapshot> {
+fn create_issue(
+    input: CreateIssueInput,
+    date_key: String,
+    state: State<'_, AppState>,
+) -> AppResult<AppSnapshot> {
     validate_date_key(&date_key)?;
     state.mutate(|snapshot| {
         let next = snapshot
@@ -426,6 +450,7 @@ fn create_issue(input: CreateIssueInput, date_key: String, state: State<'_, AppS
             .unwrap_or(0)
             + 1;
         snapshot.tracked_issues.push(TrackedIssue {
+            revision: 1,
             id: Uuid::new_v4(),
             issue_number: next,
             issue_type: input.issue_type,
@@ -433,6 +458,8 @@ fn create_issue(input: CreateIssueInput, date_key: String, state: State<'_, AppS
             date_key,
             created_at: now_iso(),
             updated_at: None,
+            updated_by: None,
+            deleted_at: None,
             status: IssueStatus::Pending,
             source: "手动".into(),
             assignee: input.assignee.filter(|value| !value.trim().is_empty()),
@@ -447,12 +474,16 @@ fn create_issue(input: CreateIssueInput, date_key: String, state: State<'_, AppS
 }
 
 #[tauri::command]
-fn update_issue_status(id: Uuid, status: IssueStatus, state: State<'_, AppState>) -> AppResult<AppSnapshot> {
+fn update_issue_status(
+    id: Uuid,
+    status: IssueStatus,
+    state: State<'_, AppState>,
+) -> AppResult<AppSnapshot> {
     state.mutate(|snapshot| {
         let issue = snapshot
             .tracked_issues
             .iter_mut()
-            .find(|issue| issue.id == id)
+            .find(|issue| issue.id == id && issue.deleted_at.is_none())
             .ok_or(AppError::NotFound)?;
         issue.status = status;
         issue.updated_at = Some(now_iso());
@@ -461,12 +492,16 @@ fn update_issue_status(id: Uuid, status: IssueStatus, state: State<'_, AppState>
 }
 
 #[tauri::command]
-fn add_issue_comment(id: Uuid, text: String, state: State<'_, AppState>) -> AppResult<AppSnapshot> {
+fn add_issue_comment(
+    id: Uuid,
+    text: String,
+    state: State<'_, AppState>,
+) -> AppResult<AppSnapshot> {
     state.mutate(|snapshot| {
         let issue = snapshot
             .tracked_issues
             .iter_mut()
-            .find(|issue| issue.id == id)
+            .find(|issue| issue.id == id && issue.deleted_at.is_none())
             .ok_or(AppError::NotFound)?;
         issue.comments.push(IssueComment {
             id: Uuid::new_v4(),
@@ -582,7 +617,10 @@ fn hide_panel(app: AppHandle) -> AppResult<()> {
 }
 
 #[tauri::command]
-async fn generate_ai_weekly_report(raw_report: String, state: State<'_, AppState>) -> AppResult<String> {
+async fn generate_ai_weekly_report(
+    raw_report: String,
+    state: State<'_, AppState>,
+) -> AppResult<String> {
     let config = {
         state
             .snapshot
@@ -611,7 +649,12 @@ async fn generate_ai_report(raw_report: String, config: AiConfig) -> AppResult<S
     }
 }
 
-async fn call_claude(api_key: &str, config: &AiConfig, system: &str, user: &str) -> AppResult<String> {
+async fn call_claude(
+    api_key: &str,
+    config: &AiConfig,
+    system: &str,
+    user: &str,
+) -> AppResult<String> {
     let base = effective_ai_base_url(config, "https://api.anthropic.com");
     let model = effective_ai_model(config, "claude-sonnet-4-20250514");
     let url = format!("{base}/v1/messages");
@@ -640,7 +683,12 @@ async fn call_claude(api_key: &str, config: &AiConfig, system: &str, user: &str)
         .ok_or_else(|| AppError::Message("无法解析 Claude 响应".into()))
 }
 
-async fn call_openai(api_key: &str, config: &AiConfig, system: &str, user: &str) -> AppResult<String> {
+async fn call_openai(
+    api_key: &str,
+    config: &AiConfig,
+    system: &str,
+    user: &str,
+) -> AppResult<String> {
     let base = effective_ai_base_url(config, "https://api.openai.com");
     let model = effective_ai_model(config, "gpt-4o-mini");
     let url = format!("{base}/v1/chat/completions");
@@ -700,7 +748,11 @@ fn effective_ai_prompt(config: &AiConfig) -> String {
 
 fn effective_ai_base_url(config: &AiConfig, default_base: &str) -> String {
     let value = config.base_url.trim();
-    let base = if value.is_empty() { default_base } else { value };
+    let base = if value.is_empty() {
+        default_base
+    } else {
+        value
+    };
     base.trim_end_matches('/').to_string()
 }
 
@@ -884,7 +936,9 @@ mod tests {
             .entry("2026-05-27".into())
             .or_default()
             .insert("工单-客服".into(), 3);
-        snapshot.daily_notes.insert("2026-05-27".into(), "已跟进".into());
+        snapshot
+            .daily_notes
+            .insert("2026-05-27".into(), "已跟进".into());
 
         let json = serde_json::to_string(&snapshot).expect("snapshot encodes");
         assert!(json.contains("dailyNotes"));
@@ -920,6 +974,7 @@ mod tests {
 
     fn issue_with_status(status: IssueStatus) -> TrackedIssue {
         TrackedIssue {
+            revision: 1,
             id: Uuid::new_v4(),
             issue_number: 1,
             issue_type: IssueType::Bug,
@@ -927,6 +982,8 @@ mod tests {
             date_key: today_key(),
             created_at: now_iso(),
             updated_at: None,
+            updated_by: None,
+            deleted_at: None,
             status,
             source: "手动".into(),
             assignee: None,

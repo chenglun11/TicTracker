@@ -16,16 +16,21 @@ const (
 )
 
 type SyncPayload struct {
+	SchemaVersion        int64                          `json:"schemaVersion,omitempty"`
+	PayloadScope         string                         `json:"payloadScope,omitempty"`
+	ConfigurationScope   string                         `json:"configurationScope,omitempty"`
+	Revision             int64                          `json:"revision,omitempty"`
 	LastModified         float64                        `json:"lastModified"`
-	Departments          []string                       `json:"departments,omitempty"`
-	Records              map[string]map[string]int      `json:"records,omitempty"`
-	DailyNotes           map[string]string              `json:"dailyNotes,omitempty"`
+	LastModifiedBy       string                         `json:"lastModifiedBy,omitempty"`
+	Departments          []string                       `json:"departments"`
+	Records              map[string]map[string]int      `json:"records"`
+	DailyNotes           map[string]string              `json:"dailyNotes"`
 	CurrentMemberID      string                         `json:"currentMemberId,omitempty"`
 	CurrentMemberName    string                         `json:"currentMemberName,omitempty"`
 	TapTimestamps        map[string]map[string][]string `json:"tapTimestamps,omitempty"`
-	TrackedIssues        []TrackedIssue                 `json:"trackedIssues,omitempty"`
+	TrackedIssues        []TrackedIssue                 `json:"trackedIssues"`
 	BugTeamMembers       []string                       `json:"bugTeamMembers,omitempty"`
-	TeamMembers          json.RawMessage                `json:"teamMembers,omitempty"`
+	TeamMembers          json.RawMessage                `json:"teamMembers"`
 	JiraConfig           json.RawMessage                `json:"jiraConfig,omitempty"`
 	LinearConfig         json.RawMessage                `json:"linearConfig,omitempty"`
 	FeishuBotConfig      *FeishuBotConfig               `json:"feishuBotConfig,omitempty"`
@@ -36,6 +41,7 @@ type SyncPayload struct {
 }
 
 type TrackedIssue struct {
+	Revision              int64          `json:"revision,omitempty"`
 	ID                    string         `json:"id"`
 	IssueNumber           int            `json:"issueNumber"`
 	Type                  string         `json:"type"`
@@ -43,6 +49,8 @@ type TrackedIssue struct {
 	DateKey               string         `json:"dateKey"`
 	CreatedAt             FlexTime       `json:"createdAt"`
 	UpdatedAt             *FlexTime      `json:"updatedAt,omitempty"`
+	UpdatedBy             *string        `json:"updatedBy,omitempty"`
+	DeletedAt             *FlexTime      `json:"deletedAt,omitempty"`
 	DiaryBadge            string         `json:"diaryBadge"`
 	Status                string         `json:"status"`
 	Source                string         `json:"source"`
@@ -65,11 +73,29 @@ type TrackedIssue struct {
 	LinearProjectID       *string        `json:"linearProjectId,omitempty"`
 	LinearProjectName     *string        `json:"linearProjectName,omitempty"`
 	LinearAssignee        *string        `json:"linearAssignee,omitempty"`
+	LinearCreator         *string        `json:"linearCreator,omitempty"`
+	LinearCreatedAt       *string        `json:"linearCreatedAt,omitempty"`
+	LinearUpdatedAt       *string        `json:"linearUpdatedAt,omitempty"`
 	Followers             []string       `json:"followers,omitempty"`
 	ReporterID            *string        `json:"reporterId,omitempty"`
 	ReporterName          *string        `json:"reporterName,omitempty"`
 	ReportedAt            *FlexTime      `json:"reportedAt,omitempty"`
 	IssueTags             []string       `json:"issueTags,omitempty"`
+}
+
+func normalizeIssueMetadata(issue *TrackedIssue) {
+	if issue.Revision < 1 {
+		issue.Revision = 1
+	}
+}
+
+func normalizePayloadIssueMetadata(payload *SyncPayload) {
+	if payload == nil {
+		return
+	}
+	for i := range payload.TrackedIssues {
+		normalizeIssueMetadata(&payload.TrackedIssues[i])
+	}
 }
 
 type IssueComment struct {
@@ -127,41 +153,47 @@ func (w FeishuWebhook) SendEnabled() bool {
 }
 
 type FeishuBotConfig struct {
-	Enabled             bool              `json:"enabled"`
-	WebhookURL          string            `json:"webhookURL"` // 保留向后兼容
-	Webhooks            []FeishuWebhook   `json:"webhooks"`
-	SignEnabled         bool              `json:"signEnabled"`
-	SendTimes           []ScheduleTime    `json:"sendTimes"`
-	LastSentTimes       map[string]string `json:"lastSentTimes"`
-	LastSentDateTime    string            `json:"lastSentDateTime"`
-	MessageFormat       string            `json:"messageFormat"`
-	CustomTemplate      string            `json:"customTemplate"`
-	CustomTemplateTitle string            `json:"customTemplateTitle"`
-	CardTitle           string            `json:"cardTitle"`
-	FocusIssueTag       string            `json:"focusIssueTag"`
-	MaxRetries          int               `json:"maxRetries"`
-	WebPortalURL        string            `json:"webPortalURL"`
-	AppID               string            `json:"appID,omitempty"`
-	AppSecret           string            `json:"appSecret,omitempty"`         // 新增：应用密钥（同步方案，优先级低于 yaml/env）
-	VerificationToken   string            `json:"verificationToken,omitempty"` // 新增：飞书事件订阅 verification token
-	EncryptKey          string            `json:"encryptKey,omitempty"`        // 新增：飞书事件订阅 encrypt key
-	AllowedChatIDs      []string          `json:"allowedChatIDs,omitempty"`    // 新增：机器人命令白名单（空=全部允许）
-	TasklistGUID        string            `json:"tasklistGUID,omitempty"`
-	ShowSupportStats    bool              `json:"showSupportStats"`
-	ShowOverview        bool              `json:"showOverview"`
-	ShowPending         bool              `json:"showPending"`
-	ShowObserving       bool              `json:"showObserving"`
-	ShowScheduled       bool              `json:"showScheduled"`
-	ShowTesting         bool              `json:"showTesting"`
-	ShowResolved        bool              `json:"showResolved"`
-	ShowDailyNote       bool              `json:"showDailyNote"`
-	ShowFocusTag        bool              `json:"showFocusTag"`
-	ShowComments        bool              `json:"showComments"`
-	FieldType           bool              `json:"fieldType"`
-	FieldDepartment     bool              `json:"fieldDepartment"`
-	FieldJiraKey        bool              `json:"fieldJiraKey"`
-	FieldStatus         bool              `json:"fieldStatus"`
-	FieldAssignee       bool              `json:"fieldAssignee"`
+	Enabled                         bool              `json:"enabled"`
+	WebhookURL                      string            `json:"webhookURL"` // 保留向后兼容
+	Webhooks                        []FeishuWebhook   `json:"webhooks"`
+	SignEnabled                     bool              `json:"signEnabled"`
+	SendTimes                       []ScheduleTime    `json:"sendTimes"`
+	LastSentTimes                   map[string]string `json:"lastSentTimes"`
+	LastSentDateTime                string            `json:"lastSentDateTime"`
+	MessageFormat                   string            `json:"messageFormat"`
+	CustomTemplate                  string            `json:"customTemplate"`
+	CustomTemplateTitle             string            `json:"customTemplateTitle"`
+	CardTitle                       string            `json:"cardTitle"`
+	IssueMonthlyReportEnabled       bool              `json:"issueMonthlyReportEnabled"`
+	IssueMonthlyReportDay           int               `json:"issueMonthlyReportDay"`
+	IssueMonthlyReportHour          int               `json:"issueMonthlyReportHour"`
+	IssueMonthlyReportMinute        int               `json:"issueMonthlyReportMinute"`
+	IssueMonthlyReportIncludeImage  bool              `json:"issueMonthlyReportIncludeImage"`
+	IssueMonthlyReportLastSentMonth string            `json:"issueMonthlyReportLastSentMonth"`
+	FocusIssueTag                   string            `json:"focusIssueTag"`
+	MaxRetries                      int               `json:"maxRetries"`
+	WebPortalURL                    string            `json:"webPortalURL"`
+	AppID                           string            `json:"appID,omitempty"`
+	AppSecret                       string            `json:"appSecret,omitempty"`         // 新增：应用密钥（同步方案，优先级低于 yaml/env）
+	VerificationToken               string            `json:"verificationToken,omitempty"` // 新增：飞书事件订阅 verification token
+	EncryptKey                      string            `json:"encryptKey,omitempty"`        // 新增：飞书事件订阅 encrypt key
+	AllowedChatIDs                  []string          `json:"allowedChatIDs,omitempty"`    // 新增：机器人命令白名单（空=全部允许）
+	TasklistGUID                    string            `json:"tasklistGUID,omitempty"`
+	ShowSupportStats                bool              `json:"showSupportStats"`
+	ShowOverview                    bool              `json:"showOverview"`
+	ShowPending                     bool              `json:"showPending"`
+	ShowObserving                   bool              `json:"showObserving"`
+	ShowScheduled                   bool              `json:"showScheduled"`
+	ShowTesting                     bool              `json:"showTesting"`
+	ShowResolved                    bool              `json:"showResolved"`
+	ShowDailyNote                   bool              `json:"showDailyNote"`
+	ShowFocusTag                    bool              `json:"showFocusTag"`
+	ShowComments                    bool              `json:"showComments"`
+	FieldType                       bool              `json:"fieldType"`
+	FieldDepartment                 bool              `json:"fieldDepartment"`
+	FieldJiraKey                    bool              `json:"fieldJiraKey"`
+	FieldStatus                     bool              `json:"fieldStatus"`
+	FieldAssignee                   bool              `json:"fieldAssignee"`
 }
 
 type ScheduleTime struct {

@@ -1,20 +1,12 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import App from './App'
 import 'dayjs/locale/zh-cn'
 import './styles.css'
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: 1
-    }
-  }
-})
+import { queryClient } from './app/queryClient'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -29,7 +21,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             colorWarning: '#a86f25',
             colorError: '#bf3f33',
             borderRadius: 6,
-            fontFamily: 'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+            fontFamily: '"Avenir Next", "Noto Sans SC", "PingFang SC", sans-serif'
           },
           components: {
             Card: { borderRadiusLG: 6 },
@@ -38,7 +30,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           }
         }}
       >
-        <App />
+        <React.Suspense fallback={<div className="app-route-loading">正在连接团队工作台…</div>}>
+          <App />
+        </React.Suspense>
       </ConfigProvider>
     </QueryClientProvider>
   </React.StrictMode>

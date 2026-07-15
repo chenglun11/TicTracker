@@ -20,13 +20,18 @@ type SetupResponse struct {
 	Feishu            struct {
 		Enabled                  bool   `json:"enabled"`
 		WebhookCount             int    `json:"webhookCount"`
+		WebhookURL               string `json:"webhookURL"`
 		WebhookSecretConfigured  bool   `json:"webhookSecretConfigured"`
+		WebhookSecretHint        string `json:"webhookSecretHint,omitempty"`
 		SendTime                 string `json:"sendTime"`
 		FocusIssueTag            string `json:"focusIssueTag"`
 		AppID                    string `json:"appID"`
 		AppSecretConfigured      bool   `json:"appSecretConfigured"`
+		AppSecretHint            string `json:"appSecretHint,omitempty"`
 		VerificationTokenPresent bool   `json:"verificationTokenPresent"`
+		VerificationTokenHint    string `json:"verificationTokenHint,omitempty"`
 		EncryptKeyPresent        bool   `json:"encryptKeyPresent"`
+		EncryptKeyHint           string `json:"encryptKeyHint,omitempty"`
 		TasklistGUID             string `json:"tasklistGUID"`
 	} `json:"feishu"`
 	Linear struct {
@@ -108,10 +113,14 @@ func buildSetupResponse(payload *SyncPayload) SetupResponse {
 		cfg := payload.FeishuBotConfig
 		res.Feishu.Enabled = cfg.Enabled
 		res.Feishu.WebhookCount = len(cfg.Webhooks)
+		if len(cfg.Webhooks) > 0 {
+			res.Feishu.WebhookURL = cfg.Webhooks[0].URL
+		}
 		if len(cfg.Webhooks) > 0 && payload.FeishuWebhookSecrets != nil {
 			for _, webhook := range cfg.Webhooks {
-				if payload.FeishuWebhookSecrets[webhook.ID] != "" {
+				if secret := payload.FeishuWebhookSecrets[webhook.ID]; secret != "" {
 					res.Feishu.WebhookSecretConfigured = true
+					res.Feishu.WebhookSecretHint = secretHint(secret)
 					break
 				}
 			}
@@ -122,8 +131,11 @@ func buildSetupResponse(payload *SyncPayload) SetupResponse {
 		res.Feishu.FocusIssueTag = cfg.FocusIssueTag
 		res.Feishu.AppID = cfg.AppID
 		res.Feishu.AppSecretConfigured = cfg.AppSecret != ""
+		res.Feishu.AppSecretHint = secretHint(cfg.AppSecret)
 		res.Feishu.VerificationTokenPresent = cfg.VerificationToken != ""
+		res.Feishu.VerificationTokenHint = secretHint(cfg.VerificationToken)
 		res.Feishu.EncryptKeyPresent = cfg.EncryptKey != ""
+		res.Feishu.EncryptKeyHint = secretHint(cfg.EncryptKey)
 		res.Feishu.TasklistGUID = cfg.TasklistGUID
 	}
 
@@ -142,6 +154,18 @@ func buildSetupResponse(payload *SyncPayload) SetupResponse {
 		res.Linear.ProjectName = linear.ProjectName
 	}
 	return res
+}
+
+func secretHint(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= 4 {
+		return "••••"
+	}
+	return "••••" + string(runes[len(runes)-4:])
 }
 
 func applySetup(payload *SyncPayload, req SetupRequest) {
@@ -168,7 +192,9 @@ func applySetup(payload *SyncPayload, req SetupRequest) {
 	if trimmed := strings.TrimSpace(req.Feishu.AppSecret); trimmed != "" {
 		cfg.AppSecret = trimmed
 	}
-	cfg.VerificationToken = strings.TrimSpace(req.Feishu.VerificationToken)
+	if trimmed := strings.TrimSpace(req.Feishu.VerificationToken); trimmed != "" {
+		cfg.VerificationToken = trimmed
+	}
 	if trimmed := strings.TrimSpace(req.Feishu.EncryptKey); trimmed != "" {
 		cfg.EncryptKey = trimmed
 	}

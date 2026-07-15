@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -145,6 +148,72 @@ func TestSQLiteWorkspaceTokenIsolation(t *testing.T) {
 	}
 }
 
+func TestWorkspaceAuthFailsClosedWithoutToken(t *testing.T) {
+	store, _ := newTestSQLiteStore(t)
+	router := gin.New()
+	api := router.Group("/api", WorkspaceAuthMiddleware(store, "web", ""))
+	api.GET("/protected", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/protected", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token must fail closed: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSQLiteCreatesProtectedPreMigrationBackupOnReopen(t *testing.T) {
+	store, cfg := newTestSQLiteStore(t)
+	if err := store.Update(context.Background(), func(payload *SyncPayload) error {
+		payload.DailyNotes = map[string]string{"2026-07-13": "backup me"}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed database: %v", err)
+	}
+	if _, err := NewSQLiteStore(context.Background(), cfg); err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	backup := filepath.Join(cfg.DataDir, "backups", "migrations", "tictacker_pre_migration_"+time.Now().Format("20060102")+".sqlite3")
+	info, err := os.Stat(backup)
+	if err != nil {
+		t.Fatalf("migration backup missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("migration backup permissions=%o", info.Mode().Perm())
+	}
+}
+
+func TestSQLiteConcurrentReadersAndWritersDoNotLeakBusyErrors(t *testing.T) {
+	store, _ := newTestSQLiteStore(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	errors := make(chan error, 80)
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for iteration := 0; iteration < 10; iteration++ {
+				if worker%2 == 0 {
+					_, err := store.query(ctx, "SELECT count(*) FROM issues;")
+					if err != nil {
+						errors <- err
+					}
+					continue
+				}
+				_, err := store.exec(ctx, "INSERT OR REPLACE INTO metadata(key,value) VALUES("+sqlQuote(fmt.Sprintf("concurrent-%d-%d", worker, iteration))+",'ok');")
+				if err != nil {
+					errors <- err
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		t.Fatalf("concurrent sqlite operation failed: %v", err)
+	}
+}
+
 func TestSQLiteSyncPostThenAPIReadsSameWorkspace(t *testing.T) {
 	store, cfg := newTestSQLiteStore(t)
 	r := gin.New()
@@ -153,9 +222,10 @@ func TestSQLiteSyncPostThenAPIReadsSameWorkspace(t *testing.T) {
 	apiGroup := r.Group("/api", WorkspaceAuthMiddleware(store, "web", cfg.WebAccessToken()))
 	apiGroup.GET("/issues", HandleGetIssues(store))
 
-	body := `{"lastModified":1,"trackedIssues":[{"id":"sync-1","issueNumber":1,"type":"Bug","title":"from sync","dateKey":"2026-05-19","createdAt":"2026-05-19 09:00:00","status":"待处理","source":"macOS","comments":[],"reporterName":"Max","issueTags":["今日Bug"]}]}`
+	body := `{"schemaVersion":2,"payloadScope":"workspace-data","lastModified":1,"departments":[],"records":{},"dailyNotes":{},"teamMembers":[],"trackedIssues":[{"id":"sync-1","issueNumber":1,"type":"Bug","title":"from sync","dateKey":"2026-05-19","createdAt":"2026-05-19 09:00:00","status":"待处理","source":"macOS","comments":[],"reporterName":"Max","issueTags":["今日Bug"]}]}`
 	post := httptest.NewRequest(http.MethodPost, "/sync", strings.NewReader(body))
 	post.Header.Set("Authorization", "Bearer "+cfg.SyncAccessToken())
+	post.Header.Set("If-Match", `"0"`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, post)
 	if w.Code != http.StatusOK {
@@ -210,6 +280,16 @@ func TestWebAccountInitLoginAndSessionAuth(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"currentMemberName":"Max"`) {
 		t.Fatalf("session could not access setup: code=%d body=%s", w.Code, w.Body.String())
 	}
+	if err := store.RevokeWebSession(context.Background(), initResp.Token); err != nil {
+		t.Fatalf("revoke session: %v", err)
+	}
+	setupReq = httptest.NewRequest(http.MethodGet, "/api/v1/setup", nil)
+	setupReq.Header.Set("Authorization", "Bearer "+initResp.Token)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, setupReq)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked session remains valid: code=%d body=%s", w.Code, w.Body.String())
+	}
 
 	badLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"admin","password":"wrong-password"}`))
 	badLogin.Header.Set("Content-Type", "application/json")
@@ -225,6 +305,34 @@ func TestWebAccountInitLoginAndSessionAuth(t *testing.T) {
 	r.ServeHTTP(w, goodLogin)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"token"`) {
 		t.Fatalf("good login failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestLoginRateLimitCountsFailuresAndReturnsRetryAfter(t *testing.T) {
+	store, _ := newTestSQLiteStore(t)
+	ctx := context.Background()
+	if err := store.CreateWorkspaceMember(ctx, defaultWorkspaceID, "rate-user", "Rate User", RoleMember, "correct-password"); err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	router := gin.New()
+	router.POST("/login", HandleAuthLogin(store))
+	for attempt := 0; attempt < 10; attempt++ {
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"username":"rate-user","password":"wrong-password"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.10:1234"
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status=%d body=%s", attempt+1, w.Code, w.Body.String())
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"username":"rate-user","password":"correct-password"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.10:1234"
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate limit status=%d retry-after=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
 	}
 }
 

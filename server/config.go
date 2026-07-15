@@ -9,21 +9,35 @@ import (
 )
 
 type Config struct {
-	Port                    string `yaml:"port"`
-	Bind                    string `yaml:"bind"` // 默认 127.0.0.1，仅本机访问
-	Token                   string `yaml:"token"`
-	SyncToken               string `yaml:"sync_token"`
-	WebToken                string `yaml:"web_token"`
-	DataDir                 string `yaml:"data_dir"`
-	DatabasePath            string `yaml:"database_path"`
-	SQLiteBin               string `yaml:"sqlite_bin"`
-	DefaultWorkspaceName    string `yaml:"default_workspace_name"`
-	MaxBodyBytes            int64  `yaml:"max_body_bytes"`
-	FeishuSecret            string `yaml:"feishu_secret"`
-	FeishuAppID             string `yaml:"feishu_app_id"`
-	FeishuAppSecret         string `yaml:"feishu_app_secret"`
-	FeishuVerificationToken string `yaml:"feishu_verification_token"`
-	FeishuEncryptKey        string `yaml:"feishu_encrypt_key"`
+	Port                    string               `yaml:"port"`
+	Bind                    string               `yaml:"bind"` // 默认 127.0.0.1，仅本机访问
+	Token                   string               `yaml:"token"`
+	SyncToken               string               `yaml:"sync_token"`
+	WebToken                string               `yaml:"web_token"`
+	MCPAccessKey            string               `yaml:"mcp_access_key"`
+	MCPPermissions          string               `yaml:"mcp_permissions"`
+	MCPWorkspaceID          string               `yaml:"mcp_workspace_id"`
+	MCPAccessKeys           []MCPAccessKeyConfig `yaml:"mcp_access_keys"`
+	DataDir                 string               `yaml:"data_dir"`
+	DatabasePath            string               `yaml:"database_path"`
+	SQLiteBin               string               `yaml:"sqlite_bin"`
+	DefaultWorkspaceName    string               `yaml:"default_workspace_name"`
+	MaxBodyBytes            int64                `yaml:"max_body_bytes"`
+	LinearAPIToken          string               `yaml:"linear_api_token"`
+	LinearAPIURL            string               `yaml:"linear_api_url"`
+	LinearSyncEnabled       bool                 `yaml:"linear_sync_enabled"`
+	FeishuSecret            string               `yaml:"feishu_secret"`
+	FeishuAppID             string               `yaml:"feishu_app_id"`
+	FeishuAppSecret         string               `yaml:"feishu_app_secret"`
+	FeishuVerificationToken string               `yaml:"feishu_verification_token"`
+	FeishuEncryptKey        string               `yaml:"feishu_encrypt_key"`
+}
+
+type MCPAccessKeyConfig struct {
+	Key         string   `yaml:"key"`
+	Permission  string   `yaml:"permission"`
+	Permissions []string `yaml:"permissions"`
+	WorkspaceID string   `yaml:"workspace_id"`
 }
 
 func (c *Config) SyncAccessToken() string {
@@ -91,6 +105,15 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("WEB_AUTH_TOKEN"); v != "" {
 		cfg.WebToken = v
 	}
+	if v := os.Getenv("MCP_ACCESS_KEY"); v != "" {
+		cfg.MCPAccessKey = v
+	}
+	if v := os.Getenv("MCP_PERMISSIONS"); v != "" {
+		cfg.MCPPermissions = v
+	}
+	if v := os.Getenv("MCP_WORKSPACE_ID"); v != "" {
+		cfg.MCPWorkspaceID = v
+	}
 	if v := os.Getenv("DATA_DIR"); v != "" {
 		cfg.DataDir = v
 	}
@@ -107,6 +130,15 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.MaxBodyBytes = n
 		}
+	}
+	if v := os.Getenv("LINEAR_API_TOKEN"); v != "" {
+		cfg.LinearAPIToken = v
+	}
+	if v := os.Getenv("LINEAR_API_URL"); v != "" {
+		cfg.LinearAPIURL = v
+	}
+	if v := os.Getenv("LINEAR_SYNC_ENABLED"); v != "" {
+		cfg.LinearSyncEnabled = v == "1" || v == "true" || v == "TRUE"
 	}
 	if v := os.Getenv("FEISHU_SECRET"); v != "" {
 		cfg.FeishuSecret = v

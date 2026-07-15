@@ -5,7 +5,17 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: '../server/web/dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('/react/') || id.includes('/react-dom/')) return 'react-vendor'
+          if (id.includes('@tanstack') || id.includes('/axios/') || id.includes('/dayjs/')) return 'data-vendor'
+          return undefined
+        }
+      }
+    }
   },
   server: {
     port: 5173,

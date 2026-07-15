@@ -1,11 +1,16 @@
-import { useState, useEffect } from 'react'
+import { lazy, useState, useEffect } from 'react'
 import { Layout, Button, Space, Typography } from 'antd'
-import { LogoutOutlined, SettingOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, LogoutOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
-import { getAuthStatus, getSetup } from './api/client'
-import Dashboard from './components/Dashboard'
-import InitPage from './components/InitPage'
-import LoginPage from './components/LoginPage'
+import { getAuthStatus, getSetup, logout } from './api/client'
+import { queryKeys } from './shared/api/queryKeys'
+import { getCurrentUser } from './features/members/api/members'
+
+const Dashboard = lazy(() => import('./components/Dashboard'))
+const InitPage = lazy(() => import('./components/InitPage'))
+const LoginPage = lazy(() => import('./components/LoginPage'))
+const MemberManagement = lazy(() => import('./components/MemberManagement'))
+const AccountSecurityModal = lazy(() => import('./components/AccountSecurityModal'))
 
 const { Header, Content } = Layout
 const { Text } = Typography
@@ -20,16 +25,24 @@ function tokenFromHash(): string | null {
 function App() {
   const [token, setToken] = useState<string | null>(null)
   const [showInit, setShowInit] = useState(false)
+  const [showMembers, setShowMembers] = useState(false)
+  const [showAccount, setShowAccount] = useState(false)
 
   const { data: authStatus, isLoading: authLoading } = useQuery({
-    queryKey: ['auth-status'],
+    queryKey: queryKeys.auth.status,
     queryFn: getAuthStatus,
     enabled: !token
   })
 
   const { data: setup } = useQuery({
-    queryKey: ['setup'],
+    queryKey: queryKeys.setup,
     queryFn: getSetup,
+    enabled: Boolean(token)
+  })
+
+  const { data: currentUser, isLoading: userLoading } = useQuery({
+    queryKey: queryKeys.auth.me,
+    queryFn: getCurrentUser,
     enabled: Boolean(token)
   })
 
@@ -53,7 +66,12 @@ function App() {
     setToken(newToken)
   }
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await logout()
+    } catch {
+      // Local logout must still complete if the server is temporarily unavailable.
+    }
     localStorage.removeItem('token')
     setToken(null)
     setShowInit(false)
@@ -84,6 +102,10 @@ function App() {
     return <LoginPage onLogin={handleLogin} />
   }
 
+  if (token && userLoading) {
+    return <div className="app-route-loading">正在载入成员身份…</div>
+  }
+
   return (
     <Layout className="app-shell">
       <Header className="app-header">
@@ -95,18 +117,34 @@ function App() {
           </div>
         </div>
         <Space>
-          <Button
-            type="text"
-            icon={<SettingOutlined />}
-            onClick={() => setShowInit(true)}
-            style={{ color: 'white' }}
-          >
-            <Text style={{ color: 'rgba(255,255,255,.82)' }}>初始化</Text>
-          </Button>
+          {currentUser ? (
+            <Button
+              type="text"
+              icon={<AppstoreOutlined />}
+              onClick={() => setShowInit(false)}
+              style={{ color: 'rgba(255,255,255,.82)' }}
+            >
+              工作台
+            </Button>
+          ) : null}
+          <button className="current-user-chip current-user-button" onClick={() => setShowAccount(true)} type="button" title="账户安全">
+            <span>{currentUser?.displayName || '成员'}</span>
+            <small>{currentUser?.role || 'member'}</small>
+          </button>
+          {currentUser?.role === 'admin' ? (
+            <>
+              <Button type="text" icon={<TeamOutlined />} onClick={() => setShowMembers(true)} style={{ color: 'white' }}>
+                <Text style={{ color: 'rgba(255,255,255,.82)' }}>成员</Text>
+              </Button>
+              <Button type="text" icon={<SettingOutlined />} onClick={() => setShowInit(true)} style={{ color: 'white' }}>
+                <Text style={{ color: 'rgba(255,255,255,.82)' }}>配置</Text>
+              </Button>
+            </>
+          ) : null}
           <Button
             type="text"
             icon={<LogoutOutlined />}
-            onClick={handleLogout}
+            onClick={() => void handleLogout()}
             style={{ color: 'white' }}
           >
             <Text style={{ color: 'rgba(255,255,255,.82)' }}>退出</Text>
@@ -117,9 +155,20 @@ function App() {
         {showInit || setup?.initialized === false ? (
           <InitPage onDone={() => setShowInit(false)} />
         ) : (
-          <Dashboard />
+          currentUser ? <Dashboard currentUser={currentUser} /> : null
         )}
       </Content>
+      {currentUser?.role === 'admin' ? (
+        <MemberManagement open={showMembers} currentUser={currentUser} onClose={() => setShowMembers(false)} />
+      ) : null}
+      {currentUser ? (
+        <AccountSecurityModal
+          open={showAccount}
+          user={currentUser}
+          onClose={() => setShowAccount(false)}
+          onTokenChanged={setToken}
+        />
+      ) : null}
     </Layout>
   )
 }

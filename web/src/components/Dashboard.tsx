@@ -1,32 +1,38 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Spin, Typography } from 'antd'
-import { ApiOutlined, DatabaseOutlined, TeamOutlined } from '@ant-design/icons'
-import { getIssues, getStatus } from '../api/client'
+import { Alert, Spin, Tag, Typography } from 'antd'
+import { ApiOutlined, TeamOutlined } from '@ant-design/icons'
+import { getStatus } from '../api/client'
+import { getIssues } from '../features/issues/api/issues'
+import { useSyncMonitor } from '../features/sync/model/useSyncMonitor'
+import { SyncStatusPill } from '../features/sync/ui/SyncStatusPill'
+import { queryKeys } from '../shared/api/queryKeys'
 import FeishuControl from './FeishuControl'
 import IssueList from './IssueList'
 import Statistics from './Statistics'
+import type { AuthUser } from '../entities/member/model/types'
 
 const { Text } = Typography
 
-function Dashboard() {
+function Dashboard({ currentUser }: { currentUser: AuthUser }) {
+  const sync = useSyncMonitor()
   const { data: status, isLoading: statusLoading, error: statusError } = useQuery({
-    queryKey: ['status'],
+    queryKey: queryKeys.status,
     queryFn: getStatus,
-    refetchInterval: 30000
+    refetchInterval: 60000
   })
 
   const { data: issuesData, isLoading: issuesLoading, error: issuesError } = useQuery({
-    queryKey: ['issues'],
+    queryKey: queryKeys.issues.all,
     queryFn: () => getIssues(),
-    refetchInterval: 30000
+    refetchInterval: 60000
   })
 
   const issues = issuesData?.issues || []
   const flowStats = useMemo(() => {
     const myReported = issues.filter((issue) => issue.reporterName || issue.reporterId).length
     const focusTagged = issues.filter((issue) => (issue.issueTags || []).length > 0).length
-    const external = issues.filter((issue) => issue.linearIssueId || issue.feishuTaskGuid || issue.jiraKey || issue.ticketURL).length
+    const external = issues.filter((issue) => issue.linearIssueId || issue.jiraKey || issue.ticketURL).length
     return { myReported, focusTagged, external }
   }, [issues])
 
@@ -58,18 +64,26 @@ function Dashboard() {
           <div className="dashboard-subtitle">
             <Text type="secondary">完整日数据、外部入口和我的提交在同一个工作台里收束。</Text>
           </div>
+          <div className="dashboard-brief">
+            <Tag color="red">待处理 {status?.statistics.pending ?? 0}</Tag>
+            <Tag color="cyan">测试中 {status?.statistics.testing ?? 0}</Tag>
+            <Tag color="green">今日解决 {status?.statistics.resolvedToday ?? 0}</Tag>
+          </div>
         </div>
-        <span className="status-pill">
-          <DatabaseOutlined />
-          SQLite SaaS 组件
-        </span>
+    <SyncStatusPill
+      revision={sync.revision}
+      isConnected={sync.isConnected}
+      isChecking={sync.isChecking}
+      lastModified={sync.lastModified}
+      lastModifiedBy={sync.lastModifiedBy}
+    />
       </div>
 
       <Statistics status={status!} />
 
       <div className="dashboard-grid">
         <section className="workbench-panel">
-          <IssueList issues={issues} departments={status?.departments} />
+          <IssueList issues={issues} departments={status?.departments} currentUser={currentUser} />
         </section>
 
         <aside className="side-stack">

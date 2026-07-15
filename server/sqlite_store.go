@@ -36,6 +36,9 @@ func NewSQLiteStore(ctx context.Context, cfg *Config) (*SQLiteStore, error) {
 	if dbPath == "" {
 		dbPath = filepath.Join(dataDir, "tictacker.sqlite3")
 	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create database directory: %w", err)
+	}
 	sqliteBin := cfg.SQLiteBin
 	if sqliteBin == "" {
 		sqliteBin = "sqlite3"
@@ -48,6 +51,9 @@ func NewSQLiteStore(ctx context.Context, cfg *Config) (*SQLiteStore, error) {
 		dbPath:    dbPath,
 		sqliteBin: sqliteBin,
 		dataDir:   dataDir,
+	}
+	if err := store.backupSQLiteBeforeMigration(ctx); err != nil {
+		return nil, err
 	}
 	if err := store.migrate(ctx); err != nil {
 		return nil, err
@@ -62,6 +68,48 @@ func NewSQLiteStore(ctx context.Context, cfg *Config) (*SQLiteStore, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func (s *SQLiteStore) backupSQLiteBeforeMigration(ctx context.Context) error {
+	info, err := os.Stat(s.dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat sqlite database before migration: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	backupDir := filepath.Join(s.dataDir, "backups", "migrations")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return fmt.Errorf("create migration backup directory: %w", err)
+	}
+	backupPath := filepath.Join(backupDir, "tictacker_pre_migration_"+time.Now().Format("20060102")+".sqlite3")
+	if _, err := os.Stat(backupPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat migration backup: %w", err)
+	}
+	command := exec.CommandContext(ctx, s.sqliteBin, s.dbPath, "VACUUM INTO "+sqlQuote(backupPath)+";")
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("backup sqlite before migration: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := os.Chmod(backupPath, 0o600); err != nil {
+		return fmt.Errorf("protect migration backup: %w", err)
+	}
+	entries, _ := os.ReadDir(backupDir)
+	cutoff := time.Now().AddDate(0, 0, -30)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "tictacker_pre_migration_") {
+			continue
+		}
+		entryInfo, infoErr := entry.Info()
+		if infoErr == nil && entryInfo.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(backupDir, entry.Name()))
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) ResolveWorkspace(ctx context.Context, capability, token string) (*Workspace, error) {
@@ -88,6 +136,22 @@ func (s *SQLiteStore) ResolveWorkspace(ctx context.Context, capability, token st
 	return &Workspace{ID: parts[0], Name: parts[1], SyncToken: parts[2], WebToken: parts[3]}, nil
 }
 
+func (s *SQLiteStore) ResolveWorkspaceByID(ctx context.Context, workspaceID string) (*Workspace, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return nil, fmt.Errorf("workspace id is required")
+	}
+	out, err := s.query(ctx, "SELECT id || char(9) || name || char(9) || coalesce(sync_token,'') || char(9) || coalesce(web_token,'') FROM workspaces WHERE id="+sqlQuote(workspaceID)+" LIMIT 1;")
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(strings.TrimSpace(string(out)), "\t")
+	if len(parts) < 4 || parts[0] == "" {
+		return nil, fmt.Errorf("workspace not found")
+	}
+	return &Workspace{ID: parts[0], Name: parts[1], SyncToken: parts[2], WebToken: parts[3]}, nil
+}
+
 func (s *SQLiteStore) WorkspaceIDs(ctx context.Context) ([]string, error) {
 	out, err := s.query(ctx, "SELECT id FROM workspaces ORDER BY created_at;")
 	if err != nil {
@@ -107,6 +171,28 @@ func (s *SQLiteStore) WorkspaceIDs(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
+func (s *SQLiteStore) RotateWorkspaceSyncToken(ctx context.Context, workspaceID, token string) error {
+	workspaceID = strings.TrimSpace(workspaceID)
+	token = strings.TrimSpace(token)
+	if workspaceID == "" || token == "" {
+		return fmt.Errorf("workspace id and sync token are required")
+	}
+	_, err := s.exec(ctx, "UPDATE workspaces SET sync_token="+sqlQuote(token)+", updated_at="+sqlQuote(time.Now().Format("2006-01-02 15:04:05"))+" WHERE id="+sqlQuote(workspaceID)+";")
+	return err
+}
+
+func (s *SQLiteStore) LatestCollaborationCursor(ctx context.Context, workspaceID string) (int64, error) {
+	out, err := s.query(ctx, "SELECT coalesce(max(cursor),0) FROM collaboration_events WHERE workspace_id="+sqlQuote(workspaceID)+";")
+	if err != nil {
+		return 0, err
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0, nil
+	}
+	return value, nil
+}
+
 func (s *SQLiteStore) Load(ctx context.Context) (*SyncPayload, error) {
 	workspaceID := workspaceIDFromContext(ctx)
 	data, err := s.loadRawForWorkspace(ctx, workspaceID)
@@ -120,6 +206,7 @@ func (s *SQLiteStore) Load(ctx context.Context) (*SyncPayload, error) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, fmt.Errorf("parse workspace payload: %w", err)
 	}
+	normalizePayloadIssueMetadata(&payload)
 	return &payload, nil
 }
 
@@ -146,7 +233,17 @@ func (s *SQLiteStore) ReplaceRaw(ctx context.Context, data []byte) error {
 	if payload.LastModified == 0 {
 		return fmt.Errorf("lastModified is required")
 	}
-	return s.savePayload(ctx, workspaceIDFromContext(ctx), &payload)
+	workspaceID := workspaceIDFromContext(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before, err := s.loadPayloadUnlocked(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	preserveRemovedIssueTombstones(before, &payload, actorFromContext(ctx))
+	advanceIssueRevisions(before, &payload, actorFromContext(ctx))
+	events := buildIssueEvents(before, &payload, actorFromContext(ctx))
+	return s.savePayloadAndEventsUnlocked(ctx, workspaceID, &payload, events)
 }
 
 func (s *SQLiteStore) Update(ctx context.Context, fn func(payload *SyncPayload) error) error {
@@ -156,15 +253,42 @@ func (s *SQLiteStore) Update(ctx context.Context, fn func(payload *SyncPayload) 
 	workspaceID := workspaceIDFromContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if operationID := operationIDFromContext(ctx); operationID != "" {
+		out, checkErr := s.query(ctx, "SELECT 1 FROM collaboration_events WHERE workspace_id="+sqlQuote(workspaceID)+" AND operation_id="+sqlQuote(operationID)+" LIMIT 1;")
+		if checkErr != nil {
+			return checkErr
+		}
+		if strings.TrimSpace(string(out)) == "1" {
+			return errOperationAlreadyApplied
+		}
+	}
 
 	payload, err := s.loadPayloadUnlocked(ctx, workspaceID)
 	if err != nil {
 		return err
 	}
+	beforeData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("clone workspace payload: %w", err)
+	}
+	var before SyncPayload
+	if err := json.Unmarshal(beforeData, &before); err != nil {
+		return fmt.Errorf("clone workspace payload: %w", err)
+	}
 	if err := fn(payload); err != nil {
 		return err
 	}
-	return s.savePayloadUnlocked(ctx, workspaceID, payload)
+	preserveRemovedIssueTombstones(&before, payload, actorFromContext(ctx))
+	advanceIssueRevisions(&before, payload, actorFromContext(ctx))
+	advanceSyncRevision(&before, payload)
+	if payload.Revision > before.Revision {
+		payload.LastModifiedBy = actorFromContext(ctx)
+	}
+	events := buildIssueEvents(&before, payload, actorFromContext(ctx))
+	for i := range events {
+		events[i].OperationID = operationIDFromContext(ctx)
+	}
+	return s.savePayloadAndEventsUnlocked(ctx, workspaceID, payload, events)
 }
 
 func (s *SQLiteStore) SaveFeishuRun(ctx context.Context, workspaceID, slotKey, dateKey, sentAt string, success bool, message string) error {
@@ -239,15 +363,20 @@ func (s *SQLiteStore) savePayload(ctx context.Context, workspaceID string, paylo
 }
 
 func (s *SQLiteStore) savePayloadUnlocked(ctx context.Context, workspaceID string, payload *SyncPayload) error {
+	return s.savePayloadAndEventsUnlocked(ctx, workspaceID, payload, nil)
+}
+
+func (s *SQLiteStore) savePayloadAndEventsUnlocked(ctx context.Context, workspaceID string, payload *SyncPayload, events []CollaborationEvent) error {
 	if workspaceID == "" {
 		workspaceID = defaultWorkspaceID
 	}
 	payload.LastModified = float64(time.Now().Unix())
+	normalizePayloadIssueMetadata(payload)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal workspace payload: %w", err)
 	}
-	sql := s.normalizedSQL(workspaceID, payload, string(data))
+	sql := s.normalizedSQL(workspaceID, payload, string(data), events)
 	_, err = s.exec(ctx, sql)
 	return err
 }
@@ -256,6 +385,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	sql := `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS workspaces(
 	id TEXT PRIMARY KEY,
@@ -271,7 +401,9 @@ CREATE TABLE IF NOT EXISTS users(
 	id TEXT NOT NULL,
 	name TEXT NOT NULL,
 	role TEXT NOT NULL DEFAULT 'member',
+	disabled_at TEXT,
 	created_at TEXT NOT NULL,
+	updated_at TEXT,
 	PRIMARY KEY(workspace_id, id)
 );
 CREATE TABLE IF NOT EXISTS web_accounts(
@@ -305,6 +437,9 @@ CREATE TABLE IF NOT EXISTS issues(
 	date_key TEXT,
 	created_at TEXT,
 	updated_at TEXT,
+	revision INTEGER NOT NULL DEFAULT 1,
+	updated_by TEXT,
+	deleted_at TEXT,
 	diary_badge TEXT,
 	status TEXT,
 	source TEXT,
@@ -382,13 +517,77 @@ CREATE TABLE IF NOT EXISTS feishu_send_runs(
 	message TEXT,
 	PRIMARY KEY(workspace_id, slot_key, date_key)
 );
+CREATE TABLE IF NOT EXISTS collaboration_events(
+	cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+	workspace_id TEXT NOT NULL,
+	event_type TEXT NOT NULL,
+	entity_id TEXT NOT NULL,
+	entity_revision INTEGER NOT NULL,
+	payload_json TEXT NOT NULL,
+	actor TEXT,
+	created_at TEXT NOT NULL,
+	operation_id TEXT
+);
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_issues_workspace_status ON issues(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_issues_workspace_date ON issues(workspace_id, date_key);
 CREATE INDEX IF NOT EXISTS idx_issues_reporter ON issues(workspace_id, reporter_id, reporter_name);
+CREATE INDEX IF NOT EXISTS idx_collaboration_events_workspace_cursor ON collaboration_events(workspace_id, cursor);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, datetime('now'));
+COMMIT;
 `
-	_, err := s.exec(ctx, sql)
+	if _, err := s.exec(ctx, sql); err != nil {
+		return err
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "revision", definition: "INTEGER NOT NULL DEFAULT 1"},
+		{name: "updated_by", definition: "TEXT"},
+		{name: "deleted_at", definition: "TEXT"},
+	} {
+		if err := s.ensureSQLiteColumn(ctx, "issues", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureSQLiteColumn(ctx, "collaboration_events", "operation_id", "TEXT"); err != nil {
+		return err
+	}
+	if _, err := s.exec(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_collaboration_events_operation ON collaboration_events(workspace_id, operation_id) WHERE operation_id IS NOT NULL AND operation_id <> '';\n"); err != nil {
+		return err
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "disabled_at", definition: "TEXT"},
+		{name: "updated_at", definition: "TEXT"},
+	} {
+		if err := s.ensureSQLiteColumn(ctx, "users", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	// Existing deployments predate RBAC. Preserve access by materializing their
+	// accounts as admins; newly created accounts always receive an explicit role.
+	if _, err := s.exec(ctx, `INSERT OR IGNORE INTO users(workspace_id,id,name,role,created_at,updated_at)
+SELECT workspace_id,username,username,'admin',created_at,updated_at FROM web_accounts;
+`); err != nil {
+		return err
+	}
+	_, err := s.exec(ctx, "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, datetime('now')); INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(3, datetime('now'));\n")
+	return err
+}
+
+func (s *SQLiteStore) ensureSQLiteColumn(ctx context.Context, table, column, definition string) error {
+	out, err := s.query(ctx, "SELECT count(*) FROM pragma_table_info("+sqlQuote(table)+") WHERE name = "+sqlQuote(column)+";")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(out)) == "1" {
+		return nil
+	}
+	_, err = s.exec(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+definition+";\n")
 	return err
 }
 
@@ -402,8 +601,8 @@ func (s *SQLiteStore) ensureDefaultWorkspace(ctx context.Context, cfg *Config) e
 VALUES(%s,%s,%s,%s,%s,%s,%s)
 ON CONFLICT(id) DO UPDATE SET
 name=excluded.name,
-sync_token=excluded.sync_token,
-web_token=excluded.web_token,
+sync_token=CASE WHEN workspaces.sync_token IS NULL OR workspaces.sync_token='' THEN excluded.sync_token ELSE workspaces.sync_token END,
+web_token=CASE WHEN workspaces.web_token IS NULL OR workspaces.web_token='' THEN excluded.web_token ELSE workspaces.web_token END,
 updated_at=excluded.updated_at;`,
 		sqlQuote(defaultWorkspaceID), sqlQuote(name), sqlQuote(cfg.SyncAccessToken()), sqlQuote(cfg.WebAccessToken()), sqlQuote("{}"), sqlQuote(now), sqlQuote(now))
 	_, err := s.exec(ctx, sql)
@@ -449,7 +648,7 @@ func (s *SQLiteStore) importLegacySyncFile(ctx context.Context) error {
 	return err
 }
 
-func (s *SQLiteStore) normalizedSQL(workspaceID string, payload *SyncPayload, payloadJSON string) string {
+func (s *SQLiteStore) normalizedSQL(workspaceID string, payload *SyncPayload, payloadJSON string, events []CollaborationEvent) string {
 	now := time.Now().Format("2006-01-02 15:04:05")
 	var b strings.Builder
 	b.WriteString("BEGIN IMMEDIATE;\n")
@@ -484,7 +683,7 @@ func (s *SQLiteStore) normalizedSQL(workspaceID string, payload *SyncPayload, pa
 	for _, issue := range payload.TrackedIssues {
 		raw, _ := json.Marshal(issue)
 		b.WriteString("INSERT OR REPLACE INTO issues(")
-		b.WriteString("workspace_id,id,issue_number,type,title,date_key,created_at,updated_at,diary_badge,status,source,assignee,jira_key,ticket_url,department,resolved_at,has_dev_activity,is_escalated,feishu_task_guid,feishu_task_summary,feishu_task_completed_at,linear_issue_id,linear_key,linear_url,linear_project_id,linear_project_name,linear_assignee,reporter_id,reporter_name,reported_at,raw_json")
+		b.WriteString("workspace_id,id,issue_number,type,title,date_key,created_at,updated_at,revision,updated_by,deleted_at,diary_badge,status,source,assignee,jira_key,ticket_url,department,resolved_at,has_dev_activity,is_escalated,feishu_task_guid,feishu_task_summary,feishu_task_completed_at,linear_issue_id,linear_key,linear_url,linear_project_id,linear_project_name,linear_assignee,reporter_id,reporter_name,reported_at,raw_json")
 		b.WriteString(") VALUES(")
 		values := []string{
 			sqlQuote(workspaceID),
@@ -495,6 +694,9 @@ func (s *SQLiteStore) normalizedSQL(workspaceID string, payload *SyncPayload, pa
 			sqlQuote(issue.DateKey),
 			sqlQuote(issue.CreatedAt.Value),
 			sqlQuote(flexPtrValue(issue.UpdatedAt)),
+			strconv.FormatInt(issue.Revision, 10),
+			sqlQuote(ptrValue(issue.UpdatedBy)),
+			sqlQuote(flexPtrValue(issue.DeletedAt)),
 			sqlQuote(issue.DiaryBadge),
 			sqlQuote(issue.Status),
 			sqlQuote(issue.Source),
@@ -551,6 +753,20 @@ func (s *SQLiteStore) normalizedSQL(workspaceID string, payload *SyncPayload, pa
 			b.WriteString(");\n")
 		}
 	}
+	for _, event := range events {
+		b.WriteString("INSERT INTO collaboration_events(workspace_id,event_type,entity_id,entity_revision,payload_json,actor,created_at,operation_id) VALUES(")
+		b.WriteString(strings.Join([]string{
+			sqlQuote(workspaceID),
+			sqlQuote(event.Type),
+			sqlQuote(event.EntityID),
+			strconv.FormatInt(event.EntityRevision, 10),
+			sqlQuote(string(event.Payload)),
+			sqlQuote(event.Actor),
+			sqlQuote(event.CreatedAt),
+			sqlQuote(event.OperationID),
+		}, ","))
+		b.WriteString(");\n")
+	}
 	b.WriteString("COMMIT;\n")
 	return b.String()
 }
@@ -564,21 +780,38 @@ func (s *SQLiteStore) query(ctx context.Context, sql string) ([]byte, error) {
 }
 
 func (s *SQLiteStore) run(ctx context.Context, sql string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, s.sqliteBin, "-batch", s.dbPath)
-	cmd.Stdin = strings.NewReader(sql)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("sqlite: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	if stderr.Len() > 0 {
-		msg := strings.TrimSpace(stderr.String())
-		if msg != "" {
-			slog.Debug("sqlite stderr", "message", msg)
+	const attempts = 3
+	sql = ".timeout 5000\nPRAGMA foreign_keys=ON;\n" + sql
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		cmd := exec.CommandContext(ctx, s.sqliteBin, "-batch", s.dbPath)
+		cmd.Stdin = strings.NewReader(sql)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		message := strings.TrimSpace(stderr.String())
+		if err == nil {
+			if message != "" {
+				slog.Debug("sqlite stderr", "message", message)
+			}
+			return stdout.Bytes(), nil
+		}
+		lastErr = fmt.Errorf("sqlite: %w: %s", err, message)
+		lower := strings.ToLower(message)
+		if !strings.Contains(lower, "database is locked") && !strings.Contains(lower, "database is busy") {
+			return nil, lastErr
+		}
+		if attempt+1 < attempts {
+			delay := time.Duration(50*(1<<attempt)) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
 		}
 	}
-	return stdout.Bytes(), nil
+	return nil, lastErr
 }
 
 type externalBindingRow struct {

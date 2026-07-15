@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,130 @@ import (
 var feishuSendMu sync.Mutex
 
 var issueIDRegexp = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+var (
+	errIssueRevisionConflict = errors.New("issue revision conflict")
+	errIssueDeleted          = errors.New("issue deleted")
+	errIssueAlreadyClaimed   = errors.New("issue already claimed")
+)
+
+func requireIssueRevision(c *gin.Context) (int64, bool) {
+	raw := strings.TrimSpace(c.GetHeader("If-Match"))
+	if raw == "" {
+		c.JSON(http.StatusPreconditionRequired, gin.H{
+			"error": "If-Match issue revision is required",
+			"code":  "issue_revision_required",
+		})
+		return 0, false
+	}
+	raw = strings.TrimPrefix(raw, "W/")
+	raw = strings.Trim(raw, "\"")
+	revision, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || revision < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid If-Match issue revision", "code": "invalid_issue_revision"})
+		return 0, false
+	}
+	return revision, true
+}
+
+func HandleClaimIssue(store PayloadStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		issueID := c.Param("id")
+		if !issueIDRegexp.MatchString(issueID) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid issue id"})
+			return
+		}
+		expectedRevision, ok := requireIssueRevision(c)
+		if !ok {
+			return
+		}
+		identity, ok := identityFromContext(c.Request.Context())
+		if !ok || strings.TrimSpace(identity.DisplayName) == "" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "a named workspace member is required", "code": "member_identity_required"})
+			return
+		}
+
+		found := false
+		var current *TrackedIssue
+		err := store.Update(c.Request.Context(), func(payload *SyncPayload) error {
+			for i := range payload.TrackedIssues {
+				issue := &payload.TrackedIssues[i]
+				if issue.ID != issueID {
+					continue
+				}
+				if err := prepareIssueMutation(issue, expectedRevision, &current); err != nil {
+					return err
+				}
+				if issue.Assignee != nil && strings.TrimSpace(*issue.Assignee) != "" {
+					return errIssueAlreadyClaimed
+				}
+				assignee := identity.DisplayName
+				issue.Assignee = &assignee
+				now := FlexTime{Value: time.Now().Format("2006-01-02 15:04:05")}
+				issue.UpdatedAt = &now
+				found = true
+				return nil
+			}
+			return nil
+		})
+		switch {
+		case errors.Is(err, errIssueAlreadyClaimed):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "issue_already_claimed", "current": current})
+			return
+		case err != nil:
+			if writeIssueMutationError(c, err, current) {
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to claim issue"})
+			return
+		case !found:
+			c.JSON(http.StatusNotFound, gin.H{"error": "issue not found"})
+			return
+		}
+
+		var claimed TrackedIssue
+		if payload, loadErr := store.Load(c.Request.Context()); loadErr == nil {
+			for _, issue := range payload.TrackedIssues {
+				if issue.ID == issueID {
+					claimed = issue
+					break
+				}
+			}
+		}
+		c.Header("ETag", fmt.Sprintf("\"%d\"", claimed.Revision))
+		c.JSON(http.StatusOK, gin.H{"success": true, "issue": claimed})
+	}
+}
+
+func writeIssueMutationError(c *gin.Context, err error, current *TrackedIssue) bool {
+	switch {
+	case errors.Is(err, errIssueRevisionConflict):
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "issue was changed by another client",
+			"code":    "issue_revision_conflict",
+			"current": current,
+		})
+		return true
+	case errors.Is(err, errIssueDeleted):
+		c.JSON(http.StatusGone, gin.H{"error": "issue was deleted", "code": "issue_deleted", "current": current})
+		return true
+	default:
+		return false
+	}
+}
+
+func prepareIssueMutation(issue *TrackedIssue, expectedRevision int64, current **TrackedIssue) error {
+	normalizeIssueMetadata(issue)
+	copyOfCurrent := *issue
+	*current = &copyOfCurrent
+	if issue.DeletedAt != nil {
+		return errIssueDeleted
+	}
+	if issue.Revision != expectedRevision {
+		return errIssueRevisionConflict
+	}
+	return nil
+}
 
 func canSendFeishu(payload *SyncPayload, cooldown time.Duration) (bool, int) {
 	if payload.FeishuBotConfig == nil || payload.FeishuBotConfig.LastSentDateTime == "" {
@@ -84,44 +210,7 @@ func HandleGetStatus(store PayloadStore) gin.HandlerFunc {
 			return
 		}
 
-		today := time.Now().Format("2006-01-02")
-		newToday := 0
-		resolvedToday := 0
-		pending := 0
-		scheduled := 0
-		testing := 0
-		observing := 0
-		todayTotal := 0
-
-		for _, issue := range payload.TrackedIssues {
-			isResolved := isResolvedStatus(issue.Status)
-			if issue.DateKey == today && !isResolved {
-				newToday++
-			}
-			if issue.ResolvedAt != nil && strings.HasPrefix(issue.ResolvedAt.Value, today) {
-				resolvedToday++
-			}
-			switch issue.Status {
-			case StatusScheduled:
-				scheduled++
-			case StatusTesting:
-				testing++
-			case StatusObserving:
-				observing++
-			default:
-				if !isResolved {
-					pending++
-				}
-			}
-		}
-
-		if payload.Records != nil {
-			if rec, ok := payload.Records[today]; ok {
-				for _, v := range rec {
-					todayTotal += v
-				}
-			}
-		}
+		summary := BuildStatusSummary(payload, time.Now())
 
 		lastSentTime := ""
 		feishuEnabled := false
@@ -133,19 +222,12 @@ func HandleGetStatus(store PayloadStore) gin.HandlerFunc {
 		_, cooldownSec := canSendFeishu(payload, 5*time.Minute)
 
 		c.JSON(http.StatusOK, gin.H{
-			"statistics": gin.H{
-				"newToday":      newToday,
-				"resolvedToday": resolvedToday,
-				"pending":       pending,
-				"scheduled":     scheduled,
-				"testing":       testing,
-				"observing":     observing,
-			},
+			"statistics":     summary["statistics"],
 			"lastSentTime":   lastSentTime,
 			"cooldownRemain": cooldownSec,
 			"feishuEnabled":  feishuEnabled,
-			"todayTotal":     todayTotal,
-			"departments":    payload.Departments,
+			"todayTotal":     summary["todayTotal"],
+			"departments":    summary["departments"],
 		})
 	}
 }
@@ -163,6 +245,10 @@ func HandleGetIssues(store PayloadStore) gin.HandlerFunc {
 		filtered := make([]TrackedIssue, 0, len(payload.TrackedIssues))
 
 		for _, issue := range payload.TrackedIssues {
+			normalizeIssueMetadata(&issue)
+			if issue.DeletedAt != nil && c.Query("includeDeleted") != "true" {
+				continue
+			}
 			isResolved := isResolvedStatus(issue.Status)
 			if statusFilter == "" {
 				filtered = append(filtered, issue)
@@ -208,6 +294,10 @@ func HandleUpdateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.Han
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid issue id"})
 			return
 		}
+		expectedRevision, ok := requireIssueRevision(c)
+		if !ok {
+			return
+		}
 
 		var body struct {
 			Status         *string  `json:"status"`
@@ -226,6 +316,8 @@ func HandleUpdateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.Han
 
 		ctx := c.Request.Context()
 		found := false
+		var current *TrackedIssue
+		var updated TrackedIssue
 		var feishuTaskGUID string
 		var refreshBoundTask bool
 		err := store.Update(ctx, func(payload *SyncPayload) error {
@@ -233,6 +325,9 @@ func HandleUpdateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.Han
 				issue := &payload.TrackedIssues[i]
 				if issue.ID != issueID {
 					continue
+				}
+				if err := prepareIssueMutation(issue, expectedRevision, &current); err != nil {
+					return err
 				}
 
 				now := FlexTime{Value: time.Now().Format("2006-01-02 15:04:05")}
@@ -256,6 +351,9 @@ func HandleUpdateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.Han
 						issue.LinearProjectID = nil
 						issue.LinearProjectName = nil
 						issue.LinearAssignee = nil
+						issue.LinearCreator = nil
+						issue.LinearCreatedAt = nil
+						issue.LinearUpdatedAt = nil
 						feishuTaskGUID = trimmed
 						refreshBoundTask = true
 					}
@@ -290,11 +388,32 @@ func HandleUpdateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.Han
 					feishuTaskGUID = *issue.FeishuTaskGUID
 				}
 				found = true
+				updated = *issue
 				return nil
 			}
 			return nil
 		})
 		if err != nil {
+			if errors.Is(err, errOperationAlreadyApplied) {
+				matches, matchErr := operationReplayMatches(store, c.Request.Context(), issueID)
+				if matchErr != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify idempotent replay"})
+					return
+				}
+				if !matches {
+					c.JSON(http.StatusConflict, gin.H{"error": "Idempotency-Key was already used for another entity", "code": "idempotency_key_reused"})
+					return
+				}
+				if issue, exists := loadIssueByID(store, c, issueID); exists {
+					c.Header("X-Idempotent-Replay", "true")
+					c.Header("ETag", fmt.Sprintf("\"%d\"", issue.Revision))
+					c.JSON(http.StatusOK, gin.H{"success": true, "issue": issue, "replayed": true})
+					return
+				}
+			}
+			if writeIssueMutationError(c, err, current) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save sync data"})
 			return
 		}
@@ -311,7 +430,17 @@ func HandleUpdateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.Han
 			}
 		}
 
-		c.JSON(http.StatusOK, gin.H{"success": true})
+		// Store.Update may have assigned the next revision after the callback.
+		if payload, loadErr := store.Load(ctx); loadErr == nil {
+			for _, issue := range payload.TrackedIssues {
+				if issue.ID == issueID {
+					updated = issue
+					break
+				}
+			}
+		}
+		c.Header("ETag", fmt.Sprintf("\"%d\"", updated.Revision))
+		c.JSON(http.StatusOK, gin.H{"success": true, "issue": updated})
 	}
 }
 
@@ -320,6 +449,10 @@ func HandleAddComment(store PayloadStore) gin.HandlerFunc {
 		issueID := c.Param("id")
 		if !issueIDRegexp.MatchString(issueID) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid issue id"})
+			return
+		}
+		expectedRevision, ok := requireIssueRevision(c)
+		if !ok {
 			return
 		}
 
@@ -332,16 +465,20 @@ func HandleAddComment(store PayloadStore) gin.HandlerFunc {
 		}
 
 		found := false
+		var current *TrackedIssue
 		err := store.Update(c.Request.Context(), func(payload *SyncPayload) error {
 			for i := range payload.TrackedIssues {
 				issue := &payload.TrackedIssues[i]
 				if issue.ID != issueID {
 					continue
 				}
+				if err := prepareIssueMutation(issue, expectedRevision, &current); err != nil {
+					return err
+				}
 
 				now := FlexTime{Value: time.Now().Format("2006-01-02 15:04:05")}
 				issue.Comments = append(issue.Comments, IssueComment{
-					ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+					ID:        newIssueUUID(),
 					Text:      strings.TrimSpace(body.Text),
 					CreatedAt: now,
 				})
@@ -352,6 +489,26 @@ func HandleAddComment(store PayloadStore) gin.HandlerFunc {
 			return nil
 		})
 		if err != nil {
+			if errors.Is(err, errOperationAlreadyApplied) {
+				matches, matchErr := operationReplayMatches(store, c.Request.Context(), issueID)
+				if matchErr != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify idempotent replay"})
+					return
+				}
+				if !matches {
+					c.JSON(http.StatusConflict, gin.H{"error": "Idempotency-Key was already used for another entity", "code": "idempotency_key_reused"})
+					return
+				}
+				if issue, exists := loadIssueByID(store, c, issueID); exists {
+					c.Header("X-Idempotent-Replay", "true")
+					c.Header("ETag", fmt.Sprintf("\"%d\"", issue.Revision))
+					c.JSON(http.StatusOK, gin.H{"success": true, "issue": issue, "replayed": true})
+					return
+				}
+			}
+			if writeIssueMutationError(c, err, current) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save sync data"})
 			return
 		}
@@ -360,7 +517,17 @@ func HandleAddComment(store PayloadStore) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"success": true})
+		var updated TrackedIssue
+		if payload, loadErr := store.Load(c.Request.Context()); loadErr == nil {
+			for _, issue := range payload.TrackedIssues {
+				if issue.ID == issueID {
+					updated = issue
+					break
+				}
+			}
+		}
+		c.Header("ETag", fmt.Sprintf("\"%d\"", updated.Revision))
+		c.JSON(http.StatusOK, gin.H{"success": true, "issue": updated})
 	}
 }
 
@@ -380,53 +547,20 @@ func HandleCreateIssue(store PayloadStore, feishuTask *FeishuTaskClient) gin.Han
 			return
 		}
 
-		title := strings.TrimSpace(body.Title)
-		issueType := strings.TrimSpace(body.Type)
-		if title == "" || issueType == "" {
+		createdIssue, err := CreateTrackedIssue(c.Request.Context(), store, CreateTrackedIssueInput{
+			Title:        body.Title,
+			Type:         body.Type,
+			Department:   body.Department,
+			TicketURL:    body.TicketURL,
+			ReporterID:   body.ReporterID,
+			ReporterName: body.ReporterName,
+			Source:       "Web",
+			IssueTags:    body.IssueTags,
+		})
+		if err != nil && strings.Contains(err.Error(), "required") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "title and type are required"})
 			return
 		}
-
-		var createdIssue TrackedIssue
-		err := store.Update(c.Request.Context(), func(payload *SyncPayload) error {
-			maxNumber := 0
-			for _, issue := range payload.TrackedIssues {
-				if issue.IssueNumber > maxNumber {
-					maxNumber = issue.IssueNumber
-				}
-			}
-
-			today := time.Now().Format("2006-01-02")
-			createdIssue = TrackedIssue{
-				ID:          fmt.Sprintf("%d", time.Now().UnixNano()),
-				IssueNumber: maxNumber + 1,
-				Type:        issueType,
-				Title:       title,
-				DateKey:     today,
-				CreatedAt:   FlexTime{Value: time.Now().Format("2006-01-02 15:04:05")},
-				Status:      StatusPending,
-				Source:      "Web",
-				Comments:    []IssueComment{},
-			}
-			createdIssue.Department = trimPtr(body.Department)
-			createdIssue.TicketURL = trimPtr(body.TicketURL)
-			createdIssue.ReporterID = trimPtr(body.ReporterID)
-			createdIssue.ReporterName = trimPtr(body.ReporterName)
-			if createdIssue.ReporterID == nil && payload.CurrentMemberID != "" {
-				createdIssue.ReporterID = &payload.CurrentMemberID
-			}
-			if createdIssue.ReporterName == nil && payload.CurrentMemberName != "" {
-				createdIssue.ReporterName = &payload.CurrentMemberName
-			}
-			if createdIssue.ReporterID != nil || createdIssue.ReporterName != nil {
-				reportedAt := createdIssue.CreatedAt
-				createdIssue.ReportedAt = &reportedAt
-			}
-			createdIssue.IssueTags = normalizeIssueTags(body.IssueTags)
-
-			payload.TrackedIssues = append(payload.TrackedIssues, createdIssue)
-			return nil
-		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save sync data"})
 			return
@@ -445,21 +579,36 @@ func HandleDeleteIssue(store PayloadStore) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid issue id"})
 			return
 		}
+		expectedRevision, ok := requireIssueRevision(c)
+		if !ok {
+			return
+		}
 
 		found := false
+		var current *TrackedIssue
+		var deleted TrackedIssue
 		err := store.Update(c.Request.Context(), func(payload *SyncPayload) error {
-			filtered := payload.TrackedIssues[:0]
-			for _, issue := range payload.TrackedIssues {
-				if issue.ID == issueID {
-					found = true
+			for i := range payload.TrackedIssues {
+				issue := &payload.TrackedIssues[i]
+				if issue.ID != issueID {
 					continue
 				}
-				filtered = append(filtered, issue)
+				if err := prepareIssueMutation(issue, expectedRevision, &current); err != nil {
+					return err
+				}
+				now := FlexTime{Value: time.Now().Format("2006-01-02 15:04:05")}
+				issue.DeletedAt = &now
+				issue.UpdatedAt = &now
+				deleted = *issue
+				found = true
+				break
 			}
-			payload.TrackedIssues = filtered
 			return nil
 		})
 		if err != nil {
+			if writeIssueMutationError(c, err, current) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save sync data"})
 			return
 		}
@@ -468,7 +617,16 @@ func HandleDeleteIssue(store PayloadStore) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"success": true})
+		if payload, loadErr := store.Load(c.Request.Context()); loadErr == nil {
+			for _, issue := range payload.TrackedIssues {
+				if issue.ID == issueID {
+					deleted = issue
+					break
+				}
+			}
+		}
+		c.Header("ETag", fmt.Sprintf("\"%d\"", deleted.Revision))
+		c.JSON(http.StatusOK, gin.H{"success": true, "issue": deleted})
 	}
 }
 
@@ -535,6 +693,50 @@ func HandleSendFeishu(store PayloadStore) gin.HandlerFunc {
 			"success":       true,
 			"message":       "发送成功",
 			"nextAvailable": nextAvailable,
+		})
+	}
+}
+
+func HandleSendIssueMonthlyFeishu(store PayloadStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		feishuSendMu.Lock()
+		defer feishuSendMu.Unlock()
+
+		ctx := c.Request.Context()
+		payload, err := store.Load(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read sync data"})
+			return
+		}
+
+		period := strings.TrimSpace(c.Query("period"))
+		if period != "previous" {
+			period = "current"
+		}
+
+		if err := sendFeishuIssueMonthlyReport(ctx, *payload, period); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("发送失败: %v", err),
+			})
+			return
+		}
+
+		now := time.Now().Format("2006-01-02 15:04:05")
+		if err := store.Update(ctx, func(payload *SyncPayload) error {
+			if payload.FeishuBotConfig == nil {
+				return nil
+			}
+			payload.FeishuBotConfig.LastSentDateTime = now
+			return nil
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save sync data"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "问题月报发送成功",
 		})
 	}
 }

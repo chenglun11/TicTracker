@@ -60,6 +60,9 @@ func (s *Scheduler) primeLastSent(ctx context.Context) {
 		for key, date := range payload.FeishuBotConfig.LastSentTimes {
 			s.lastSent[s.schedulerKey(workspaceID, key)] = date
 		}
+		if payload.FeishuBotConfig.IssueMonthlyReportLastSentMonth != "" {
+			s.lastSent[s.schedulerKey(workspaceID, issueMonthlyReportSlotKey)] = payload.FeishuBotConfig.IssueMonthlyReportLastSentMonth
+		}
 		s.mu.Unlock()
 	}
 }
@@ -172,6 +175,112 @@ func (s *Scheduler) checkWorkspace(ctx context.Context, workspaceID string) {
 		}
 		return
 	}
+
+	s.checkIssueMonthlyReport(ctx, workspaceID, payload, now)
+}
+
+const issueMonthlyReportSlotKey = "issue-monthly"
+
+func (s *Scheduler) checkIssueMonthlyReport(ctx context.Context, workspaceID string, payload *SyncPayload, now time.Time) {
+	cfg := payload.FeishuBotConfig
+	if cfg == nil || !cfg.Enabled || !cfg.IssueMonthlyReportEnabled {
+		return
+	}
+	monthKey, ok := issueMonthlyDueMonth(now, cfg)
+	if !ok {
+		return
+	}
+	if cfg.IssueMonthlyReportLastSentMonth == monthKey {
+		return
+	}
+
+	runKey := s.schedulerKey(workspaceID, issueMonthlyReportSlotKey)
+	if recorder, ok := s.store.(interface {
+		HasSuccessfulFeishuRun(context.Context, string, string, string) (bool, error)
+	}); ok {
+		sent, err := recorder.HasSuccessfulFeishuRun(ctx, workspaceID, issueMonthlyReportSlotKey, monthKey)
+		if err == nil && sent {
+			s.mu.Lock()
+			s.lastSent[runKey] = monthKey
+			s.mu.Unlock()
+			return
+		}
+	}
+
+	s.mu.Lock()
+	if s.lastSent[runKey] == monthKey {
+		s.mu.Unlock()
+		return
+	}
+	if failedAt, ok := s.lastFailed[runKey]; ok && now.Sub(failedAt) < schedulerFailureCooldown {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+
+	slog.Info("scheduler sending issue monthly report", "workspace", workspaceID, "month", monthKey)
+	if err := sendFeishuIssueMonthlyReport(ctx, *payload, "previous"); err != nil {
+		slog.Warn("scheduler issue monthly send failed", "workspace", workspaceID, "month", monthKey, "err", err)
+		s.mu.Lock()
+		s.lastFailed[runKey] = now
+		s.mu.Unlock()
+		if recorder, ok := s.store.(interface {
+			SaveFeishuRun(context.Context, string, string, string, string, bool, string) error
+		}); ok {
+			_ = recorder.SaveFeishuRun(ctx, workspaceID, issueMonthlyReportSlotKey, monthKey, now.Format("2006-01-02 15:04:05"), false, err.Error())
+		}
+		return
+	}
+
+	s.mu.Lock()
+	s.lastSent[runKey] = monthKey
+	delete(s.lastFailed, runKey)
+	s.mu.Unlock()
+
+	sentTime := now.Format("2006-01-02 15:04:05")
+	if err := s.store.Update(ctx, func(p *SyncPayload) error {
+		if p.FeishuBotConfig == nil {
+			return nil
+		}
+		p.FeishuBotConfig.IssueMonthlyReportLastSentMonth = monthKey
+		p.FeishuBotConfig.LastSentDateTime = sentTime
+		return nil
+	}); err != nil {
+		slog.Warn("scheduler update issue monthly state failed", "err", err)
+	}
+	if recorder, ok := s.store.(interface {
+		SaveFeishuRun(context.Context, string, string, string, string, bool, string) error
+	}); ok {
+		_ = recorder.SaveFeishuRun(ctx, workspaceID, issueMonthlyReportSlotKey, monthKey, sentTime, true, "")
+	}
+	slog.Info("scheduler issue monthly sent successfully", "workspace", workspaceID, "month", monthKey)
+}
+
+func issueMonthlyDueMonth(now time.Time, cfg *FeishuBotConfig) (string, bool) {
+	day := cfg.IssueMonthlyReportDay
+	if day <= 0 {
+		day = 1
+	}
+	hour := cfg.IssueMonthlyReportHour
+	if hour < 0 || hour > 23 {
+		hour = 9
+	}
+	minute := cfg.IssueMonthlyReportMinute
+	if minute < 0 || minute > 59 {
+		minute = 30
+	}
+	firstNextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, now.Location())
+	lastDay := firstNextMonth.AddDate(0, 0, -1).Day()
+	if day > lastDay {
+		day = lastDay
+	}
+	currentMinute := now.Hour()*60 + now.Minute()
+	scheduledMinute := hour*60 + minute
+	if now.Day() < day || (now.Day() == day && currentMinute < scheduledMinute) {
+		return "", false
+	}
+	target := now.AddDate(0, -1, 0)
+	return target.Format("2006-01"), true
 }
 
 func (s *Scheduler) workspaceIDs(ctx context.Context) []string {

@@ -1,9 +1,11 @@
 import { useEffect } from 'react'
 import { Button, Col, Form, Input, Row, Space, Switch, Typography, message } from 'antd'
-import { CheckCircleOutlined, KeyOutlined, TeamOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, CheckCircleOutlined, KeyOutlined, TeamOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getSetup, initSystem, saveSetup } from '../api/client'
+import { queryKeys } from '../shared/api/queryKeys'
 import type { SetupRequest } from '../types'
+import SyncAdminPanel from '../features/sync/ui/SyncAdminPanel'
 
 const { Text } = Typography
 
@@ -36,7 +38,7 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
   const [form] = Form.useForm()
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({
-    queryKey: ['setup'],
+    queryKey: queryKeys.setup,
     queryFn: getSetup,
     enabled: !firstRun
   })
@@ -61,8 +63,8 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
       feishuEnabled: data.feishu.enabled,
       sendTime: data.feishu.sendTime || '18:00',
       focusIssueTag: data.feishu.focusIssueTag || '今日Bug',
+      webhookURL: data.feishu.webhookURL || '',
       appID: data.feishu.appID,
-      tasklistGUID: data.feishu.tasklistGUID,
       linearEnabled: data.linear.enabled,
       teamId: data.linear.teamId,
       teamName: data.linear.teamName,
@@ -88,10 +90,10 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
       if ('setup' in saved && saved.setup) {
         queryClient.setQueryData(['setup'], saved.setup)
       }
-      queryClient.invalidateQueries({ queryKey: ['setup'] })
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] })
-      queryClient.invalidateQueries({ queryKey: ['status'] })
-      queryClient.invalidateQueries({ queryKey: ['issues'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.setup })
+      queryClient.invalidateQueries({ queryKey: queryKeys.auth.status })
+    queryClient.invalidateQueries({ queryKey: queryKeys.status })
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.all })
       message.success(firstRun ? '账号和工作台已初始化' : '初始化配置已保存')
       if ('token' in saved && saved.token) {
         onInitialized?.(saved.token)
@@ -123,7 +125,6 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
         appSecret: values.appSecret?.trim() || '',
         verificationToken: values.verificationToken?.trim() || '',
         encryptKey: values.encryptKey?.trim() || '',
-        tasklistGUID: values.tasklistGUID?.trim() || ''
       },
       linear: {
         enabled: Boolean(values.linearEnabled),
@@ -149,6 +150,11 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
           </div>
         </div>
         <Space wrap>
+          {!firstRun ? (
+            <Button icon={<ArrowLeftOutlined />} onClick={onDone}>
+              返回工作台
+            </Button>
+          ) : null}
           <span className="status-pill"><KeyOutlined /> {firstRun ? '创建账号登录' : '账号会话已验证'}</span>
           {data?.initialized ? <span className="status-pill"><CheckCircleOutlined /> 已有配置</span> : null}
         </Space>
@@ -195,6 +201,8 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
             </Row>
           </section>
         ) : null}
+
+        {!firstRun ? <SyncAdminPanel /> : null}
 
         <section className="init-section">
           <div className="init-section-head">
@@ -252,12 +260,7 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
             </Col>
             <Col xs={24} md={12}>
               <Form.Item label="Webhook Secret" name="webhookSecret">
-                <Input.Password placeholder={data?.feishu.webhookSecretConfigured ? '已配置，留空则保留现状' : '签名 Secret，可选'} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item label="飞书任务清单 GUID" name="tasklistGUID">
-                <Input placeholder="用于任务事件回流，可选" />
+                <Input.Password placeholder={data?.feishu.webhookSecretConfigured ? `已配置 ${data.feishu.webhookSecretHint || '••••'} · 留空保留` : '签名 Secret，可选'} />
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
@@ -267,17 +270,17 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
             </Col>
             <Col xs={24} md={12}>
               <Form.Item label="App Secret" name="appSecret">
-                <Input.Password placeholder={data?.feishu.appSecretConfigured ? '已配置，留空则保留现状' : '用于 Tasks API，可选'} />
+                <Input.Password placeholder={data?.feishu.appSecretConfigured ? `已配置 ${data.feishu.appSecretHint || '••••'} · 留空保留` : '飞书应用凭证，可选'} />
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
               <Form.Item label="Verification Token" name="verificationToken">
-                <Input.Password placeholder="飞书事件订阅校验，可选" />
+                <Input.Password placeholder={data?.feishu.verificationTokenPresent ? `已配置 ${data.feishu.verificationTokenHint || '••••'} · 留空保留` : '飞书事件订阅校验，可选'} />
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
               <Form.Item label="Encrypt Key" name="encryptKey">
-                <Input.Password placeholder={data?.feishu.encryptKeyPresent ? '已配置，留空则保留现状' : '飞书事件加密 Key，可选'} />
+                <Input.Password placeholder={data?.feishu.encryptKeyPresent ? `已配置 ${data.feishu.encryptKeyHint || '••••'} · 留空保留` : '飞书事件加密 Key，可选'} />
               </Form.Item>
             </Col>
           </Row>
@@ -288,7 +291,7 @@ function InitPage({ firstRun = false, onInitialized, onDone }: InitPageProps) {
             <span className="data-flow-dot">L</span>
             <div>
               <div className="side-panel-title">Linear 范围</div>
-              <div className="side-panel-copy">Web 初始化只保存 Team / Project 范围；Linear API Token 仍建议放在 macOS Keychain。</div>
+              <div className="side-panel-copy">当前 Linear 仍以团队平台为事实源；服务端采集默认关闭，这里先保存 Team / Project 范围，为后续启用做准备。</div>
             </div>
           </div>
           <Row gutter={16}>

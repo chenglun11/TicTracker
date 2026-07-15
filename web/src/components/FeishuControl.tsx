@@ -3,6 +3,7 @@ import { Button, Typography, message } from 'antd'
 import { ClockCircleOutlined, SendOutlined } from '@ant-design/icons'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { sendFeishu } from '../api/client'
+import { queryKeys } from '../shared/api/queryKeys'
 import SendHistory from './SendHistory'
 
 const { Text } = Typography
@@ -42,7 +43,7 @@ function FeishuControl({ lastSentTime, cooldownRemain, feishuEnabled }: FeishuCo
     onSuccess: (data) => {
       if (data.success) {
         message.success(data.message || '发送成功')
-        queryClient.invalidateQueries({ queryKey: ['status'] })
+    queryClient.invalidateQueries({ queryKey: queryKeys.status })
       } else {
         message.error(data.message || '发送失败')
       }
@@ -74,7 +75,7 @@ function FeishuControl({ lastSentTime, cooldownRemain, feishuEnabled }: FeishuCo
     <div className="side-panel">
       <div className="side-panel-title">飞书日报</div>
       <div className="side-panel-copy">
-        手动发送和定时发送使用同一份日报快照；重点 Tag 只影响额外分组，不改变完整统计。
+        手动发送和定时发送使用同一份日报快照。切换到 HTTP API 后，发送由服务端配置和调度器负责。
       </div>
 
       <div className="feishu-status-line">

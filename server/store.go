@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -79,12 +80,83 @@ func (s *Store) Update(ctx context.Context, fn func(payload *SyncPayload) error)
 	if err != nil {
 		return err
 	}
+	before, err := s.clonePayload(payload)
+	if err != nil {
+		return err
+	}
 
 	if err := fn(payload); err != nil {
 		return err
 	}
+	preserveRemovedIssueTombstones(before, payload, actorFromContext(ctx))
+	advanceIssueRevisions(before, payload, actorFromContext(ctx))
+	advanceSyncRevision(before, payload)
+	if payload.Revision > before.Revision {
+		payload.LastModifiedBy = actorFromContext(ctx)
+	}
 
 	return s.saveToDiskLocked(payload)
+}
+
+func preserveRemovedIssueTombstones(before, after *SyncPayload, actor string) {
+	current := make(map[string]struct{}, len(after.TrackedIssues))
+	for _, issue := range after.TrackedIssues {
+		current[issue.ID] = struct{}{}
+	}
+	now := FlexTime{Value: time.Now().UTC().Format(time.RFC3339Nano)}
+	for _, old := range before.TrackedIssues {
+		if _, exists := current[old.ID]; exists {
+			continue
+		}
+		if old.DeletedAt != nil {
+			after.TrackedIssues = append(after.TrackedIssues, old)
+			continue
+		}
+		tombstone := old
+		tombstone.Revision = max(old.Revision+1, 1)
+		tombstone.UpdatedAt = &now
+		tombstone.DeletedAt = &now
+		if actor != "" {
+			tombstone.UpdatedBy = &actor
+		}
+		after.TrackedIssues = append(after.TrackedIssues, tombstone)
+	}
+}
+
+func advanceIssueRevisions(before, after *SyncPayload, actor string) {
+	previous := make(map[string]TrackedIssue, len(before.TrackedIssues))
+	for _, issue := range before.TrackedIssues {
+		normalizeIssueMetadata(&issue)
+		previous[issue.ID] = issue
+	}
+	for i := range after.TrackedIssues {
+		issue := &after.TrackedIssues[i]
+		old, existed := previous[issue.ID]
+		if !existed {
+			normalizeIssueMetadata(issue)
+			if actor != "" && issue.UpdatedBy == nil {
+				issue.UpdatedBy = &actor
+			}
+			continue
+		}
+		normalizeIssueMetadata(issue)
+		if issueComparableJSON(old) == issueComparableJSON(*issue) {
+			continue
+		}
+		if issue.Revision <= old.Revision {
+			issue.Revision = old.Revision + 1
+		}
+		if actor != "" {
+			issue.UpdatedBy = &actor
+		}
+	}
+}
+
+func issueComparableJSON(issue TrackedIssue) string {
+	issue.Revision = 0
+	issue.UpdatedBy = nil
+	data, _ := json.Marshal(issue)
+	return string(data)
 }
 
 // ReplaceRaw 用原始 JSON 替换整个文件（用于同步上传）
@@ -98,28 +170,28 @@ func (s *Store) ReplaceRaw(ctx context.Context, data []byte) error {
 	if !json.Valid(data) {
 		return fmt.Errorf("invalid json")
 	}
-	var check struct {
-		LastModified *json.RawMessage `json:"lastModified"`
-	}
-	if err := json.Unmarshal(data, &check); err != nil {
+	var payload SyncPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
 		return fmt.Errorf("invalid json: %w", err)
 	}
-	if check.LastModified == nil {
+	if payload.LastModified == 0 {
 		return fmt.Errorf("lastModified is required")
+	}
+	before, err := s.loadFromDiskLocked()
+	if err != nil {
+		return err
+	}
+	preserveRemovedIssueTombstones(before, &payload, actorFromContext(ctx))
+	advanceIssueRevisions(before, &payload, actorFromContext(ctx))
+	advanceSyncRevision(before, &payload)
+	if payload.Revision > before.Revision {
+		payload.LastModifiedBy = actorFromContext(ctx)
 	}
 
 	// 写入前备份
 	s.autoBackupLocked()
 
-	if err := atomicWrite(s.filePath(), data, 0o600); err != nil {
-		return err
-	}
-
-	// 清除缓存
-	s.cache = nil
-	s.cacheLoaded = false
-
-	return nil
+	return s.saveToDiskLocked(&payload)
 }
 
 // LoadRaw 返回原始 JSON 字节
@@ -145,11 +217,13 @@ func (s *Store) loadFromDiskLocked() (*SyncPayload, error) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, fmt.Errorf("parse sync.json: %w", err)
 	}
+	normalizePayloadIssueMetadata(&payload)
 	return &payload, nil
 }
 
 func (s *Store) saveToDiskLocked(payload *SyncPayload) error {
 	payload.LastModified = float64(time.Now().Unix())
+	normalizePayloadIssueMetadata(payload)
 
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -165,6 +239,41 @@ func (s *Store) saveToDiskLocked(payload *SyncPayload) error {
 	s.cacheLoaded = true
 
 	return nil
+}
+
+func advanceSyncRevision(before, after *SyncPayload) {
+	if after.Revision > before.Revision {
+		return
+	}
+	beforeData, beforeErr := syncComparableJSON(before)
+	afterData, afterErr := syncComparableJSON(after)
+	if beforeErr != nil || afterErr != nil || !bytes.Equal(beforeData, afterData) {
+		after.Revision = before.Revision + 1
+		return
+	}
+	after.Revision = before.Revision
+}
+
+func syncComparableJSON(payload *SyncPayload) ([]byte, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, err
+	}
+	delete(object, "revision")
+	delete(object, "lastModified")
+	delete(object, "lastModifiedBy")
+	if config, ok := object["feishuBotConfig"].(map[string]any); ok {
+		// 这些字段由服务端定时任务维护，不属于用户协作内容。忽略它们可
+		// 避免一次日报发送让正在编辑 Bug 的客户端产生无意义冲突。
+		delete(config, "lastSentTimes")
+		delete(config, "lastSentDateTime")
+		delete(config, "issueMonthlyReportLastSentMonth")
+	}
+	return json.Marshal(object)
 }
 
 // autoBackupLocked 自动备份（每天最多一份），调用方需持有写锁

@@ -29,11 +29,17 @@ port: "9999"
 bind: "127.0.0.1"             # 默认仅本机；要让 LAN 访问需改 "0.0.0.0"（注意安全）
 sync_token: "<openssl rand -base64 32>"
 web_token:  "<openssl rand -base64 32>"
+mcp_access_keys:
+  - key: "<openssl rand -base64 32>"   # 只读 MCP AK
+    permissions: ["read"]
+  - key: "<openssl rand -base64 32>"   # 可写 MCP AK
+    permissions: ["read", "write"]
 data_dir:   "./data"
 database_path: ""                  # 默认 ./data/tictacker.sqlite3
 sqlite_bin: "sqlite3"              # 运行环境需提供 sqlite3 可执行文件
 default_workspace_name: "Default Workspace"
 max_body_bytes: 10485760      # 请求体上限（DoS 防护），默认 10MB
+linear_api_token: ""          # MCP create_linear_issue 需要；推荐使用 LINEAR_API_TOKEN 环境变量
 
 # 飞书事件回调安全（强烈建议配置；否则 /feishu/event 与 /feishu/card 仅做时间窗口和去重）
 feishu_verification_token: ""
@@ -123,24 +129,68 @@ chmod -R go-rwx server/data/          # 备份和 sync.json 不让其他用户�
 
 **`sync_token`** 用于：
 - `GET /sync` / `POST /sync` — macOS 客户端整体同步
+- `GET /sync/v2/events?after=<cursor>` — 按游标读取 Issue/成员协作事件
+- `PUT /sync/v2/issues/:id` — 带 `If-Match` 和 `Idempotency-Key` 的 Issue 条件写入
+- `DELETE /sync/v2/issues/:id` — 带 `If-Match` 和 `Idempotency-Key` 的 Issue 墓碑删除
+
+`GET /sync` 会在响应体和响应头中返回当前 workspace 修订号：
+
+```text
+ETag: "42"
+X-Sync-Revision: 42
+```
+
+`POST /sync` 必须带上最近一次读取到的修订号，例如 `If-Match: "42"`。提交成功后修订号递增；如果线上已被 Web 或其他客户端修改，返回 `409 Conflict` 和最新 revision。未携带条件头的旧客户端返回 `428 Precondition Required`，不会覆盖线上数据。macOS 客户端还会发送稳定的 `X-Client-ID`，服务端通过 `lastModifiedBy` 记录最后修改来源；Web Session 则记录登录用户名。
 
 **`web_token`** 用于（同时挂在 `/api/*` 和 `/api/v1/*` 两个版本下，等价）：
 - `GET /api/v1/status` — 状态/统计
+- `GET /api/v1/sync/meta` — 当前 revision 和最后更新时间，用于多端变更探测
 - `GET /api/v1/issues` — 工单列表
 - `PATCH /api/v1/issues/:id` — 编辑工单
 - `POST /api/v1/issues` — 新建工单
 - `DELETE /api/v1/issues/:id` — 删除工单
 - `POST /api/v1/issues/:id/comments` — 加评论
 - `POST /api/v1/feishu/send` — 立即推送日报到飞书
+- `POST /api/v1/feishu/send/issue-monthly?period=current|previous` — 立即推送问题追踪月报到飞书
+
+登录后的 Web Session 还可以访问：
+
+- `GET /api/v1/auth/me` / `POST /api/v1/auth/logout` — 当前成员身份和会话注销
+- `GET /api/v1/events` / `GET /api/v1/events/stream?after=<cursor>` — 事件补偿和 SSE 实时通知
+- `GET /api/v1/members` — 成员列表（viewer/member 可读）
+- `POST /api/v1/members`、`PATCH /api/v1/members/:username` — 成员与角色管理（仅 admin）
+
+Issue 条件写入约定：更新、删除、评论和认领都必须携带当前 `revision` 的 `If-Match: "<revision>"`。冲突返回 `409`，响应中带 `code` 和 `current`，客户端应让用户选择采用线上版本或基于最新版本重试。增量写入必须提供唯一 `Idempotency-Key`，重复请求只返回第一次写入结果，不会重复推进 revision。
+
+**`mcp_access_keys`** 用于：
+- `POST /mcp` / `POST /mcp/v1` — MCP JSON-RPC over HTTP
+- Header 支持 `X-TicTracker-AK: <ak>`、`X-API-Key: <ak>` 或 `Authorization: Bearer <ak>`
+- `permissions: ["read"]` 只能读取工具；`permissions: ["read", "write"]` 才能新增/更新问题与创建 Linear 问题
+
+MCP 工具：
+| 工具 | 权限 | 说明 |
+|------|------|------|
+| `tictacker.get_status` | read | 读取今日计数、问题状态统计和部门 |
+| `tictacker.list_issues` | read | 读取问题追踪列表，支持 `status` 与 `limit` |
+| `tictacker.create_issue` | write | 新增本地问题追踪记录 |
+| `tictacker.update_issue_status` | write | 更新问题状态 |
+| `tictacker.add_issue_comment` | write | 给问题追加备注 |
+| `tictacker.create_linear_issue` | write | 调用 Linear GraphQL 创建 issue，并把 Linear 绑定写入本地问题追踪 |
+
+`tictacker.create_linear_issue` 需要配置 `linear_api_token` 或环境变量 `LINEAR_API_TOKEN`。Team / Project / 默认负责人优先从工具参数读取，未传时回退到当前 workspace 的 `linearConfig`。
 
 ---
 
 ## 数据存储
 
 - `data/tictacker.sqlite3` — 服务端主数据，包含 workspaces、issues、comments、tags、external bindings、Feishu 配置与发送记录
+- `data/backups/migrations/` — 启动迁移前的 SQLite `VACUUM INTO` 备份，默认保留 30 天
 - `data/sync.json` — 旧客户端兼容输入；启动时首次自动导入 SQLite，不再作为主存储
 - `data/backups/sync_legacy_import_*.json` — 旧 `sync.json` 导入备份
-- `GET /sync` — 从 SQLite 导出旧 `SyncPayload` 格式，供旧 macOS 客户端继续使用
+- `GET /sync` — 从 SQLite 导出带 revision 的 `SyncPayload`
+- `POST /sync` — 使用 `If-Match` 条件写入，线上版本冲突时拒绝覆盖
+
+服务启动时会先创建迁移前备份，再执行 schema 迁移；迁移失败会终止启动，不会继续以半迁移状态提供写服务。发布演练应验证：备份文件可被 `sqlite3` 打开、从备份恢复后 `go test ./...` 仍通过，并确认备份目录和 Token/config 文件权限为 `0700/0600`。
 
 ---
 
@@ -149,6 +199,7 @@ chmod -R go-rwx server/data/          # 备份和 sync.json 不让其他用户�
 | 措施 | 位置 |
 |------|------|
 | Token 常量时间比较（防 timing attack） | `middleware.go: AuthMiddleware` |
+| MCP 全局 AK 常量时间比较 + read/write 分权 | `mcp.go` |
 | 飞书事件 HMAC-SHA256 签名 + AES-256-CBC 解密 + 时间窗口 ±5 分钟 + verification_token | `feishu_verify.go: FeishuVerifyMiddleware` |
 | event_id 去重（5 分钟 TTL） | `feishu_verify.go: eventDedup` |
 | 全局请求体大小上限 | `main.go` (`http.MaxBytesReader`) |
@@ -171,7 +222,7 @@ go test -race ./...       # 并发竞态检测
 go build -o tictacker-server .
 ```
 
-测试覆盖：Store 原子性/并发/权限/拷贝、SQLite legacy import、token 租户隔离、`/sync` 到 Web API 兼容链路、FlexTime 反序列化、状态常量稳定性、飞书签名校验、event_id 去重、merge 逻辑。
+测试覆盖：Store 原子性/并发/权限/拷贝、SQLite legacy import、token 租户隔离、`/sync` 到 Web API 兼容链路、revision 初始化、过期快照拒绝、线上修改保护、FlexTime 反序列化、状态常量稳定性、飞书签名校验和 event_id 去重。
 
 ---
 

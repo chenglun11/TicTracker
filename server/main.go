@@ -56,6 +56,9 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	linearClient := NewLinearClient(cfg)
+	RegisterMCPRoutes(r, cfg, store, linearClient)
+
 	// 前端静态资源（无需认证）
 	ServeWeb(r)
 
@@ -63,6 +66,10 @@ func main() {
 	sync := r.Group("/", WorkspaceAuthMiddleware(store, "sync", cfg.SyncAccessToken()))
 	sync.GET("/sync", HandleGetSync(store))
 	sync.POST("/sync", HandlePostSync(store))
+	syncV2 := r.Group("/sync/v2", WorkspaceAuthMiddleware(store, "sync", cfg.SyncAccessToken()))
+	syncV2.GET("/events", HandleGetCollaborationEvents(store))
+	syncV2.PUT("/issues/:id", RequireIdempotencyKey(), HandleSyncUpsertIssue(store))
+	syncV2.DELETE("/issues/:id", RequireIdempotencyKey(), HandleSyncDeleteIssue(store))
 
 	// 飞书应用回调
 	feishuApp := NewFeishuApp(cfg, store)
@@ -97,17 +104,36 @@ func main() {
 	registerPublicAuth(publicAPIV1)
 
 	registerWebAPI := func(group *gin.RouterGroup) {
-		group.GET("/status", HandleGetStatus(store))
-		group.GET("/setup", HandleGetSetup(store))
-		group.PUT("/setup", HandlePutSetup(store))
-		group.GET("/issues", HandleGetIssues(store))
-		group.GET("/feishu/tasks", HandleListFeishuTasks(store, feishuTask))
-		group.GET("/feishu/tasks/test", HandleTestFeishuTasks(store, feishuTask))
-		group.POST("/feishu/send", HandleSendFeishu(store))
-		group.PATCH("/issues/:id", HandleUpdateIssue(store, feishuTask))
-		group.POST("/issues/:id/comments", HandleAddComment(store))
-		group.POST("/issues", HandleCreateIssue(store, feishuTask))
-		group.DELETE("/issues/:id", HandleDeleteIssue(store))
+		read := RequireRoles(RoleAdmin, RoleMember, RoleViewer)
+		write := RequireRoles(RoleAdmin, RoleMember)
+		admin := RequireRoles(RoleAdmin)
+		group.GET("/auth/me", read, HandleGetCurrentUser())
+		group.POST("/auth/password", read, HandleChangePassword(store))
+		group.POST("/auth/logout", read, HandleAuthLogout(store))
+		group.GET("/status", read, HandleGetStatus(store))
+		group.GET("/sync/meta", read, HandleGetSyncMeta(store))
+		group.GET("/sync/status", read, HandleGetSyncAdminStatus(store))
+		group.GET("/linear/sync-status", read, HandleLinearSyncStatus(cfg))
+		group.POST("/sync/token/rotate", admin, HandleRotateSyncToken(store))
+		group.GET("/events", read, HandleGetCollaborationEvents(store))
+		group.GET("/events/stream", read, HandleStreamCollaborationEvents(store))
+		group.GET("/setup", read, HandleGetSetup(store))
+		group.PUT("/setup", admin, HandlePutSetup(store))
+		group.GET("/members", read, HandleListMembers(store))
+		group.POST("/members", admin, HandleCreateMember(store))
+		group.PATCH("/members/:username", admin, HandleUpdateMember(store))
+		group.GET("/issues", read, HandleGetIssues(store))
+		group.GET("/feishu/tasks", read, HandleListFeishuTasks(store, feishuTask))
+		group.GET("/feishu/tasks/test", admin, HandleTestFeishuTasks(store, feishuTask))
+		group.POST("/feishu/send", write, HandleSendFeishu(store))
+		group.POST("/feishu/send/issue-monthly", write, HandleSendIssueMonthlyFeishu(store))
+		// 成员可以提交新的 Issue；已有 Issue 的状态、负责人、评论和删除
+		// 由管理员维护，后续接入 Linear write-back 后再细分到 Linear 权限。
+		group.PATCH("/issues/:id", admin, HandleUpdateIssue(store, feishuTask))
+		group.POST("/issues/:id/claim", admin, HandleClaimIssue(store))
+		group.POST("/issues/:id/comments", admin, HandleAddComment(store))
+		group.POST("/issues", write, HandleCreateIssue(store, feishuTask))
+		group.DELETE("/issues/:id", admin, HandleDeleteIssue(store))
 	}
 
 	api := r.Group("/api", WorkspaceAuthMiddleware(store, "web", cfg.WebAccessToken()))
