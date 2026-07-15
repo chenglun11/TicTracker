@@ -13,5 +13,7 @@ server/tictacker-server
 web/node_modules/
 node_modules/
 dist/
+!server/web/dist/
+!server/web/dist/**
 src-tauri/target/
 src-tauri/gen/
