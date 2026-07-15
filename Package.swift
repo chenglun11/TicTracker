@@ -11,6 +11,9 @@ let package = Package(
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
                 .unsafeFlags(["-warnings-as-errors"]),
+            ],
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
             ]
         )
     ]

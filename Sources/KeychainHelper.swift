@@ -1,11 +1,13 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 private final class KeychainCache: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: Data] = [:]
     private var serviceStorage: [String: [String: Data]] = [:]
     private var loadedServices: Set<String> = []
+    private var bundle: [String: [String: Data]]?
 
     private func cacheKey(service: String, account: String) -> String {
         "\(service)::\(account)"
@@ -45,6 +47,25 @@ private final class KeychainCache: @unchecked Sendable {
         lock.unlock()
     }
 
+    func getBundle() -> [String: [String: Data]]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return bundle
+    }
+
+    func setBundle(_ items: [String: [String: Data]]) {
+        lock.lock()
+        bundle = items
+        for (service, accounts) in items {
+            loadedServices.insert(service)
+            serviceStorage[service] = accounts
+            for (account, data) in accounts {
+                storage[cacheKey(service: service, account: account)] = data
+            }
+        }
+        lock.unlock()
+    }
+
     func remove(service: String, account: String) {
         lock.lock()
         storage.removeValue(forKey: cacheKey(service: service, account: account))
@@ -60,6 +81,7 @@ private final class KeychainCache: @unchecked Sendable {
 enum KeychainHelper {
     static let service = "com.tictracker.keychain"
     static let account = "api-token"
+    private static let bundleAccount = "credential-bundle"
     private static let migrationFlagKey = "keychainMigrationDone"
     private static let cache = KeychainCache()
     private static let legacyServiceAccounts: [String: Set<String>] = [
@@ -82,6 +104,12 @@ enum KeychainHelper {
 
     @discardableResult
     static func save(service: String = service, account: String = account, data: Data) -> Bool {
+        if saveToBundle(service: service, account: account, data: data) {
+            cache.set(service: service, account: account, data: data)
+            removeLegacyMirrorDirectory()
+            return true
+        }
+
         let lookup: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -118,11 +146,15 @@ enum KeychainHelper {
         if cache.get(service: service, account: account) != nil {
             return true
         }
+        if bundledData(service: service, account: account) != nil {
+            return true
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
         ]
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
@@ -132,7 +164,13 @@ enum KeychainHelper {
             return cached
         }
 
-        if let data = loadDirect(service: service, account: account) {
+        if let data = bundledData(service: service, account: account) {
+            cache.set(service: service, account: account, data: data)
+            return data
+        }
+
+        if let data = loadDirect(service: service, account: account, allowAuthenticationUI: false) {
+            cache.set(service: service, account: account, data: data)
             return data
         }
 
@@ -145,14 +183,20 @@ enum KeychainHelper {
         return nil
     }
 
-    private static func loadDirect(service: String, account: String) -> Data? {
-        let query: [String: Any] = [
+    private static func loadDirect(service: String, account: String, allowAuthenticationUI: Bool = false, context: LAContext? = nil) -> Data? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+        if let context {
+            query[kSecUseAuthenticationContext as String] = context
+        }
+        if !allowAuthenticationUI {
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
+        }
         var result: AnyObject?
         if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
            let data = result as? Data {
@@ -168,7 +212,12 @@ enum KeychainHelper {
             return cached
         }
 
-        let (status, dict) = loadAllDirect(service: service)
+        if let bundled = bundledItems()[service] {
+            cache.setAll(service: service, items: bundled)
+            return bundled
+        }
+
+        let (status, dict) = loadAllDirect(service: service, allowAuthenticationUI: false)
         if status == errSecSuccess {
             cache.setAll(service: service, items: dict)
         } else if status == errSecItemNotFound {
@@ -178,14 +227,20 @@ enum KeychainHelper {
         return dict
     }
 
-    private static func loadAllDirect(service: String) -> (OSStatus, [String: Data]) {
-        let query: [String: Any] = [
+    private static func loadAllDirect(service: String, allowAuthenticationUI: Bool = false, context: LAContext? = nil) -> (OSStatus, [String: Data]) {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecReturnAttributes as String: true,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitAll,
         ]
+        if let context {
+            query[kSecUseAuthenticationContext as String] = context
+        }
+        if !allowAuthenticationUI {
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
+        }
         var dict: [String: Data] = [:]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -209,12 +264,12 @@ enum KeychainHelper {
     }
 
     private static func migrateLegacyService(_ legacyService: String, to targetService: String) -> [String: Data] {
-        let (status, items) = loadAllDirect(service: legacyService)
+        let (status, items) = loadAllDirect(service: legacyService, allowAuthenticationUI: false)
         guard status == errSecSuccess, !items.isEmpty else { return [:] }
 
         var migrated: [String: Data] = [:]
         for (account, data) in items {
-            if let existing = loadDirect(service: targetService, account: account) {
+            if let existing = loadDirect(service: targetService, account: account, allowAuthenticationUI: false) {
                 migrated[account] = existing
                 delete(service: legacyService, account: account)
                 continue
@@ -228,11 +283,13 @@ enum KeychainHelper {
     }
 
     static func warmUpAccess() {
-        _ = loadAll(service: service)
-        _ = loadAll(service: "com.tictracker.sync")
+        // Do not touch Keychain on launch. macOS may ask once per legacy item
+        // when app access has not been granted, so migration must not run
+        // implicitly at startup.
     }
 
     static func delete(service: String = service, account: String = account) {
+        _ = removeFromBundle(service: service, account: account)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -241,6 +298,103 @@ enum KeychainHelper {
         SecItemDelete(query as CFDictionary)
         cache.remove(service: service, account: account)
         removeLegacyMirrorDirectory()
+    }
+
+    private static func bundledData(service: String, account: String) -> Data? {
+        bundledItems()[service]?[account]
+    }
+
+    private static func bundledItems(context: LAContext? = nil) -> [String: [String: Data]] {
+        if let cached = cache.getBundle() {
+            return cached
+        }
+
+        guard let data = loadBundleDirect(context: context),
+              let bundle = try? JSONDecoder().decode([String: [String: Data]].self, from: data) else {
+            cache.setBundle([:])
+            return [:]
+        }
+        cache.setBundle(bundle)
+        removeLegacyMirrorDirectory()
+        return bundle
+    }
+
+    private static func saveToBundle(service: String, account: String, data: Data) -> Bool {
+        guard account != bundleAccount else {
+            return saveDirect(service: service, account: account, data: data)
+        }
+        var bundle = bundledItems()
+        var accounts = bundle[service] ?? existingDirectItems(service: service)
+        accounts[account] = data
+        bundle[service] = accounts
+        return saveBundle(bundle)
+    }
+
+    private static func removeFromBundle(service: String, account: String) -> Bool {
+        guard account != bundleAccount else { return true }
+        var bundle = bundledItems()
+        guard var accounts = bundle[service], accounts[account] != nil else {
+            return true
+        }
+        accounts.removeValue(forKey: account)
+        if accounts.isEmpty {
+            bundle.removeValue(forKey: service)
+        } else {
+            bundle[service] = accounts
+        }
+        return saveBundle(bundle)
+    }
+
+    private static func saveBundle(_ bundle: [String: [String: Data]], context: LAContext? = nil) -> Bool {
+        guard let data = try? JSONEncoder().encode(bundle),
+              saveDirect(service: service, account: bundleAccount, data: data, context: context) else {
+            return false
+        }
+        cache.setBundle(bundle)
+        removeLegacyMirrorDirectory()
+        return true
+    }
+
+    private static func loadBundleDirect(context: LAContext? = nil) -> Data? {
+        loadDirect(service: service, account: bundleAccount, allowAuthenticationUI: true, context: context)
+    }
+
+    private static func existingDirectItems(service: String) -> [String: Data] {
+        let (status, items) = loadAllDirect(service: service, allowAuthenticationUI: false)
+        return status == errSecSuccess ? items : [:]
+    }
+
+    @discardableResult
+    private static func saveDirect(service: String, account: String, data: Data, context: LAContext? = nil) -> Bool {
+        let lookup: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let attributes: [String: Any] = [
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecValueData as String: data,
+        ]
+
+        var updateLookup = lookup
+        if let context {
+            updateLookup[kSecUseAuthenticationContext as String] = context
+        }
+        let updateStatus = SecItemUpdate(updateLookup as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return true
+        }
+
+        guard updateStatus == errSecItemNotFound else {
+            return false
+        }
+
+        var addQuery = lookup
+        addQuery.merge(attributes) { _, new in new }
+        if let context {
+            addQuery[kSecUseAuthenticationContext as String] = context
+        }
+        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
 
     /// 将旧 service 下所有 account 迁移到新 service，只在首次启动时调用

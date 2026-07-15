@@ -446,7 +446,7 @@ struct MenuBarView: View {
     @ViewBuilder
     private var issueTrackerSection: some View {
         let issues = store.issuesVisibleForKey(selectedKey)
-        let unresolved = issues.filter { !$0.status.isResolved && $0.status != .observing }
+        let unresolved = issues.filter { !$0.isEffectivelyResolved && $0.effectiveStatus != .observing }
         let grouped = Dictionary(grouping: unresolved, by: \.type)
 
         VStack(alignment: .leading, spacing: 6) {
@@ -582,9 +582,9 @@ struct MenuBarView: View {
                     .disabled(issue.status == status)
                 }
             } label: {
-                Image(systemName: issue.status.icon)
+                Image(systemName: issue.displayStatusIcon)
                     .font(.caption)
-                    .foregroundStyle(issue.status.isResolved ? .green.opacity(0.7) : .orange.opacity(0.7))
+                    .foregroundStyle(issue.isEffectivelyResolved ? .green.opacity(0.7) : .orange.opacity(0.7))
             }
             .menuIndicator(.hidden)
             .fixedSize()

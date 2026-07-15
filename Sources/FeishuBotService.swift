@@ -106,6 +106,8 @@ final class FeishuBotService {
                 DevLog.shared.error("FeishuBot", "补发 \(scheduleTime.key) 失败: \(result.message)")
             }
         }
+
+        await catchUpMissedIssueMonthlyReport(now: now)
     }
 
     // MARK: - Scheduler
@@ -184,12 +186,71 @@ final class FeishuBotService {
             }
             break  // 同一轮只处理一次，避免多个补发时间点连续发送
         }
+
+        await checkAndSendIssueMonthlyReport(now: now)
     }
 
     private func isScheduleDue(_ scheduleTime: ScheduleTime, currentHour: Int, currentMinute: Int) -> Bool {
         let current = currentHour * 60 + currentMinute
         let scheduled = scheduleTime.hour * 60 + scheduleTime.minute
         return current >= scheduled
+    }
+
+    private func checkAndSendIssueMonthlyReport(now: Date) async {
+        guard let store, store.feishuBotConfig.enabled else { return }
+        guard let monthKey = issueMonthlyReportDueMonth(now: now, config: store.feishuBotConfig) else { return }
+        guard store.feishuBotConfig.issueMonthlyReportLastSentMonth != monthKey else { return }
+
+        let failureKey = "issue-monthly:\(monthKey)"
+        if let failedAt = schedulerFailureAt[failureKey],
+           now.timeIntervalSince(failedAt) < schedulerFailureCooldown {
+            return
+        }
+
+        let result = await sendIssueTrackingReportDirect(store: store, period: .previousMonth, scheduledMonthKey: monthKey)
+        if result.success {
+            store.feishuBotConfig.issueMonthlyReportLastSentMonth = monthKey
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            store.feishuBotConfig.lastSentDateTime = fmt.string(from: now)
+            schedulerFailureAt.removeValue(forKey: failureKey)
+            DevLog.shared.info("FeishuBot", "问题月报定时发送成功 [month=\(monthKey)]")
+        } else {
+            schedulerFailureAt[failureKey] = now
+            DevLog.shared.error("FeishuBot", "问题月报定时发送失败 [month=\(monthKey)]: \(result.message)")
+        }
+    }
+
+    private func catchUpMissedIssueMonthlyReport(now: Date) async {
+        guard let store, store.feishuBotConfig.enabled else { return }
+        guard let monthKey = issueMonthlyReportDueMonth(now: now, config: store.feishuBotConfig) else { return }
+        guard store.feishuBotConfig.issueMonthlyReportLastSentMonth != monthKey else { return }
+        DevLog.shared.info("FeishuBot", "补发错过的问题月报 [month=\(monthKey)]")
+        let result = await sendIssueTrackingReportDirect(store: store, period: .previousMonth, scheduledMonthKey: monthKey)
+        if result.success {
+            store.feishuBotConfig.issueMonthlyReportLastSentMonth = monthKey
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            store.feishuBotConfig.lastSentDateTime = fmt.string(from: now)
+            DevLog.shared.info("FeishuBot", "补发问题月报成功 [month=\(monthKey)]")
+        } else {
+            DevLog.shared.error("FeishuBot", "补发问题月报失败 [month=\(monthKey)]: \(result.message)")
+        }
+    }
+
+    private func issueMonthlyReportDueMonth(now: Date, config: FeishuBotConfig) -> String? {
+        guard config.issueMonthlyReportEnabled else { return nil }
+        let calendar = Calendar.current
+        let dayCount = calendar.range(of: .day, in: .month, for: now)?.count ?? 31
+        let sendDay = min(max(config.issueMonthlyReportDay, 1), dayCount)
+        let day = calendar.component(.day, from: now)
+        let minuteOfDay = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
+        let scheduledMinute = config.issueMonthlyReportHour * 60 + config.issueMonthlyReportMinute
+        guard day > sendDay || (day == sendDay && minuteOfDay >= scheduledMinute) else { return nil }
+        guard let targetMonthDate = calendar.date(byAdding: .month, value: -1, to: now) else { return nil }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM"
+        return fmt.string(from: targetMonthDate)
     }
 
     private func syncIssuesBeforeScheduledSendIfNeeded(
@@ -213,8 +274,14 @@ final class FeishuBotService {
     private func syncIssueSourcesBeforeReport(reason: String, force: Bool) async {
         guard let store else { return }
         if issuePreSyncInProgress {
-            DevLog.shared.info("FeishuBot", "\(reason)：已有问题同步正在进行，跳过")
-            return
+            guard force else {
+                DevLog.shared.info("FeishuBot", "\(reason)：已有问题同步正在进行，跳过")
+                return
+            }
+            DevLog.shared.info("FeishuBot", "\(reason)：已有问题同步正在进行，等待完成")
+            while issuePreSyncInProgress {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
         }
         if !force,
            let lastIssuePreSyncAt,
@@ -314,6 +381,14 @@ final class FeishuBotService {
     func sendNow(store: DataStore) async -> (success: Bool, message: String) {
         // httpAPI 模式优先委托服务器；服务不可用时回退到本地直发
         if SyncManager.shared.config.enabled && SyncManager.shared.config.backend == .httpAPI {
+            await syncIssueSourcesBeforeReport(reason: "飞书服务端发送前同步", force: true)
+            guard await syncDataToServerBeforeSendIfNeeded(store: store, reason: "飞书服务端发送前上传") else {
+                let localResult = await sendDirectNow(store: store)
+                if localResult.success {
+                    return (true, "服务器同步失败，已切换本地直发")
+                }
+                return (false, "服务器同步失败；本地直发也失败：\(localResult.message)")
+            }
             let serverResult = await self.sendViaServer()
             if serverResult.success { return serverResult }
 
@@ -339,15 +414,52 @@ final class FeishuBotService {
         return await sendDirectNow(store: store)
     }
 
+    /// 手动发送问题追踪月报；HTTP API 模式优先委托服务器。
+    func sendIssueTrackingReportNow(store: DataStore, period: WeeklyReport.Period = .currentMonth) async -> (success: Bool, message: String) {
+        if SyncManager.shared.config.enabled && SyncManager.shared.config.backend == .httpAPI {
+            await syncIssueSourcesBeforeReport(reason: "问题月报服务端发送前同步", force: true)
+            guard await syncDataToServerBeforeSendIfNeeded(store: store, reason: "问题月报服务端发送前上传") else {
+                let localResult = await sendIssueTrackingReportDirect(store: store, period: period)
+                if localResult.success {
+                    return (true, "服务器同步失败，已切换本地直发问题月报")
+                }
+                return (false, "服务器同步失败；本地直发也失败：\(localResult.message)")
+            }
+            let serverResult = await sendIssueTrackingReportViaServer(period: period)
+            if serverResult.success { return serverResult }
+
+            if shouldFallbackToLocalSend(message: serverResult.message) {
+                let localResult = await sendIssueTrackingReportDirect(store: store, period: period)
+                if localResult.success {
+                    return (true, "服务器不可用，已切换本地直发问题月报")
+                }
+                return (false, "服务器不可用；本地直发也失败：\(localResult.message)")
+            }
+            return serverResult
+        }
+        return await sendIssueTrackingReportDirect(store: store, period: period)
+    }
+
     /// 本地直发飞书，不依赖同步服务器
     func sendDirectNow(store: DataStore) async -> (success: Bool, message: String) {
         guard !store.feishuBotConfig.webhooks.isEmpty else {
             return (false, "Webhook URL 为空")
         }
-        await syncIssueSourcesBeforeReport(reason: "飞书发送前同步", force: false)
+        await syncIssueSourcesBeforeReport(reason: "飞书发送前同步", force: true)
         let result = await sendReportOnce(store: store)
         addHistory(store: store, success: result.success, message: result.message, retryCount: 0)
         return result
+    }
+
+    private func shouldFallbackToLocalSend(message: String) -> Bool {
+        let lowered = message.lowercased()
+        return message.contains("网络错误") ||
+            message.contains("无效的服务器 URL") ||
+            message.contains("无效的响应") ||
+            lowered.contains("could not connect to the server") ||
+            lowered.contains("cannot connect to host") ||
+            lowered.contains("network is unreachable") ||
+            lowered.contains("timed out")
     }
 
     private func ensureSecretsMigrated(store: DataStore) {
@@ -435,8 +547,49 @@ final class FeishuBotService {
         }
     }
 
+    private func sendIssueTrackingReportViaServer(period: WeeklyReport.Period) async -> (success: Bool, message: String) {
+        let syncConfig = SyncManager.shared.config
+        let serverURL = syncConfig.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let periodValue = (period == .previousMonth || period == .previousWeek) ? "previous" : "current"
+        guard let url = URL(string: "\(serverURL)/api/feishu/send/issue-monthly?period=\(periodValue)") else {
+            DevLog.shared.error("FeishuBot", "服务端问题月报发送失败：无效的服务器 URL [raw=\(syncConfig.serverURL)]")
+            return (false, "无效的服务器 URL")
+        }
+
+        let webToken = SyncManager.shared.loadWebPortalToken().trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = webToken.isEmpty ? SyncManager.shared.loadCredential() : webToken
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return (false, "无效的响应")
+            }
+            let responseText = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            DevLog.shared.info("FeishuBot", "服务端问题月报发送响应 [status=\(http.statusCode), body=\(responseText.prefix(300))]")
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let success = json["success"] as? Bool ?? false
+                let message = json["message"] as? String ?? "未知响应"
+                if success {
+                    if let store = self.store {
+                        addHistory(store: store, success: true, message: "通过服务器发送问题月报成功", retryCount: 0)
+                    }
+                    return (true, message)
+                }
+                return (false, message)
+            }
+            return (false, "响应解析失败")
+        } catch {
+            DevLog.shared.error("FeishuBot", "服务端问题月报发送网络错误：\(error.localizedDescription)")
+            return (false, "网络错误: \(error.localizedDescription)")
+        }
+    }
+
     private func sendReport(store: DataStore) async -> (success: Bool, message: String) {
-        await syncIssueSourcesBeforeReport(reason: "飞书定时发送前兜底同步", force: false)
+        await syncIssueSourcesBeforeReport(reason: "飞书定时发送前兜底同步", force: true)
 
         var retryCount = 0
         var lastError = ""
@@ -472,16 +625,51 @@ final class FeishuBotService {
     private func sendReportOnce(store: DataStore) async -> (success: Bool, message: String) {
         ensureSecretsMigrated(store: store)
         var payload = generateDailyReport(store: store)
+        if let imageKey = await uploadReportImageIfNeeded(store: store) {
+            attachReportImage(imageKey: imageKey, to: &payload)
+        }
+        return await sendPayloadToEnabledWebhooks(payload, store: store, successLabel: "日报")
+    }
+
+    private func sendIssueTrackingReportDirect(store: DataStore, period: WeeklyReport.Period, scheduledMonthKey: String? = nil) async -> (success: Bool, message: String) {
+        guard !store.feishuBotConfig.webhooks.isEmpty else {
+            return (false, "Webhook URL 为空")
+        }
+        ensureSecretsMigrated(store: store)
+        await syncIssueSourcesBeforeReport(reason: "问题月报发送前同步", force: true)
+        var payload = generateIssueTrackingCardReport(store: store, period: period)
+        if let imageKey = await uploadIssueTrackingReportImageIfNeeded(store: store, period: period) {
+            attachReportImage(imageKey: imageKey, to: &payload)
+        }
+        let result = await sendPayloadToEnabledWebhooks(payload, store: store, successLabel: "问题月报")
+        addHistory(store: store, success: result.success, message: result.message, retryCount: 0)
+        if result.success, let scheduledMonthKey {
+            store.feishuBotConfig.issueMonthlyReportLastSentMonth = scheduledMonthKey
+        }
+        return result
+    }
+
+    private func syncDataToServerBeforeSendIfNeeded(store: DataStore, reason: String) async -> Bool {
+        guard SyncManager.shared.config.enabled,
+              SyncManager.shared.config.backend == .httpAPI else { return true }
+        DevLog.shared.info("FeishuBot", "\(reason)：开始同步本地数据到服务器")
+        do {
+            try await SyncManager.shared.uploadCurrentSnapshot(store: store)
+            DevLog.shared.info("FeishuBot", "\(reason)：本地数据同步完成")
+            return true
+        } catch {
+            DevLog.shared.error("FeishuBot", "\(reason)：同步失败，停止服务端发送：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func sendPayloadToEnabledWebhooks(_ payload: [String: Any], store: DataStore, successLabel: String) async -> (success: Bool, message: String) {
         let webhooks = store.feishuBotConfig.webhooks.filter {
             $0.enabled && !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
         guard !webhooks.isEmpty else {
             return (false, "没有启用的 Webhook")
-        }
-
-        if let imageKey = await uploadReportImageIfNeeded(store: store) {
-            attachReportImage(imageKey: imageKey, to: &payload)
         }
 
         var successCount = 0
@@ -533,7 +721,7 @@ final class FeishuBotService {
                     let code = json["StatusCode"] as? Int ?? json["code"] as? Int
                     if code == 0 {
                         successCount += 1
-                        DevLog.shared.info("FeishuBot", "日报发送成功: \(trimmedURL)")
+                        DevLog.shared.info("FeishuBot", "\(successLabel)发送成功: \(trimmedURL)")
                         continue
                     }
                     let msg = json["StatusMessage"] as? String ?? json["msg"] as? String ?? "未知错误"
@@ -551,10 +739,10 @@ final class FeishuBotService {
         }
 
         if successCount == webhooks.count {
-            return (true, successCount == 1 ? "发送成功" : "发送成功（\(successCount) 个地址）")
+            return (true, successCount == 1 ? "\(successLabel)发送成功" : "\(successLabel)发送成功（\(successCount) 个地址）")
         }
         if successCount > 0 {
-            return (true, "部分发送成功（\(successCount)/\(webhooks.count)）")
+            return (true, "\(successLabel)部分发送成功（\(successCount)/\(webhooks.count)）")
         }
         return (false, failureMessages.first ?? "发送失败")
     }
@@ -593,6 +781,22 @@ final class FeishuBotService {
             return try await uploadImage(pngData, tenantAccessToken: token)
         } catch {
             DevLog.shared.warn("FeishuBot", "可视化报表图上传失败，跳过附图：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func uploadIssueTrackingReportImageIfNeeded(store: DataStore, period: WeeklyReport.Period) async -> String? {
+        guard store.feishuBotConfig.issueMonthlyReportIncludeImage else { return nil }
+        guard let pngData = await ReportVisualRenderer.issueTrackingPNGData(store: store, period: period) else {
+            DevLog.shared.warn("FeishuBot", "问题月报图生成失败，跳过附图")
+            return nil
+        }
+
+        do {
+            let token = try await tenantAccessToken(store: store)
+            return try await uploadImage(pngData, tenantAccessToken: token)
+        } catch {
+            DevLog.shared.warn("FeishuBot", "问题月报图上传失败，跳过附图：\(error.localizedDescription)")
             return nil
         }
     }
@@ -707,6 +911,7 @@ final class FeishuBotService {
         let newIssues: [TrackedIssue]
         let resolvedToday: [TrackedIssue]
         let pending: [TrackedIssue]
+        let inProgress: [TrackedIssue]
         let scheduled: [TrackedIssue]
         let testing: [TrackedIssue]
         let observing: [TrackedIssue]
@@ -720,6 +925,30 @@ final class FeishuBotService {
         let jiraServerURL: String
     }
 
+    private struct IssueMonthlyReportData {
+        let title: String
+        let subtitle: String
+        let comparisonSubtitle: String
+        let issues: [TrackedIssue]
+        let openIssues: [TrackedIssue]
+        let resolvedIssues: [TrackedIssue]
+        let createdTotal: Int
+        let updatedTotal: Int
+        let resolvedTotal: Int
+        let previousCreatedTotal: Int
+        let previousResolvedTotal: Int
+        let previousOpenTotal: Int
+        let previousStaleTotal: Int
+        let closureRate: Int
+        let previousClosureRate: Int
+        let staleOpenIssues: [TrackedIssue]
+        let unassignedOpenIssues: [TrackedIssue]
+        let typeTotals: [(String, Int)]
+        let statusTotals: [(String, Int)]
+        let assigneeTotals: [(String, Int)]
+        let analysisNotes: [String]
+    }
+
     private func collectReportData(store: DataStore) -> ReportData {
         let config = store.feishuBotConfig
         let todayKey = store.todayKey
@@ -727,15 +956,16 @@ final class FeishuBotService {
         let focusTag = config.focusIssueTag.trimmingCharacters(in: .whitespacesAndNewlines)
         return ReportData(
             todayKey: todayKey,
-            newIssues: allIssues.filter { $0.dateKey == todayKey && !$0.status.isResolved },
+            newIssues: allIssues.filter { $0.dateKey == todayKey && !$0.isEffectivelyResolved },
             resolvedToday: allIssues.filter { issue in
-                guard issue.status.isResolved, let resolvedAt = issue.resolvedAt else { return false }
+                guard issue.isEffectivelyResolved, let resolvedAt = issue.resolvedAt else { return false }
                 return DataStore.dateKey(from: resolvedAt) == todayKey
             },
-            pending: allIssues.filter { !$0.status.isResolved && $0.status != .observing && $0.status != .scheduled && $0.status != .testing },
-            scheduled: allIssues.filter { $0.status == .scheduled },
-            testing: allIssues.filter { $0.status == .testing },
-            observing: allIssues.filter { $0.status == .observing },
+            pending: allIssues.filter { !$0.isEffectivelyResolved && $0.effectiveStatus != .observing && $0.effectiveStatus != .scheduled && $0.effectiveStatus != .testing && $0.effectiveStatus != .inProgress },
+            inProgress: allIssues.filter { $0.effectiveStatus == .inProgress },
+            scheduled: allIssues.filter { $0.effectiveStatus == .scheduled },
+            testing: allIssues.filter { $0.effectiveStatus == .testing },
+            observing: allIssues.filter { $0.effectiveStatus == .observing },
             myReportedToday: [],
             focusTagged: focusTag.isEmpty ? [] : allIssues.filter { $0.issueTags.contains(focusTag) },
             focusTag: focusTag,
@@ -747,18 +977,341 @@ final class FeishuBotService {
         )
     }
 
+    private func collectIssueMonthlyReportData(store: DataStore, period: WeeklyReport.Period) -> IssueMonthlyReportData {
+        let calendar = Calendar.current
+        let (start, end) = WeeklyReport.dateRange(for: period)
+        let keyFmt = DateFormatter()
+        keyFmt.dateFormat = "yyyy-MM-dd"
+        let displayFmt = DateFormatter()
+        displayFmt.dateFormat = "M/d"
+
+        func dateKey(from date: Date) -> String {
+            keyFmt.string(from: date)
+        }
+
+        func primaryDate(_ issue: TrackedIssue) -> Date {
+            issue.reportedAt ?? issue.createdAt
+        }
+
+        func primaryCreatedKey(_ issue: TrackedIssue) -> String {
+            dateKey(from: primaryDate(issue))
+        }
+
+        func isReportUpdateComment(_ comment: IssueComment) -> Bool {
+            let text = comment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return false }
+            if text.hasPrefix("[Linear] 已导入") || text.hasPrefix("[Linear] 已通过链接导入") {
+                return false
+            }
+            return true
+        }
+
+        func hasReportUpdateActivity(_ issue: TrackedIssue, startKey: String, endKey: String) -> Bool {
+            let createdKey = primaryCreatedKey(issue)
+            let resolvedKey = issue.resolvedAt.map { dateKey(from: $0) }
+            return issue.comments.contains { comment in
+                guard isReportUpdateComment(comment) else { return false }
+                let key = dateKey(from: comment.createdAt)
+                guard key >= startKey && key <= endKey else { return false }
+                guard key != createdKey else { return false }
+                guard key != resolvedKey else { return false }
+                return true
+            }
+        }
+
+        func normalizedAssignee(_ issue: TrackedIssue) -> String {
+            if let assignee = issue.assignee?.trimmingCharacters(in: .whitespacesAndNewlines), !assignee.isEmpty {
+                return assignee
+            }
+            if let assignee = issue.linearAssignee?.trimmingCharacters(in: .whitespacesAndNewlines), !assignee.isEmpty {
+                return assignee
+            }
+            return "未分配"
+        }
+
+        struct PeriodStats {
+            let start: Date
+            let end: Date
+            let issues: [TrackedIssue]
+            let openIssues: [TrackedIssue]
+            let resolvedIssues: [TrackedIssue]
+            let updatedIssues: [TrackedIssue]
+            let staleOpenIssues: [TrackedIssue]
+            let unassignedOpenIssues: [TrackedIssue]
+            let typeTotals: [(String, Int)]
+            let statusTotals: [(String, Int)]
+            let assigneeTotals: [(String, Int)]
+            let closureRate: Int
+        }
+
+        func periodStats(start: Date, end: Date) -> PeriodStats {
+            let endExclusive = calendar.date(byAdding: .day, value: 1, to: end)!
+            let startKey = keyFmt.string(from: start)
+            let endKey = keyFmt.string(from: end)
+            let issues = store.visibleTrackedIssues
+                .filter { issue in
+                    let date = primaryDate(issue)
+                    return date >= start && date < endExclusive
+                }
+                .sorted {
+                    if $0.isEffectivelyResolved != $1.isEffectivelyResolved { return !$0.isEffectivelyResolved }
+                    if $0.effectiveStatus != $1.effectiveStatus { return Self.issueStatusRank($0.effectiveStatus) < Self.issueStatusRank($1.effectiveStatus) }
+                    return primaryDate($0) > primaryDate($1)
+                }
+
+            let allOpenBeforePeriodEnd = store.visibleTrackedIssues
+                .filter { issue in
+                    guard !issue.isEffectivelyResolved else { return false }
+                    return primaryDate(issue) < endExclusive
+                }
+                .sorted {
+                    if $0.isEscalated != $1.isEscalated { return $0.isEscalated }
+                    if $0.effectiveStatus != $1.effectiveStatus { return Self.issueStatusRank($0.effectiveStatus) < Self.issueStatusRank($1.effectiveStatus) }
+                    return primaryDate($0) < primaryDate($1)
+                }
+
+            let updatedIssues = issues.filter { hasReportUpdateActivity($0, startKey: startKey, endKey: endKey) }
+            let referenceDate = min(Date(), endExclusive)
+            let staleThreshold = calendar.date(byAdding: .day, value: -7, to: referenceDate) ?? referenceDate
+            let staleOpenIssues = allOpenBeforePeriodEnd
+                .filter { $0.effectiveStatus != .observing && primaryDate($0) < staleThreshold }
+                .sorted { primaryDate($0) < primaryDate($1) }
+            let unassignedOpenIssues = allOpenBeforePeriodEnd.filter { normalizedAssignee($0) == "未分配" }
+
+            let typeTotals = IssueType.allCases.compactMap { type -> (String, Int)? in
+                let count = issues.filter { $0.type == type }.count
+                return count > 0 ? (type.rawValue, count) : nil
+            }
+            let statusTotals = IssueStatus.allCases.compactMap { status -> (String, Int)? in
+                let count = issues.filter { $0.effectiveStatus == status }.count
+                return count > 0 ? (status.rawValue, count) : nil
+            }
+            var assigneeCounts: [String: Int] = [:]
+            for issue in issues {
+                assigneeCounts[normalizedAssignee(issue), default: 0] += 1
+            }
+            let assigneeTotals = assigneeCounts
+                .map { ($0.key, $0.value) }
+                .sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }
+            let resolvedIssues = issues.filter(\.isEffectivelyResolved)
+            let closureRate = issues.isEmpty ? 0 : Int((Double(resolvedIssues.count) / Double(issues.count) * 100).rounded())
+
+            return PeriodStats(
+                start: start,
+                end: end,
+                issues: issues,
+                openIssues: allOpenBeforePeriodEnd,
+                resolvedIssues: resolvedIssues,
+                updatedIssues: updatedIssues,
+                staleOpenIssues: staleOpenIssues,
+                unassignedOpenIssues: unassignedOpenIssues,
+                typeTotals: typeTotals,
+                statusTotals: statusTotals,
+                assigneeTotals: assigneeTotals,
+                closureRate: closureRate
+            )
+        }
+
+        let previousEnd = calendar.date(byAdding: .day, value: -1, to: start)!
+        let previousStart = calendar.date(from: calendar.dateComponents([.year, .month], from: previousEnd))!
+        let current = periodStats(start: start, end: end)
+        let previous = periodStats(start: previousStart, end: previousEnd)
+
+        func deltaText(_ current: Int, _ previous: Int) -> String {
+            let delta = current - previous
+            if delta > 0 { return "+\(delta)" }
+            if delta < 0 { return "\(delta)" }
+            return "持平"
+        }
+
+        func deltaPP(_ current: Int, _ previous: Int) -> String {
+            let delta = current - previous
+            if delta > 0 { return "+\(delta)pp" }
+            if delta < 0 { return "\(delta)pp" }
+            return "持平"
+        }
+
+        var analysisNotes: [String] = []
+        let net = current.issues.count - current.resolvedIssues.count
+        analysisNotes.append("较上月：新增 \(deltaText(current.issues.count, previous.issues.count))，已关闭 \(deltaText(current.resolvedIssues.count, previous.resolvedIssues.count))，未关闭 \(deltaText(current.openIssues.count, previous.openIssues.count))，积压 \(deltaText(current.staleOpenIssues.count, previous.staleOpenIssues.count))。")
+        analysisNotes.append("本期新增 \(current.issues.count) 个，已关闭 \(current.resolvedIssues.count) 个，关闭率 \(current.closureRate)%（较上月 \(deltaPP(current.closureRate, previous.closureRate))）。")
+        if net > 0 {
+            analysisNotes.append("月末未关闭 \(current.openIssues.count) 个，净增加 \(net) 个，积压压力上升。")
+        } else if net < 0 {
+            analysisNotes.append("月末未关闭 \(current.openIssues.count) 个，净减少 \(abs(net)) 个，问题消化速度较好。")
+        } else {
+            analysisNotes.append("新增与关闭持平，月末未关闭 \(current.openIssues.count) 个。")
+        }
+        if let topType = current.typeTotals.max(by: { $0.1 < $1.1 }) {
+            analysisNotes.append("\(topType.0) 是本期最高频类型，占 \(shareText(topType.1, total: current.issues.count))。")
+        }
+        if let topAssignee = current.assigneeTotals.first, topAssignee.0 != "未分配" {
+            analysisNotes.append("\(topAssignee.0) 承接最多问题，共 \(topAssignee.1) 个。")
+        }
+        if current.staleOpenIssues.count > 0 {
+            analysisNotes.append("\(current.staleOpenIssues.count) 个未关闭问题已超过 7 天，建议优先复盘。")
+        }
+        if current.unassignedOpenIssues.count > 0 {
+            analysisNotes.append("\(current.unassignedOpenIssues.count) 个未关闭问题未分配负责人。")
+        }
+
+        return IssueMonthlyReportData(
+            title: "问题追踪\(period.reportName)",
+            subtitle: "\(displayFmt.string(from: start)) - \(displayFmt.string(from: end))",
+            comparisonSubtitle: "\(displayFmt.string(from: previousStart)) - \(displayFmt.string(from: previousEnd))",
+            issues: current.issues,
+            openIssues: current.openIssues,
+            resolvedIssues: current.resolvedIssues,
+            createdTotal: current.issues.count,
+            updatedTotal: current.updatedIssues.count,
+            resolvedTotal: current.resolvedIssues.count,
+            previousCreatedTotal: previous.issues.count,
+            previousResolvedTotal: previous.resolvedIssues.count,
+            previousOpenTotal: previous.openIssues.count,
+            previousStaleTotal: previous.staleOpenIssues.count,
+            closureRate: current.closureRate,
+            previousClosureRate: previous.closureRate,
+            staleOpenIssues: current.staleOpenIssues,
+            unassignedOpenIssues: current.unassignedOpenIssues,
+            typeTotals: current.typeTotals,
+            statusTotals: current.statusTotals,
+            assigneeTotals: current.assigneeTotals,
+            analysisNotes: analysisNotes
+        )
+    }
+
+    private func generateIssueTrackingCardReport(store: DataStore, period: WeeklyReport.Period) -> [String: Any] {
+        let d = collectIssueMonthlyReportData(store: store, period: period)
+        let cfg = store.feishuBotConfig
+        var elements: [[String: Any]] = []
+
+        elements.append([
+            "tag": "div",
+            "text": ["tag": "lark_md", "content": "**周期：** \(d.subtitle)\n**对比上月：** \(d.comparisonSubtitle)"]
+        ])
+        elements.append(["tag": "hr"])
+        elements.append([
+            "tag": "div",
+            "text": [
+                "tag": "lark_md",
+                "content": "🟦 **本期新增** \(d.createdTotal) 个（上月 \(d.previousCreatedTotal)）  ·  ✅ **已关闭** \(d.resolvedTotal) 个（上月 \(d.previousResolvedTotal)）\n🔶 **未关闭** \(d.openIssues.count) 个（上月 \(d.previousOpenTotal)）  ·  🟣 **积压** \(d.staleOpenIssues.count) 个（上月 \(d.previousStaleTotal)）  ·  🟢 **更新** \(d.updatedTotal) 个"
+            ]
+        ])
+
+        if !d.analysisNotes.isEmpty {
+            elements.append(["tag": "hr"])
+            elements.append([
+                "tag": "div",
+                "text": ["tag": "lark_md", "content": "**分析摘要：**\n" + d.analysisNotes.map { "- \($0)" }.joined(separator: "\n")]
+            ])
+        }
+
+        let distributionLines = [
+            ("类型分布", compactPairs(d.typeTotals)),
+            ("状态分布", compactPairs(d.statusTotals)),
+            ("负责人 Top 8", compactPairs(Array(d.assigneeTotals.prefix(8))))
+        ].filter { !$0.1.isEmpty }
+        if !distributionLines.isEmpty {
+            elements.append(["tag": "hr"])
+            let content = distributionLines
+                .map { "**\($0.0)：** \($0.1)" }
+                .joined(separator: "\n")
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
+        let focusIssues = prioritizedIssueMonthlyFocusIssues(d)
+        if !focusIssues.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**重点问题（最多 8 条）：**"
+            for issue in focusIssues.prefix(8) {
+                content += "\n" + Self.formatIssue(issue, showStatus: true, config: cfg, jiraServerURL: store.jiraConfig.serverURL, showTimes: true)
+            }
+            let omitted = max(focusIssues.count - min(focusIssues.count, 8), 0)
+            if omitted > 0 {
+                content += "\n_其余 \(omitted) 条未关闭问题已省略，请打开问题月报查看详情。_"
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
+        if !d.staleOpenIssues.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**积压问题（超过 7 天未关闭，最多 8 条）：**"
+            for issue in d.staleOpenIssues.prefix(8) {
+                content += "\n" + Self.formatIssue(issue, showStatus: true, config: cfg, jiraServerURL: store.jiraConfig.serverURL, showTimes: true)
+            }
+            if d.staleOpenIssues.count > 8 {
+                content += "\n_其余 \(d.staleOpenIssues.count - 8) 条积压问题已省略，请打开问题月报查看详情。_"
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
+        if d.issues.isEmpty {
+            elements.append(["tag": "hr"])
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": "本期暂无问题记录"]])
+        }
+
+        elements.append(["tag": "note", "elements": Self.footerNoteElements()])
+
+        return [
+            "msg_type": "interactive",
+            "card": [
+                "config": ["wide_screen_mode": true],
+                "header": ["title": ["tag": "plain_text", "content": d.title], "template": "purple"],
+                "elements": elements
+            ]
+        ]
+    }
+
+    private func prioritizedIssueMonthlyFocusIssues(_ data: IssueMonthlyReportData) -> [TrackedIssue] {
+        var result: [TrackedIssue] = []
+        var seen = Set<UUID>()
+        let staleIDs = Set(data.staleOpenIssues.map(\.id))
+        func append(_ issues: [TrackedIssue]) {
+            for issue in issues where !staleIDs.contains(issue.id) && seen.insert(issue.id).inserted {
+                result.append(issue)
+            }
+        }
+        append(data.unassignedOpenIssues)
+        append(data.openIssues)
+        return result
+    }
+
+    private func compactPairs(_ pairs: [(String, Int)]) -> String {
+        pairs
+            .filter { $0.1 > 0 }
+            .map { "\($0.0) \($0.1)" }
+            .joined(separator: "，")
+    }
+
+    private func shareText(_ count: Int, total: Int) -> String {
+        guard total > 0 else { return "0%" }
+        return "\(Int((Double(count) / Double(total) * 100).rounded()))%"
+    }
+
+    private static func issueStatusRank(_ status: IssueStatus) -> Int {
+        switch status {
+        case .pending: return 0
+        case .inProgress: return 1
+        case .testing: return 2
+        case .scheduled: return 3
+        case .observing: return 4
+        case .fixed: return 5
+        case .ignored: return 6
+        }
+    }
+
     // MARK: - Rich Text (post) Report
 
     private func generateRichTextReport(store: DataStore) -> [String: Any] {
         let d = collectReportData(store: store)
-        let commentFmt = DateFormatter()
-        commentFmt.dateFormat = "M/d HH:mm"
-
         var lines: [[[String: Any]]] = []
 
         // === 解决情况高亮摘要 ===
         if d.config.showOverview {
             var statsLine = "🟢 今日新建 \(d.newIssues.count)  ·  ✅ 今日解决 \(d.resolvedToday.count)  ·  🔶 待处理 \(d.pending.count)"
+            if !d.inProgress.isEmpty {
+                statsLine += "  ·  🔄 处理中 \(d.inProgress.count)"
+            }
             if !d.observing.isEmpty {
                 statsLine += "  ·  👁 观测中 \(d.observing.count)"
             }
@@ -783,12 +1336,15 @@ final class FeishuBotService {
             lines.append([text("📋 待处理问题：")])
             for issue in d.pending {
                 lines.append(richTextIssueLine(issue, showStatus: d.config.fieldStatus, config: d.config, jiraServerURL: d.jiraServerURL))
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        lines.append([text("      ↳ [\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))")])
-                    }
-                }
+            }
+            lines.append([text("")])
+        }
+
+        // === 处理中问题 ===
+        if d.config.showInProgress && !d.inProgress.isEmpty {
+            lines.append([text("🔄 处理中问题：")])
+            for issue in d.inProgress {
+                lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
             }
             lines.append([text("")])
         }
@@ -798,12 +1354,6 @@ final class FeishuBotService {
             lines.append([text("👁 观测中问题：")])
             for issue in d.observing {
                 lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        lines.append([text("      ↳ [\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))")])
-                    }
-                }
             }
             lines.append([text("")])
         }
@@ -813,12 +1363,6 @@ final class FeishuBotService {
             lines.append([text("📅 已排期问题：")])
             for issue in d.scheduled {
                 lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        lines.append([text("      ↳ [\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))")])
-                    }
-                }
             }
             lines.append([text("")])
         }
@@ -828,12 +1372,6 @@ final class FeishuBotService {
             lines.append([text("🧪 测试中问题：")])
             for issue in d.testing {
                 lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        lines.append([text("      ↳ [\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))")])
-                    }
-                }
             }
             lines.append([text("")])
         }
@@ -843,12 +1381,6 @@ final class FeishuBotService {
             lines.append([text("✅ 今日已解决：")])
             for issue in d.resolvedToday {
                 lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        lines.append([text("      ↳ [\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))")])
-                    }
-                }
             }
             lines.append([text("")])
         }
@@ -903,41 +1435,22 @@ final class FeishuBotService {
 
     /// 富文本: 单个 issue 行（含可选链接）
     private func richTextIssueLine(_ issue: TrackedIssue, showStatus: Bool, config: FeishuBotConfig, jiraServerURL: String) -> [[String: Any]] {
-        let title = (issue.issueNumber > 0 ? "#\(issue.issueNumber) " : "") + Self.truncateTitle(issue.title)
-        var parts: [[String: Any]] = []
-
-        let statusStr = showStatus ? "[\(issue.status.rawValue)] " : ""
-        var tagParts: [String] = []
-        if config.fieldType { tagParts.append(issue.type.rawValue) }
-        if config.fieldDepartment, let dept = issue.department, !dept.isEmpty { tagParts.append(dept) }
-        if config.fieldAssignee, let a = issue.assignee, !a.isEmpty { tagParts.append(a) }
-        if let reporter = issue.reporterName?.trimmingCharacters(in: .whitespacesAndNewlines), !reporter.isEmpty {
-            tagParts.append("提交 \(reporter)")
-        }
-        let tagStr = tagParts.isEmpty ? "" : " (\(tagParts.joined(separator: " · ")))"
-
-        if config.fieldJiraKey, let linear = Self.linearKeyAndURL(issue) {
-            parts.append(text("· \(statusStr)\(title)\(tagStr) "))
-            if let url = linear.url {
-                parts.append(link(linear.key, href: url))
+        let title = Self.reportIssueTitle(issue)
+        var parts = [text("· ")]
+        if Self.hasLinearBinding(issue) {
+            parts.append(text(title))
+            parts.append(text(" · "))
+            if let url = Self.reportIssueURL(issue, jiraServerURL: jiraServerURL) {
+                parts.append(link(Self.linearReportLabel(issue), href: url))
             } else {
-                parts.append(text(linear.key))
+                parts.append(text(Self.linearReportLabel(issue)))
             }
-        } else if config.fieldJiraKey, let jira = issue.jiraKey, !jira.isEmpty {
-            let (key, url) = Self.jiraKeyAndURL(jira, serverURL: jiraServerURL)
-            parts.append(text("· \(statusStr)\(title)\(tagStr) "))
-            if let url {
-                parts.append(link(key, href: url))
-            } else {
-                parts.append(text(key))
-            }
-        } else if config.fieldJiraKey, let ticketURL = issue.ticketURL, !ticketURL.isEmpty {
-            parts.append(text("· \(statusStr)\(title)\(tagStr) "))
-            parts.append(link("链接", href: ticketURL))
+            parts.append(text(" · \(Self.linearReportDetails(issue))"))
+        } else if let url = Self.reportIssueURL(issue, jiraServerURL: jiraServerURL) {
+            parts.append(link(title, href: url))
         } else {
-            parts.append(text("· \(statusStr)\(title)\(tagStr)"))
+            parts.append(text(title))
         }
-
         return parts
     }
 
@@ -1022,9 +1535,6 @@ final class FeishuBotService {
 
     private func generateCardReport(store: DataStore) -> [String: Any] {
         let d = collectReportData(store: store)
-        let commentFmt = DateFormatter()
-        commentFmt.dateFormat = "M/d HH:mm"
-
         var elements: [[String: Any]] = []
 
         // 日期 + 项目支持统计
@@ -1040,6 +1550,9 @@ final class FeishuBotService {
         if d.config.showOverview {
             elements.append(["tag": "hr"])
             var statsLine = "🟢 **今日新建** \(d.newIssues.count) 个  ·  ✅ **今日解决** \(d.resolvedToday.count) 个  ·  🔶 **待处理** \(d.pending.count) 个"
+            if !d.inProgress.isEmpty {
+                statsLine += "  ·  🔄 **处理中** \(d.inProgress.count) 个"
+            }
             if !d.observing.isEmpty {
                 statsLine += "  ·  👁 **观测中** \(d.observing.count) 个"
             }
@@ -1052,12 +1565,16 @@ final class FeishuBotService {
             var content = "**待处理问题：**"
             for issue in d.pending {
                 content += "\n" + Self.formatIssue(issue, showStatus: d.config.fieldStatus, config: d.config, jiraServerURL: d.jiraServerURL)
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        content += "\n    *[\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))*"
-                    }
-                }
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
+        // 处理中问题列表 + 评论
+        if d.config.showInProgress && !d.inProgress.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**🔄 处理中问题：**"
+            for issue in d.inProgress {
+                content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
             }
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
@@ -1068,12 +1585,6 @@ final class FeishuBotService {
             var content = "**👁 观测中问题：**"
             for issue in d.observing {
                 content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        content += "\n    *[\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))*"
-                    }
-                }
             }
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
@@ -1084,12 +1595,6 @@ final class FeishuBotService {
             var content = "**📅 已排期问题：**"
             for issue in d.scheduled {
                 content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        content += "\n    *[\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))*"
-                    }
-                }
             }
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
@@ -1100,12 +1605,6 @@ final class FeishuBotService {
             var content = "**🧪 测试中问题：**"
             for issue in d.testing {
                 content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        content += "\n    *[\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))*"
-                    }
-                }
             }
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
@@ -1116,12 +1615,6 @@ final class FeishuBotService {
             var content = "**今日已解决：**"
             for issue in d.resolvedToday {
                 content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
-                if d.config.showComments {
-                    for comment in issue.comments.suffix(2) {
-                        let time = commentFmt.string(from: comment.createdAt)
-                        content += "\n    *[\(time)] \(Self.truncateTitle(comment.text, maxLength: 80))*"
-                    }
-                }
             }
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
@@ -1156,6 +1649,7 @@ final class FeishuBotService {
         let hasContent = (d.config.showSupportStats && d.todayTotal > 0)
             || d.config.showOverview
             || (d.config.showPending && !d.pending.isEmpty)
+            || (d.config.showInProgress && !d.inProgress.isEmpty)
             || (d.config.showObserving && !d.observing.isEmpty)
             || (d.config.showScheduled && !d.scheduled.isEmpty)
             || (d.config.showTesting && !d.testing.isEmpty)
@@ -1234,27 +1728,105 @@ final class FeishuBotService {
     }
 
     /// 格式化单个 issue 为一行 markdown
-    private static func formatIssue(_ issue: TrackedIssue, showStatus: Bool, config: FeishuBotConfig, jiraServerURL: String = "") -> String {
-        let title = (issue.issueNumber > 0 ? "#\(issue.issueNumber) " : "") + truncateTitle(issue.title)
-        var tags: [String] = []
-        if config.fieldType { tags.append(issue.type.rawValue) }
-        if config.fieldDepartment, let dept = issue.department, !dept.isEmpty { tags.append(dept) }
-        if config.fieldJiraKey {
-            if let linear = linearMarkdown(issue) {
-                tags.append(linear)
-            } else if let jira = issue.jiraKey, !jira.isEmpty {
-                tags.append(formatJiraKey(jira, serverURL: jiraServerURL))
-            } else if let url = issue.ticketURL, !url.isEmpty {
-                tags.append(url)
+    private static func formatIssue(_ issue: TrackedIssue, showStatus: Bool, config: FeishuBotConfig, jiraServerURL: String = "", showTimes: Bool = false) -> String {
+        let title = reportIssueTitle(issue)
+        if hasLinearBinding(issue) {
+            let label = escapeMarkdownLinkText(linearReportLabel(issue))
+            let linearReference: String
+            if let url = reportIssueURL(issue, jiraServerURL: jiraServerURL) {
+                linearReference = "[\(label)](\(url))"
+            } else {
+                linearReference = label
             }
+            return "- \(title)\n  \(linearReference) · \(linearReportDetails(issue))"
         }
-        if config.fieldAssignee, let assignee = issue.assignee, !assignee.isEmpty { tags.append(assignee) }
-        if let reporter = issue.reporterName?.trimmingCharacters(in: .whitespacesAndNewlines), !reporter.isEmpty {
-            tags.append("提交 \(reporter)")
+        guard let url = reportIssueURL(issue, jiraServerURL: jiraServerURL) else {
+            return "- \(title)"
         }
-        let tagPart = tags.isEmpty ? "" : " (\(tags.joined(separator: " · ")))"
-        let statusPrefix = showStatus ? "[\(issue.status.rawValue)] " : ""
-        return "- \(statusPrefix)\(title)\(tagPart)"
+        return "- [\(escapeMarkdownLinkText(title))](\(url))"
+    }
+
+    private static func reportIssueTitle(_ issue: TrackedIssue) -> String {
+        issue.title
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private static func hasLinearBinding(_ issue: TrackedIssue) -> Bool {
+        issue.linearIssueId?.isEmpty == false || issue.linearKey?.isEmpty == false || issue.linearUrl?.isEmpty == false
+    }
+
+    private static func linearReportLabel(_ issue: TrackedIssue) -> String {
+        let key = issue.linearKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return key.isEmpty ? "Linear" : "Linear \(key)"
+    }
+
+    private static func linearReportDetails(_ issue: TrackedIssue) -> String {
+        let assignee = nonEmpty(issue.linearAssignee) ?? nonEmpty(issue.assignee) ?? "未分配"
+        let creator = nonEmpty(issue.linearCreator) ?? "未知"
+        let created = linearDateText(issue.linearCreatedAt) ?? issueDateTimeText(issue.createdAt)
+        let updated = linearDateText(issue.linearUpdatedAt)
+            ?? issue.updatedAt.map(issueDateTimeText)
+            ?? created
+        return "处理人：\(assignee) · 创建人：\(creator) · 创建：\(created) · 更新：\(updated)"
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+
+    private static func linearDateText(_ value: String?) -> String? {
+        guard let value = nonEmpty(value) else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let basic = ISO8601DateFormatter()
+        basic.formatOptions = [.withInternetDateTime]
+        guard let date = fractional.date(from: value) ?? basic.date(from: value) else { return nil }
+        return issueDateTimeText(date)
+    }
+
+    /// Keep the report visually title-only while retaining its external issue binding.
+    private static func reportIssueURL(_ issue: TrackedIssue, jiraServerURL: String) -> String? {
+        if let linearURL = linearKeyAndURL(issue)?.url, !linearURL.isEmpty {
+            return linearURL
+        }
+        if let jiraKey = issue.jiraKey?.trimmingCharacters(in: .whitespacesAndNewlines), !jiraKey.isEmpty,
+           let jiraURL = jiraKeyAndURL(jiraKey, serverURL: jiraServerURL).url {
+            return jiraURL
+        }
+        if let ticketURL = issue.ticketURL?.trimmingCharacters(in: .whitespacesAndNewlines), !ticketURL.isEmpty {
+            return ticketURL
+        }
+        return nil
+    }
+
+    private static func escapeMarkdownLinkText(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
+    }
+
+    private static func issueTimelineText(_ issue: TrackedIssue) -> String {
+        "创建 \(issueDateTimeText(issue.createdAt)) · 更新 \(issueDateTimeText(issueLatestActivityDate(issue)))"
+    }
+
+    private static func issueDateTimeText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private static func issueLatestActivityDate(_ issue: TrackedIssue) -> Date {
+        var dates = [issue.createdAt]
+        if let reportedAt = issue.reportedAt { dates.append(reportedAt) }
+        if let updatedAt = issue.updatedAt { dates.append(updatedAt) }
+        if let resolvedAt = issue.resolvedAt { dates.append(resolvedAt) }
+        dates.append(contentsOf: issue.comments.map(\.createdAt))
+        return dates.max() ?? issue.updatedAt ?? issue.createdAt
     }
 
     /// 提取 jiraKey 的显示文本和完整 URL
@@ -1370,6 +1942,38 @@ final class FeishuBotService {
         defer { credentialsLock.unlock() }
         ensureCredentialsLoaded()
         return cachedAppSecret
+    }
+
+    /// Moves secrets written by legacy FeishuBotConfig versions into Keychain.
+    /// The caller must persist the sanitized config only after this returns true.
+    static func migrateLegacyConfigSecrets(_ config: inout FeishuBotConfig) -> Bool {
+        let appSecret = config.appSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        let verificationToken = config.verificationToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let encryptKey = config.encryptKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !appSecret.isEmpty || !verificationToken.isEmpty || !encryptKey.isEmpty else {
+            return false
+        }
+
+        credentialsLock.lock()
+        defer { credentialsLock.unlock() }
+        var credentials = FeishuCredentials.load()
+        if credentials.appSecret?.isEmpty ?? true, !appSecret.isEmpty {
+            credentials.appSecret = appSecret
+        }
+        if credentials.verificationToken?.isEmpty ?? true, !verificationToken.isEmpty {
+            credentials.verificationToken = verificationToken
+        }
+        if credentials.encryptKey?.isEmpty ?? true, !encryptKey.isEmpty {
+            credentials.encryptKey = encryptKey
+        }
+        guard FeishuCredentials.save(credentials) else { return false }
+
+        cachedAppSecret = credentials.appSecret
+        didLoadCredentials = true
+        config.appSecret = ""
+        config.verificationToken = ""
+        config.encryptKey = ""
+        return true
     }
 
     static func loadSecret(for webhookID: UUID) -> String? {

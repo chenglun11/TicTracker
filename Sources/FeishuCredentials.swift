@@ -2,6 +2,8 @@ import Foundation
 
 struct FeishuCredentials: Codable {
     var appSecret: String?
+    var verificationToken: String?
+    var encryptKey: String?
     var oauthBundle: Data?
     var webhookSecrets: [String: String] = [:]
 
@@ -23,7 +25,7 @@ struct FeishuCredentials: Codable {
     static func load() -> FeishuCredentials {
         if let data = KeychainHelper.load(service: keychainService, account: keychainAccount),
            let creds = try? JSONDecoder().decode(FeishuCredentials.self, from: data) {
-            logInfo("已加载统一凭据 [appSecret=\(creds.appSecret?.isEmpty == false), oauth=\(creds.oauthBundle != nil), webhooks=\(creds.webhookSecrets.count)]")
+            logInfo("已加载统一凭据 [appSecret=\(creds.appSecret?.isEmpty == false), verification=\(creds.verificationToken?.isEmpty == false), encryptKey=\(creds.encryptKey?.isEmpty == false), oauth=\(creds.oauthBundle != nil), webhooks=\(creds.webhookSecrets.count)]")
             return creds
         }
         logInfo("统一凭据不存在或无法解码，尝试迁移旧 Keychain 项")
@@ -35,7 +37,7 @@ struct FeishuCredentials: Codable {
         guard let data = try? JSONEncoder().encode(credentials) else { return false }
         let ok = KeychainHelper.save(service: keychainService, account: keychainAccount, data: data)
         if ok {
-            logInfo("已保存统一凭据 [appSecret=\(credentials.appSecret?.isEmpty == false), oauth=\(credentials.oauthBundle != nil), webhooks=\(credentials.webhookSecrets.count)]")
+            logInfo("已保存统一凭据 [appSecret=\(credentials.appSecret?.isEmpty == false), verification=\(credentials.verificationToken?.isEmpty == false), encryptKey=\(credentials.encryptKey?.isEmpty == false), oauth=\(credentials.oauthBundle != nil), webhooks=\(credentials.webhookSecrets.count)]")
         } else {
             logError("保存统一凭据失败")
         }

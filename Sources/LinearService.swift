@@ -1,5 +1,11 @@
 import Foundation
 
+struct LinearCandidateFetchResult: Sendable {
+    let issues: [LinearIssue]
+    let notice: String?
+    let isComplete: Bool
+}
+
 @MainActor
 @Observable
 final class LinearService {
@@ -105,17 +111,34 @@ final class LinearService {
 
     func fetchProjects(teamId: String) async -> [LinearProject] {
         guard let token = loadToken() else { return [] }
-        let q = "{ team(id: \\\"\(teamId)\\\") { projects { nodes { id name } } } }"
-        let query = #"{"query":""# + q + #""}"#
-        guard let json = await executeQuery(query: query, token: token) else { return [] }
-        guard let data = json["data"] as? [String: Any],
-              let team = data["team"] as? [String: Any],
-              let projects = team["projects"] as? [String: Any],
-              let nodes = projects["nodes"] as? [[String: Any]] else { return [] }
-        return nodes.compactMap { node in
-            guard let id = node["id"] as? String, let name = node["name"] as? String else { return nil }
-            return LinearProject(id: id, name: name)
+        var result: [LinearProject] = []
+        var cursor: String?
+        var hasNextPage = true
+
+        while hasNextPage {
+            let afterArg = cursor.map { ", after: \\\"\(escapeGraphQL($0))\\\"" } ?? ""
+            let q = "{ team(id: \\\"\(escapeGraphQL(teamId))\\\") { projects(first: 100\(afterArg)) { nodes { id name } pageInfo { hasNextPage endCursor } } } }"
+            let query = #"{"query":""# + q + #""}"#
+            guard let json = await executeQuery(query: query, token: token) else { break }
+            guard let data = json["data"] as? [String: Any],
+                  let team = data["team"] as? [String: Any],
+                  let projects = team["projects"] as? [String: Any],
+                  let nodes = projects["nodes"] as? [[String: Any]] else { break }
+            result += nodes.compactMap { node in
+                guard let id = node["id"] as? String, let name = node["name"] as? String else { return nil }
+                return LinearProject(id: id, name: name)
+            }
+            if let pageInfo = projects["pageInfo"] as? [String: Any] {
+                hasNextPage = pageInfo["hasNextPage"] as? Bool ?? false
+                cursor = pageInfo["endCursor"] as? String
+            } else {
+                hasNextPage = false
+            }
+            if cursor?.isEmpty == true {
+                hasNextPage = false
+            }
         }
+        return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func fetchTeamStates(teamId: String) async -> [LinearState] {
@@ -357,7 +380,7 @@ final class LinearService {
 
     func fetchIssueDetail(issueId: String) async -> LinearIssue? {
         guard let token = loadToken() else { return nil }
-        let q = "{ issue(id: \\\"\(issueId)\\\") { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } project { id name } labels { nodes { name } } } }"
+        let q = "{ issue(id: \\\"\(issueId)\\\") { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } creator { id name } team { id name key } project { id name } labels { nodes { name } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else { return nil }
         guard let data = json["data"] as? [String: Any],
@@ -390,7 +413,7 @@ final class LinearService {
         guard parts.count == 2,
               let number = Int(parts[1]) else { return nil }
         let teamKey = escapeGraphQL(parts[0])
-        let q = "{ issues(first: 1, filter: { team: { key: { eq: \\\"\(teamKey)\\\" } }, number: { eq: \(number) } }) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } project { id name } labels { nodes { name } } } } }"
+        let q = "{ issues(first: 1, filter: { team: { key: { eq: \\\"\(teamKey)\\\" } }, number: { eq: \(number) } }) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } creator { id name } team { id name key } project { id name } labels { nodes { name } } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else {
             DevLog.shared.error("Linear", "fetchIssueByIdentifier: exact query failed")
@@ -411,9 +434,29 @@ final class LinearService {
     }
 
     func fetchIssues(teamId: String? = nil, projectId: String? = nil) async -> [LinearIssue] {
+        await fetchIssuesResult(teamId: teamId, projectId: projectId).issues
+    }
+
+    private struct LinearIssueFetchResult: Sendable {
+        let issues: [LinearIssue]
+        let notices: [String]
+        let isComplete: Bool
+    }
+
+    private func fetchIssuesResult(
+        teamId: String? = nil,
+        projectId: String? = nil,
+        pageSize: Int = 100,
+        maximumIssues: Int? = nil,
+        orderByCreatedAt: Bool = false
+    ) async -> LinearIssueFetchResult {
         guard let token = loadToken() else {
             DevLog.shared.error("Linear", "fetchIssues: no token")
-            return []
+            return LinearIssueFetchResult(
+                issues: [],
+                notices: ["未找到 Linear API Token，请先在设置中完成连接"],
+                isComplete: false
+            )
         }
         var filterParts: [String] = []
         if let tid = teamId, !tid.isEmpty {
@@ -424,18 +467,34 @@ final class LinearService {
         }
         var cursor: String?
         var result: [LinearIssue] = []
-        for _ in 0..<5 {
-            var args = ["first: 100"]
+        var notices: [String] = []
+        var isComplete = true
+        let maximumPages = 50
+        for page in 0..<maximumPages {
+            guard !Task.isCancelled else {
+                isComplete = false
+                break
+            }
+            var args = ["first: \(max(pageSize, 1))"]
+            if orderByCreatedAt {
+                args.append("orderBy: createdAt")
+            }
             if !filterParts.isEmpty {
                 args.insert("filter: { \(filterParts.joined(separator: ", ")) }", at: 0)
             }
             if let cursor, !cursor.isEmpty {
                 args.append("after: \\\"\(escapeGraphQL(cursor))\\\"")
             }
-            let q = "{ issues(\(args.joined(separator: ", "))) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } project { id name } labels { nodes { name } } } pageInfo { hasNextPage endCursor } } }"
+            let q = "{ issues(\(args.joined(separator: ", "))) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } creator { id name } team { id name key } project { id name } labels { nodes { name } } } pageInfo { hasNextPage endCursor } } }"
             let query = #"{"query":""# + q + #""}"#
-            guard let json = await executeQuery(query: query, token: token) else {
+            guard let json = await executeQuery(query: query, token: token, retryTransientReadFailures: true) else {
+                guard !Task.isCancelled else {
+                    isComplete = false
+                    break
+                }
                 DevLog.shared.error("Linear", "fetchIssues: query failed")
+                notices.append("Linear 请求失败，候选结果可能不完整，请检查 Token 或网络后重试")
+                isComplete = false
                 break
             }
             guard let data = json["data"] as? [String: Any],
@@ -444,10 +503,15 @@ final class LinearService {
                 if let errors = json["errors"] as? [[String: Any]] {
                     let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
                     DevLog.shared.error("Linear", "fetchIssues errors: \(msg)")
+                    notices.append(msg.isEmpty ? "Linear 返回异常，候选结果可能不完整" : "Linear：\(msg)")
+                } else {
+                    notices.append("Linear 返回异常，候选结果可能不完整")
                 }
+                isComplete = false
                 break
             }
             result += nodes.compactMap { parseIssueDetail($0) }
+            if maximumIssues != nil { break }
             guard let pageInfo = issues["pageInfo"] as? [String: Any],
                   pageInfo["hasNextPage"] as? Bool == true,
                   let nextCursor = pageInfo["endCursor"] as? String,
@@ -455,8 +519,12 @@ final class LinearService {
                 break
             }
             cursor = nextCursor
+            if page == maximumPages - 1 {
+                notices.append("Linear Issue 超过 5000 条，本次仅显示前 5000 条")
+                isComplete = false
+            }
         }
-        return result
+        return LinearIssueFetchResult(issues: result, notices: notices, isComplete: isComplete)
     }
 
     func searchIssues(query searchText: String, teamId: String? = nil) async -> [LinearIssue] {
@@ -469,7 +537,7 @@ final class LinearService {
             filterArg = ", filter: { team: { id: { eq: \\\"\(tid)\\\" } } }"
         }
         let escaped = escapeGraphQL(searchText)
-        let q = "{ issueSearch(query: \\\"\(escaped)\\\"\(filterArg), first: 30) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } project { id name } labels { nodes { name } } } } }"
+        let q = "{ issueSearch(query: \\\"\(escaped)\\\"\(filterArg), first: 30) { nodes { id identifier title description url createdAt updatedAt state { id name type } assignee { id name } creator { id name } team { id name key } project { id name } labels { nodes { name } } } } }"
         let query = #"{"query":""# + q + #""}"#
         guard let json = await executeQuery(query: query, token: token) else {
             DevLog.shared.error("Linear", "searchIssues: query failed")
@@ -501,7 +569,22 @@ final class LinearService {
         isSyncing = true
         defer { isSyncing = false }
 
-        let importCandidateCount = await fetchImportCandidatesFromConfiguredScope().count
+        let candidateResult = await fetchImportCandidatesFromConfiguredScope(includeAllTeamIssues: false)
+        let importCandidates = candidateResult.issues
+        let importCandidateCount = importCandidates.count
+        var autoImportedCount = 0
+        if !candidateResult.isComplete {
+            DevLog.shared.error("LinearSync", "candidate fetch incomplete; automatic import skipped until a complete retry succeeds")
+        } else if store.linearConfig.autoImportCandidates {
+            for candidate in importCandidates {
+                if store.addIssueFromLinear(candidate) {
+                    autoImportedCount += 1
+                }
+            }
+            if autoImportedCount > 0 {
+                DevLog.shared.info("LinearSync", "auto imported \(autoImportedCount) Linear candidate(s)")
+            }
+        }
         let reverseMapping = Dictionary(store.linearConfig.assigneeMapping.map { ($0.value, $0.key) }, uniquingKeysWith: { first, _ in first })
         let issues = store.trackedIssues
         var syncedCount = 0
@@ -513,7 +596,7 @@ final class LinearService {
                let linearKey = issue.linearKey?.trimmingCharacters(in: .whitespacesAndNewlines),
                !linearKey.isEmpty {
                 if let hydrated = await fetchIssueByIdentifier(linearKey) {
-                    store.applyLinearIssueRemote(hydrated, to: issue.id)
+                    store.applyLinearIssueRemote(hydrated, to: issue.id, syncStatus: false)
                     detail = hydrated
                     linearId = hydrated.id
                     DevLog.shared.info("LinearSync", "\(linearKey): hydrated linked issue id=\(hydrated.id)")
@@ -535,7 +618,7 @@ final class LinearService {
 
             // Status sync
             if let state = detail.state {
-                let newStatus = mapLinearState(state.name)
+                let newStatus = mapLinearState(state)
                 if let newStatus,
                    let current = store.trackedIssues.first(where: { $0.id == issue.id }),
                    newStatus != current.status {
@@ -599,6 +682,25 @@ final class LinearService {
                 }
             }
 
+            let remoteCreator = detail.creator?.name
+            let remoteStateName = detail.state?.name
+            let remoteStateType = detail.state?.type
+            if let current = store.trackedIssues.first(where: { $0.id == issue.id }),
+               remoteCreator != current.linearCreator ||
+               remoteStateName != current.linearStateName ||
+               remoteStateType != current.linearStateType ||
+               detail.createdAt != current.linearCreatedAt ||
+               detail.updatedAt != current.linearUpdatedAt {
+                store.updateIssueLinearMetadata(
+                    id: issue.id,
+                    creator: remoteCreator,
+                    stateName: remoteStateName,
+                    stateType: remoteStateType,
+                    createdAt: detail.createdAt,
+                    updatedAt: detail.updatedAt
+                )
+            }
+
             // Label → Type sync
             if !detail.labels.isEmpty,
                !store.linearConfig.labelMapping.isEmpty,
@@ -635,25 +737,137 @@ final class LinearService {
                 DevLog.shared.info("LinearSync", "\(displayKey): synced comment \(rc.id)")
             }
         }
-        DevLog.shared.info("LinearSync", "sync completed: import_candidates=\(importCandidateCount), linked_checked=\(syncedCount)")
+        DevLog.shared.info("LinearSync", "sync completed: import_candidates=\(importCandidateCount), auto_imported=\(autoImportedCount), linked_checked=\(syncedCount)")
     }
 
     // MARK: - Private Helpers
 
-    func fetchImportCandidatesFromConfiguredScope() async -> [LinearIssue] {
-        guard let store else { return [] }
-        let teamId = store.linearConfig.teamId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !teamId.isEmpty else {
+    func fetchImportCandidatesFromConfiguredScope(includeAllTeamIssues: Bool = false, limit: Int? = 20) async -> LinearCandidateFetchResult {
+        guard let store else {
+            return LinearCandidateFetchResult(issues: [], notice: nil, isComplete: false)
+        }
+        let defaultTeamId = store.linearConfig.teamId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuredTeams = store.linearConfig.configuredTeams
+        let importProjects = store.linearConfig.configuredImportProjects
+        guard !configuredTeams.isEmpty || importProjects.contains(where: { $0.teamId?.isEmpty == false }) else {
             DevLog.shared.info("LinearSync", "candidate fetch skipped: teamId is empty")
-            return []
+            return LinearCandidateFetchResult(issues: [], notice: "尚未选择 Linear Team", isComplete: false)
         }
-        let projectId = store.linearConfig.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let remoteIssues = await fetchIssues(teamId: teamId, projectId: projectId.isEmpty ? nil : projectId)
-        let candidates = remoteIssues.filter { remote in
-            shouldAutoImportLinearIssue(remote) && !store.hasIssueFromLinear(remote)
+        let fetchResult: LinearIssueFetchResult
+        if includeAllTeamIssues || importProjects.isEmpty {
+            let scopes = configuredTeams.map { LinearIssueFetchScope(teamId: $0.id, projectId: nil) }
+            fetchResult = await fetchIssuesConcurrently(scopes: scopes, limit: limit)
+        } else {
+            var scopes: [LinearIssueFetchScope] = []
+            for project in importProjects {
+                let projectTeamId = project.teamId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let effectiveTeamId: String
+                if let projectTeamId, !projectTeamId.isEmpty {
+                    effectiveTeamId = projectTeamId
+                } else {
+                    effectiveTeamId = defaultTeamId
+                }
+                guard !effectiveTeamId.isEmpty else { continue }
+                scopes.append(LinearIssueFetchScope(teamId: effectiveTeamId, projectId: project.id))
+            }
+            fetchResult = await fetchIssuesConcurrently(scopes: scopes, limit: limit)
         }
-        DevLog.shared.info("LinearSync", "found \(candidates.count) Linear import candidates")
-        return candidates
+        var candidates = fetchResult.issues.filter { remote in
+            (includeAllTeamIssues || !importProjects.isEmpty || shouldAutoImportLinearIssue(remote)) && !store.hasIssueFromLinear(remote)
+        }
+        candidates = sortedLinearImportCandidates(candidates)
+        if let limit {
+            candidates = Array(candidates.prefix(limit))
+        }
+        let scopeText = includeAllTeamIssues || importProjects.isEmpty ? "team" : "\(importProjects.count) project(s)"
+        let modeText = includeAllTeamIssues ? "manual" : "automatic"
+        DevLog.shared.info("LinearSync", "found \(candidates.count) Linear import candidates [scope=\(scopeText), mode=\(modeText)]")
+        let notices = Array(Set(fetchResult.notices)).sorted()
+        return LinearCandidateFetchResult(
+            issues: candidates,
+            notice: notices.isEmpty ? nil : notices.joined(separator: "\n"),
+            isComplete: fetchResult.isComplete
+        )
+    }
+
+    private struct LinearIssueFetchScope: Sendable {
+        let teamId: String
+        let projectId: String?
+    }
+
+    private func fetchIssuesConcurrently(scopes: [LinearIssueFetchScope], limit: Int? = nil) async -> LinearIssueFetchResult {
+        guard !scopes.isEmpty else {
+            return LinearIssueFetchResult(issues: [], notices: [], isComplete: true)
+        }
+        let maximumConcurrentRequests = 4
+        return await withTaskGroup(of: LinearIssueFetchResult.self, returning: LinearIssueFetchResult.self) { group in
+            var nextScopeIndex = 0
+            var result: [LinearIssue] = []
+            var seen = Set<String>()
+            var notices: [String] = []
+            var isComplete = true
+
+            for _ in 0..<min(maximumConcurrentRequests, scopes.count) {
+                let scope = scopes[nextScopeIndex]
+                nextScopeIndex += 1
+                group.addTask { [self] in
+                    await fetchIssuesResult(
+                        teamId: scope.teamId,
+                        projectId: scope.projectId,
+                        pageSize: limit == nil ? 100 : max(limit ?? 100, 100),
+                        maximumIssues: limit,
+                        orderByCreatedAt: limit != nil
+                    )
+                }
+            }
+
+            while let fetchResult = await group.next() {
+                for issue in fetchResult.issues where seen.insert(issue.id).inserted {
+                    result.append(issue)
+                }
+                notices.append(contentsOf: fetchResult.notices)
+                isComplete = isComplete && fetchResult.isComplete
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    isComplete = false
+                    break
+                }
+                if nextScopeIndex < scopes.count {
+                    let scope = scopes[nextScopeIndex]
+                    nextScopeIndex += 1
+                    group.addTask { [self] in
+                        await fetchIssuesResult(
+                            teamId: scope.teamId,
+                            projectId: scope.projectId,
+                            pageSize: limit == nil ? 100 : max(limit ?? 100, 100),
+                            maximumIssues: limit,
+                            orderByCreatedAt: limit != nil
+                        )
+                    }
+                }
+            }
+            let issues = limit.map { Array(sortedLinearImportCandidates(result).prefix($0)) } ?? result
+            return LinearIssueFetchResult(issues: issues, notices: notices, isComplete: isComplete)
+        }
+    }
+
+    private func sortedLinearImportCandidates(_ issues: [LinearIssue]) -> [LinearIssue] {
+        issues.sorted { lhs, rhs in
+            let lhsDone = isDoneLinearState(lhs.state)
+            let rhsDone = isDoneLinearState(rhs.state)
+            if lhsDone != rhsDone { return !lhsDone }
+            let lhsDate = parseISO8601(lhs.createdAt) ?? .distantPast
+            let rhsDate = parseISO8601(rhs.createdAt) ?? .distantPast
+            if lhsDate != rhsDate { return lhsDate > rhsDate }
+            return lhs.identifier.localizedStandardCompare(rhs.identifier) == .orderedDescending
+        }
+    }
+
+    private func isDoneLinearState(_ state: LinearState?) -> Bool {
+        guard let state else { return false }
+        let name = LinearConfig.normalizedStatusName(state.name)
+        let type = state.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return type == "completed" || name == "done"
     }
 
     private func shouldAutoImportLinearIssue(_ issue: LinearIssue) -> Bool {
@@ -733,27 +947,66 @@ final class LinearService {
         }
     }
 
-    private func executeQuery(query: String, token: String) async -> [String: Any]? {
-        do {
-            let (data, response) = try await performRequest(query: query, token: token)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                if let http = response as? HTTPURLResponse {
+    private func executeQuery(
+        query: String,
+        token: String,
+        retryTransientReadFailures: Bool = false
+    ) async -> [String: Any]? {
+        let maximumAttempts = retryTransientReadFailures ? 4 : 1
+        for attempt in 0..<maximumAttempts {
+            do {
+                let (data, response) = try await performRequest(query: query, token: token)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    guard let http = response as? HTTPURLResponse else { return nil }
                     DevLog.shared.error("Linear", "HTTP \(http.statusCode): \(responsePreview(data))")
+                    let isTransient = http.statusCode == 429 || (500...599).contains(http.statusCode)
+                    if retryTransientReadFailures, isTransient, attempt + 1 < maximumAttempts {
+                        guard await waitBeforeLinearRetry(response: http, attempt: attempt) else { return nil }
+                        continue
+                    }
+                    return nil
+                }
+                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    DevLog.shared.error("Linear", "invalid JSON response \(responsePreview(data))")
+                    return nil
+                }
+                let messages = graphQLErrorMessages(from: json)
+                if !messages.isEmpty {
+                    DevLog.shared.error("Linear", "GraphQL errors: \(messages.joined(separator: "; "))")
+                }
+                return json
+            } catch {
+                if Task.isCancelled || isCancellationError(error) {
+                    return nil
+                }
+                DevLog.shared.error("Linear", "request failed: \(error.localizedDescription)")
+                if retryTransientReadFailures, attempt + 1 < maximumAttempts {
+                    guard await waitBeforeLinearRetry(response: nil, attempt: attempt) else { return nil }
+                    continue
                 }
                 return nil
             }
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                DevLog.shared.error("Linear", "invalid JSON response \(responsePreview(data))")
-                return nil
-            }
-            let messages = graphQLErrorMessages(from: json)
-            if !messages.isEmpty {
-                DevLog.shared.error("Linear", "GraphQL errors: \(messages.joined(separator: "; "))")
-            }
-            return json
+        }
+        return nil
+    }
+
+    private nonisolated func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        guard let urlError = error as? URLError else { return false }
+        return urlError.code == .cancelled
+    }
+
+    private func waitBeforeLinearRetry(response: HTTPURLResponse?, attempt: Int) async -> Bool {
+        let retryAfter = response?
+            .value(forHTTPHeaderField: "Retry-After")
+            .flatMap(Double.init)
+        let fallback = min(0.5 * pow(2, Double(attempt)), 8)
+        let delay = max(retryAfter ?? fallback, 0)
+        do {
+            try await Task.sleep(for: .milliseconds(Int64(delay * 1_000)))
+            return !Task.isCancelled
         } catch {
-            DevLog.shared.error("Linear", "request failed: \(error.localizedDescription)")
-            return nil
+            return false
         }
     }
 
@@ -783,15 +1036,19 @@ final class LinearService {
         }
     }
 
-    private func mapLinearState(_ stateName: String) -> IssueStatus? {
+    private func mapLinearState(_ state: LinearState) -> IssueStatus? {
         guard let store else { return nil }
-        for (linearName, localCase) in store.linearConfig.statusMapping {
-            if linearName.localizedCaseInsensitiveCompare(stateName) == .orderedSame,
-               let matched = IssueStatus.fromCaseName(localCase) {
-                return matched
-            }
+        if let localCase = store.linearConfig.mappedStatusCase(for: state.name),
+           let matched = IssueStatus.fromCaseName(localCase) {
+            return matched
         }
-        return nil
+        switch state.type.lowercased() {
+        case "completed": return .fixed
+        case "canceled": return .ignored
+        case "started": return .inProgress
+        case "triage", "backlog", "unstarted": return .pending
+        default: return nil
+        }
     }
 
     private func escapeGraphQL(_ str: String) -> String {
@@ -865,11 +1122,24 @@ final class LinearService {
            let aname = assigneeObj["name"] as? String {
             assignee = LinearUser(id: aid, name: aname)
         }
+        var creator: LinearUser?
+        if let creatorObj = node["creator"] as? [String: Any],
+           let creatorID = creatorObj["id"] as? String,
+           let creatorName = creatorObj["name"] as? String {
+            creator = LinearUser(id: creatorID, name: creatorName)
+        }
+        var team: LinearTeam?
+        if let teamObj = node["team"] as? [String: Any],
+           let teamID = teamObj["id"] as? String,
+           let teamName = teamObj["name"] as? String,
+           let teamKey = teamObj["key"] as? String {
+            team = LinearTeam(id: teamID, name: teamName, key: teamKey)
+        }
         var project: LinearProject?
         if let projectObj = node["project"] as? [String: Any],
            let pid = projectObj["id"] as? String,
            let pname = projectObj["name"] as? String {
-            project = LinearProject(id: pid, name: pname)
+            project = LinearProject(id: pid, name: pname, teamId: team?.id, teamName: team?.name)
         }
         var labels: [String] = []
         if let labelsObj = node["labels"] as? [String: Any],
@@ -877,7 +1147,7 @@ final class LinearService {
             labels = labelNodes.compactMap { $0["name"] as? String }
         }
         return LinearIssue(id: id, identifier: identifier, title: title, description: description,
-                           state: state, assignee: assignee, project: project, labels: labels, url: url,
+                           state: state, assignee: assignee, creator: creator, team: team, project: project, labels: labels, url: url,
                            createdAt: createdAt, updatedAt: updatedAt)
     }
 }

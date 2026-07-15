@@ -164,7 +164,7 @@ struct IssueTrackerTab: View {
 
                 Section("统计") {
                     let total = store.visibleTrackedIssues.count
-                    let unresolved = store.visibleTrackedIssues.filter { !$0.status.isResolved && $0.status != .observing }.count
+                    let unresolved = store.visibleTrackedIssues.filter { !$0.isEffectivelyResolved && $0.effectiveStatus != .observing }.count
                     HStack {
                         Text("总数")
                         Spacer()
@@ -238,7 +238,7 @@ struct IssueTrackerTab: View {
 
     private var myOpenReportedCount: Int {
         store.visibleTrackedIssues.filter { issue in
-            isMine(issue) && !issue.status.isResolved
+            isMine(issue) && !issue.isEffectivelyResolved
         }.count
     }
 

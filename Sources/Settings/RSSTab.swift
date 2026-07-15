@@ -44,14 +44,15 @@ struct RSSTab: View {
                         Text("暂无订阅源")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(Array(store.rssFeeds.enumerated()), id: \.element.id) { i, feed in
+                        ForEach(store.rssFeeds) { feed in
                             VStack(alignment: .leading, spacing: 0) {
                                 // Main row
                                 HStack(spacing: 8) {
                                     Toggle("", isOn: Binding(
-                                        get: { feed.enabled },
+                                        get: { store.rssFeeds.first(where: { $0.id == feed.id })?.enabled ?? false },
                                         set: {
-                                            store.rssFeeds[i].enabled = $0
+                                            guard let index = store.rssFeeds.firstIndex(where: { $0.id == feed.id }) else { return }
+                                            store.rssFeeds[index].enabled = $0
                                             saveState.triggerSave()
                                         }
                                     ))
@@ -117,9 +118,10 @@ struct RSSTab: View {
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                         Picker("", selection: Binding(
-                                            get: { feed.pollingInterval },
+                                            get: { store.rssFeeds.first(where: { $0.id == feed.id })?.pollingInterval ?? feed.pollingInterval },
                                             set: {
-                                                store.rssFeeds[i].pollingInterval = $0
+                                                guard let index = store.rssFeeds.firstIndex(where: { $0.id == feed.id }) else { return }
+                                                store.rssFeeds[index].pollingInterval = $0
                                                 saveState.triggerSave()
                                             }
                                         )) {

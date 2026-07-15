@@ -54,11 +54,12 @@ enum SyncError: LocalizedError {
     case downloadFailed(String)
     case notAvailable(String)
     case invalidResponse(String)
+    case conflict(String)
 
     var errorDescription: String? {
         switch self {
         case .uploadFailed(let msg), .downloadFailed(let msg),
-             .notAvailable(let msg), .invalidResponse(let msg): return msg
+             .notAvailable(let msg), .invalidResponse(let msg), .conflict(let msg): return msg
         }
     }
 }

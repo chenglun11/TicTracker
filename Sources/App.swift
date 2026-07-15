@@ -1,15 +1,26 @@
 import SwiftUI
 import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    var store: DataStore?
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate {
+    var store: DataStore? {
+        didSet {
+            if didFinishLaunching {
+                initializeServicesIfNeeded()
+            }
+        }
+    }
     private var didInitializeServices = false
+    private var didFinishLaunching = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
-        Task { @MainActor in
-            self.initializeServicesIfNeeded()
-        }
+        didFinishLaunching = true
+        initializeServicesIfNeeded()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        store?.flushPendingSaves()
     }
 
     @MainActor
@@ -40,7 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if store.linearConfig.enabled {
             LinearService.shared.startPolling()
         }
-        if SyncManager.shared.config.enabled {
+        LocalMCPServer.shared.setup(store: store)
+        if SyncManager.shared.config.enabled && !SyncManager.shared.automaticSyncPaused {
             Task { await SyncManager.shared.sync(store: store) }
             SyncManager.shared.startPeriodicSync(store: store)
         }
@@ -156,6 +168,9 @@ struct TicTrackerApp: App {
             HStack(spacing: 2) {
                 Image(systemName: "plus.circle.fill")
                 Text("\(store.todayTotal)")
+            }
+            .task {
+                LocalMCPServer.shared.setup(store: store)
             }
         }
         .menuBarExtraStyle(.window)

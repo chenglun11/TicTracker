@@ -113,6 +113,12 @@ struct FeishuBotConfig: Codable, Sendable {
     var customTemplateTitle: String = "每日工单报告"
     var cardTitle: String = "每日工单报告"
     var includeVisualReportImage: Bool = true
+    var issueMonthlyReportEnabled: Bool = false
+    var issueMonthlyReportDay: Int = 1
+    var issueMonthlyReportHour: Int = 9
+    var issueMonthlyReportMinute: Int = 30
+    var issueMonthlyReportIncludeImage: Bool = true
+    var issueMonthlyReportLastSentMonth: String = ""
     var focusIssueTag: String = "今日Bug"
     var sendHistory: [SendHistory] = []
     var maxRetries: Int = 3
@@ -135,6 +141,7 @@ struct FeishuBotConfig: Codable, Sendable {
     var showSupportStats: Bool = true   // 项目支持统计
     var showOverview: Bool = true       // 统计概览（新建/解决/待处理）
     var showPending: Bool = true        // 待处理列表
+    var showInProgress: Bool = true     // 处理中列表
     var showObserving: Bool = true      // 观测中列表
     var showResolved: Bool = true       // 今日已解决列表
     var showDailyNote: Bool = true      // 日报文字
@@ -158,6 +165,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case sendTimes, lastSentTimes, lastSentDateTime
         case sendHour, sendMinute, lastSentDate  // legacy
         case messageFormat, sendHistory, maxRetries, customTemplate, customTemplateTitle, cardTitle, includeVisualReportImage, focusIssueTag
+        case issueMonthlyReportEnabled, issueMonthlyReportDay, issueMonthlyReportHour, issueMonthlyReportMinute, issueMonthlyReportIncludeImage, issueMonthlyReportLastSentMonth
         case appID
         case appSecret
         case verificationToken
@@ -169,7 +177,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case taskDefaultCollaboratorOpenID
         case botTasklistGUID, botTasklistName
         case feishuUserNameMap
-        case showSupportStats, showOverview, showPending, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showMyReported, showFocusTag, showComments
+        case showSupportStats, showOverview, showPending, showInProgress, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showMyReported, showFocusTag, showComments
         case fieldType, fieldDepartment, fieldJiraKey, fieldStatus, fieldAssignee
     }
 
@@ -193,6 +201,12 @@ struct FeishuBotConfig: Codable, Sendable {
         customTemplateTitle = try c.decodeIfPresent(String.self, forKey: .customTemplateTitle) ?? "每日工单报告"
         cardTitle = try c.decodeIfPresent(String.self, forKey: .cardTitle) ?? "每日工单报告"
         includeVisualReportImage = try c.decodeIfPresent(Bool.self, forKey: .includeVisualReportImage) ?? true
+        issueMonthlyReportEnabled = try c.decodeIfPresent(Bool.self, forKey: .issueMonthlyReportEnabled) ?? false
+        issueMonthlyReportDay = min(max(try c.decodeIfPresent(Int.self, forKey: .issueMonthlyReportDay) ?? 1, 1), 31)
+        issueMonthlyReportHour = min(max(try c.decodeIfPresent(Int.self, forKey: .issueMonthlyReportHour) ?? 9, 0), 23)
+        issueMonthlyReportMinute = min(max(try c.decodeIfPresent(Int.self, forKey: .issueMonthlyReportMinute) ?? 30, 0), 59)
+        issueMonthlyReportIncludeImage = try c.decodeIfPresent(Bool.self, forKey: .issueMonthlyReportIncludeImage) ?? true
+        issueMonthlyReportLastSentMonth = try c.decodeIfPresent(String.self, forKey: .issueMonthlyReportLastSentMonth) ?? ""
         focusIssueTag = try c.decodeIfPresent(String.self, forKey: .focusIssueTag) ?? "今日Bug"
         sendHistory = try c.decodeIfPresent([SendHistory].self, forKey: .sendHistory) ?? []
         maxRetries = try c.decodeIfPresent(Int.self, forKey: .maxRetries) ?? 3
@@ -228,6 +242,7 @@ struct FeishuBotConfig: Codable, Sendable {
         showSupportStats = try c.decodeIfPresent(Bool.self, forKey: .showSupportStats) ?? true
         showOverview = try c.decodeIfPresent(Bool.self, forKey: .showOverview) ?? true
         showPending = try c.decodeIfPresent(Bool.self, forKey: .showPending) ?? true
+        showInProgress = try c.decodeIfPresent(Bool.self, forKey: .showInProgress) ?? true
         showObserving = try c.decodeIfPresent(Bool.self, forKey: .showObserving) ?? true
         showScheduled = try c.decodeIfPresent(Bool.self, forKey: .showScheduled) ?? true
         showTesting = try c.decodeIfPresent(Bool.self, forKey: .showTesting) ?? true
@@ -257,20 +272,17 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(customTemplateTitle, forKey: .customTemplateTitle)
         try c.encode(cardTitle, forKey: .cardTitle)
         try c.encode(includeVisualReportImage, forKey: .includeVisualReportImage)
+        try c.encode(issueMonthlyReportEnabled, forKey: .issueMonthlyReportEnabled)
+        try c.encode(issueMonthlyReportDay, forKey: .issueMonthlyReportDay)
+        try c.encode(issueMonthlyReportHour, forKey: .issueMonthlyReportHour)
+        try c.encode(issueMonthlyReportMinute, forKey: .issueMonthlyReportMinute)
+        try c.encode(issueMonthlyReportIncludeImage, forKey: .issueMonthlyReportIncludeImage)
+        try c.encode(issueMonthlyReportLastSentMonth, forKey: .issueMonthlyReportLastSentMonth)
         try c.encode(focusIssueTag, forKey: .focusIssueTag)
         try c.encode(sendHistory, forKey: .sendHistory)
         try c.encode(maxRetries, forKey: .maxRetries)
         if !appID.isEmpty {
             try c.encode(appID, forKey: .appID)
-        }
-        if !appSecret.isEmpty {
-            try c.encode(appSecret, forKey: .appSecret)
-        }
-        if !verificationToken.isEmpty {
-            try c.encode(verificationToken, forKey: .verificationToken)
-        }
-        if !encryptKey.isEmpty {
-            try c.encode(encryptKey, forKey: .encryptKey)
         }
         if !allowedChatIDs.isEmpty {
             try c.encode(allowedChatIDs, forKey: .allowedChatIDs)
@@ -300,6 +312,7 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(showSupportStats, forKey: .showSupportStats)
         try c.encode(showOverview, forKey: .showOverview)
         try c.encode(showPending, forKey: .showPending)
+        try c.encode(showInProgress, forKey: .showInProgress)
         try c.encode(showObserving, forKey: .showObserving)
         try c.encode(showScheduled, forKey: .showScheduled)
         try c.encode(showTesting, forKey: .showTesting)

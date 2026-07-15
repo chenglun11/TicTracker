@@ -193,10 +193,10 @@ struct JiraTab: View {
                 Text("工单按字段自动关联到项目，从上到下匹配第一条命中的规则")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(Array(store.jiraConfig.mappingRules.enumerated()), id: \.element.id) { i, rule in
+                ForEach(store.jiraConfig.mappingRules) { rule in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 8) {
-                            Picker("", selection: Bindable(store).jiraConfig.mappingRules[i].field) {
+                            Picker("", selection: mappingRuleBinding(id: rule.id, keyPath: \.field, fallback: rule.field)) {
                                 ForEach(JiraMappingField.allCases, id: \.self) { f in
                                     Text(f.label).tag(f)
                                 }
@@ -206,14 +206,14 @@ struct JiraTab: View {
                             .frame(width: 80)
                             Text("=")
                                 .foregroundStyle(.secondary)
-                            TextField("值", text: Bindable(store).jiraConfig.mappingRules[i].value)
+                            TextField("值", text: mappingRuleBinding(id: rule.id, keyPath: \.value, fallback: rule.value))
                                 .textFieldStyle(UnderlineTextFieldStyle())
                             Spacer()
                         }
                         HStack(spacing: 8) {
                             Text("→")
                                 .foregroundStyle(.secondary)
-                            Picker("", selection: Bindable(store).jiraConfig.mappingRules[i].department) {
+                            Picker("", selection: mappingRuleBinding(id: rule.id, keyPath: \.department, fallback: rule.department)) {
                                 Text("无").tag("")
                                 ForEach(store.departments, id: \.self) { dept in
                                     Text(dept).tag(dept)
@@ -224,7 +224,8 @@ struct JiraTab: View {
                             .frame(width: 120)
                             Spacer()
                             Button {
-                                store.jiraConfig.mappingRules.remove(at: i)
+                                store.jiraConfig.mappingRules.removeAll { $0.id == rule.id }
+                                saveState.triggerSave()
                             } label: {
                                 Image(systemName: "trash")
                                     .font(.caption)
@@ -311,6 +312,23 @@ struct JiraTab: View {
         .task {
             if isActive { loadTokenIfNeeded() }
         }
+    }
+
+    private func mappingRuleBinding<Value>(
+        id: UUID,
+        keyPath: WritableKeyPath<JiraMappingRule, Value>,
+        fallback: Value
+    ) -> Binding<Value> {
+        Binding(
+            get: {
+                store.jiraConfig.mappingRules.first(where: { $0.id == id })?[keyPath: keyPath] ?? fallback
+            },
+            set: { value in
+                guard let index = store.jiraConfig.mappingRules.firstIndex(where: { $0.id == id }) else { return }
+                store.jiraConfig.mappingRules[index][keyPath: keyPath] = value
+                saveState.triggerSave()
+            }
+        )
     }
 
     private func loadTokenIfNeeded() {

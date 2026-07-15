@@ -9,6 +9,9 @@ struct FeishuBotTab: View {
     @State private var sending = false
     @State private var sendResult: String?
     @State private var sendSuccess = false
+    @State private var sendingIssueMonthlyReport = false
+    @State private var issueMonthlyReportResult: String?
+    @State private var issueMonthlyReportSuccess = true
     @State private var didLoadSecrets = false
     @State private var appSecretInput = ""
     @State private var keychainMessage: String?
@@ -86,6 +89,12 @@ struct FeishuBotTab: View {
                     systemImage: "tag.fill",
                     tint: store.feishuBotConfig.showFocusTag ? .green : .secondary
                 )
+                SettingsStatusRow(
+                    title: "问题月报",
+                    value: store.feishuBotConfig.issueMonthlyReportEnabled ? issueMonthlyScheduleSummary : "未启用",
+                    systemImage: "calendar.badge.clock",
+                    tint: store.feishuBotConfig.issueMonthlyReportEnabled ? .purple : .secondary
+                )
                 SettingsHint(text: "日报始终统计当天完整数据；重点 Tag 只额外生成一组，推送成功后不会自动移除标签。")
             }
 
@@ -109,7 +118,7 @@ struct FeishuBotTab: View {
                         .onChange(of: store.feishuBotConfig.cardTitle) { _, _ in saveState.debouncedSave() }
                 }
 
-                ForEach(Array(store.feishuBotConfig.webhooks.enumerated()), id: \.element.id) { index, webhook in
+                ForEach(store.feishuBotConfig.webhooks) { webhook in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 8) {
                             Text(webhook.url)
@@ -119,7 +128,8 @@ struct FeishuBotTab: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             Button {
                                 FeishuBotService.deleteSecret(for: webhook.id)
-                                store.feishuBotConfig.webhooks.remove(at: index)
+                                secretInputs.removeValue(forKey: webhook.id)
+                                store.feishuBotConfig.webhooks.removeAll { $0.id == webhook.id }
                                 saveState.triggerSave()
                             } label: {
                                 Image(systemName: "trash")
@@ -129,16 +139,10 @@ struct FeishuBotTab: View {
                             .buttonStyle(.borderless)
                         }
                         HStack(spacing: 12) {
-                            Toggle("发送", isOn: Binding(
-                                get: { store.feishuBotConfig.webhooks[index].enabled },
-                                set: { store.feishuBotConfig.webhooks[index].enabled = $0; saveState.triggerSave() }
-                            ))
+                            Toggle("发送", isOn: webhookBinding(id: webhook.id, keyPath: \.enabled))
                             .controlSize(.small)
 
-                            Toggle("签名校验", isOn: Binding(
-                                get: { store.feishuBotConfig.webhooks[index].signEnabled },
-                                set: { store.feishuBotConfig.webhooks[index].signEnabled = $0; saveState.triggerSave() }
-                            ))
+                            Toggle("签名校验", isOn: webhookBinding(id: webhook.id, keyPath: \.signEnabled))
                             .controlSize(.small)
                         }
                         if webhook.signEnabled {
@@ -202,10 +206,10 @@ struct FeishuBotTab: View {
             }
 
             Section("定时发送") {
-                ForEach(Array(store.feishuBotConfig.sendTimes.enumerated()), id: \.element.id) { i, scheduleTime in
+                ForEach(store.feishuBotConfig.sendTimes) { scheduleTime in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Picker("", selection: Bindable(store).feishuBotConfig.sendTimes[i].hour) {
+                            Picker("", selection: scheduleTimeBinding(id: scheduleTime.id, keyPath: \.hour)) {
                                 ForEach(0..<24, id: \.self) { h in
                                     Text(String(format: "%02d", h)).tag(h)
                                 }
@@ -215,7 +219,7 @@ struct FeishuBotTab: View {
                             .frame(width: 60)
                             Text(":")
                                 .foregroundStyle(.tertiary)
-                            Picker("", selection: Bindable(store).feishuBotConfig.sendTimes[i].minute) {
+                            Picker("", selection: scheduleTimeBinding(id: scheduleTime.id, keyPath: \.minute)) {
                                 ForEach(0..<60, id: \.self) { m in
                                     Text(String(format: "%02d", m)).tag(m)
                                 }
@@ -225,9 +229,8 @@ struct FeishuBotTab: View {
                             .frame(width: 60)
                             Spacer()
                             Button {
-                                let key = store.feishuBotConfig.sendTimes[i].key
-                                store.feishuBotConfig.sendTimes.remove(at: i)
-                                store.feishuBotConfig.lastSentTimes.removeValue(forKey: key)
+                                store.feishuBotConfig.sendTimes.removeAll { $0.id == scheduleTime.id }
+                                store.feishuBotConfig.lastSentTimes.removeValue(forKey: scheduleTime.key)
                                 FeishuBotService.shared.restartScheduler()
                                 saveState.triggerSave()
                             } label: {
@@ -240,17 +243,9 @@ struct FeishuBotTab: View {
                         HStack(spacing: 4) {
                             let weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"]
                             ForEach(1...7, id: \.self) { wd in
-                                let isSelected = store.feishuBotConfig.sendTimes[i].weekdays.contains(wd)
+                                let isSelected = scheduleTime.weekdays.contains(wd)
                                 Button {
-                                    if isSelected {
-                                        // 至少保留一天
-                                        guard store.feishuBotConfig.sendTimes[i].weekdays.count > 1 else { return }
-                                        store.feishuBotConfig.sendTimes[i].weekdays.remove(wd)
-                                    } else {
-                                        store.feishuBotConfig.sendTimes[i].weekdays.insert(wd)
-                                    }
-                                    FeishuBotService.shared.restartScheduler()
-                                    saveState.triggerSave()
+                                    toggleScheduleWeekday(id: scheduleTime.id, weekday: wd)
                                 } label: {
                                     Text(weekdayLabels[wd - 1])
                                         .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
@@ -262,20 +257,10 @@ struct FeishuBotTab: View {
                                 .buttonStyle(.borderless)
                             }
                             Spacer()
-                            Text(weekdaySummary(store.feishuBotConfig.sendTimes[i].weekdays))
+                            Text(weekdaySummary(scheduleTime.weekdays))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
-                    }
-                    .onChange(of: store.feishuBotConfig.sendTimes[i].hour) { _, _ in
-                        store.feishuBotConfig.lastSentTimes.removeValue(forKey: scheduleTime.key)
-                        FeishuBotService.shared.restartScheduler()
-                        saveState.triggerSave()
-                    }
-                    .onChange(of: store.feishuBotConfig.sendTimes[i].minute) { _, _ in
-                        store.feishuBotConfig.lastSentTimes.removeValue(forKey: scheduleTime.key)
-                        FeishuBotService.shared.restartScheduler()
-                        saveState.triggerSave()
                     }
                 }
                 Button("添加时间") {
@@ -284,6 +269,88 @@ struct FeishuBotTab: View {
                     saveState.triggerSave()
                 }
                 .controlSize(.small)
+            }
+
+            Section {
+                Toggle("启用问题追踪月报", isOn: Bindable(store).feishuBotConfig.issueMonthlyReportEnabled)
+                    .onChange(of: store.feishuBotConfig.issueMonthlyReportEnabled) { _, _ in
+                        FeishuBotService.shared.restartScheduler()
+                        saveState.triggerSave()
+                    }
+
+                HStack(spacing: 8) {
+                    Text("每月")
+                    Picker("", selection: Bindable(store).feishuBotConfig.issueMonthlyReportDay) {
+                        ForEach(1...31, id: \.self) { day in
+                            Text("\(day) 号").tag(day)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 82)
+                    Text("日")
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: Bindable(store).feishuBotConfig.issueMonthlyReportHour) {
+                        ForEach(0..<24, id: \.self) { hour in
+                            Text(String(format: "%02d", hour)).tag(hour)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 60)
+                    Text(":")
+                        .foregroundStyle(.tertiary)
+                    Picker("", selection: Bindable(store).feishuBotConfig.issueMonthlyReportMinute) {
+                        ForEach(0..<60, id: \.self) { minute in
+                            Text(String(format: "%02d", minute)).tag(minute)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 60)
+                    Spacer()
+                }
+                .disabled(!store.feishuBotConfig.issueMonthlyReportEnabled)
+                .onChange(of: store.feishuBotConfig.issueMonthlyReportDay) { _, _ in saveIssueMonthlyScheduleChange() }
+                .onChange(of: store.feishuBotConfig.issueMonthlyReportHour) { _, _ in saveIssueMonthlyScheduleChange() }
+                .onChange(of: store.feishuBotConfig.issueMonthlyReportMinute) { _, _ in saveIssueMonthlyScheduleChange() }
+
+                Toggle("附带问题月报图", isOn: Bindable(store).feishuBotConfig.issueMonthlyReportIncludeImage)
+                    .onChange(of: store.feishuBotConfig.issueMonthlyReportIncludeImage) { _, _ in saveState.triggerSave() }
+
+                HStack {
+                    Menu {
+                        Button("推送本月问题月报") {
+                            sendIssueMonthlyReport(.currentMonth)
+                        }
+                        Button("推送上月问题月报") {
+                            sendIssueMonthlyReport(.previousMonth)
+                        }
+                    } label: {
+                        Label(sendingIssueMonthlyReport ? "推送中…" : "立即推送", systemImage: sendingIssueMonthlyReport ? "hourglass" : "paperplane.fill")
+                    }
+                    .disabled(sendingIssueMonthlyReport || activeWebhookCount == 0)
+
+                    if let issueMonthlyReportResult {
+                        Text(issueMonthlyReportResult)
+                            .font(.caption)
+                            .foregroundStyle(issueMonthlyReportSuccess ? .green : .red)
+                    }
+
+                    Spacer()
+
+                    if !store.feishuBotConfig.issueMonthlyReportLastSentMonth.isEmpty {
+                        Text("上次月报：\(store.feishuBotConfig.issueMonthlyReportLastSentMonth)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("问题月报推送")
+            } footer: {
+                Text("定时任务会推送上月问题追踪月报；如果选择 29-31 号，小月会在当月最后一天触发。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if store.feishuBotConfig.messageFormat == .customTemplate {
@@ -340,19 +407,6 @@ struct FeishuBotTab: View {
 
             if store.feishuBotConfig.messageFormat != .customTemplate {
                 reportModuleSections
-            }
-
-            Section("问题显示字段") {
-                Toggle("类型", isOn: Bindable(store).feishuBotConfig.fieldType)
-                    .onChange(of: store.feishuBotConfig.fieldType) { _, _ in saveState.triggerSave() }
-                Toggle("部门", isOn: Bindable(store).feishuBotConfig.fieldDepartment)
-                    .onChange(of: store.feishuBotConfig.fieldDepartment) { _, _ in saveState.triggerSave() }
-                Toggle("工单链接", isOn: Bindable(store).feishuBotConfig.fieldJiraKey)
-                    .onChange(of: store.feishuBotConfig.fieldJiraKey) { _, _ in saveState.triggerSave() }
-                Toggle("状态", isOn: Bindable(store).feishuBotConfig.fieldStatus)
-                    .onChange(of: store.feishuBotConfig.fieldStatus) { _, _ in saveState.triggerSave() }
-                Toggle("负责人", isOn: Bindable(store).feishuBotConfig.fieldAssignee)
-                    .onChange(of: store.feishuBotConfig.fieldAssignee) { _, _ in saveState.triggerSave() }
             }
 
             Section("飞书应用（双向交互）") {
@@ -462,6 +516,8 @@ struct FeishuBotTab: View {
                 .onChange(of: store.feishuBotConfig.showOverview) { _, _ in saveState.triggerSave() }
             Toggle("待处理问题列表", isOn: Bindable(store).feishuBotConfig.showPending)
                 .onChange(of: store.feishuBotConfig.showPending) { _, _ in saveState.triggerSave() }
+            Toggle("处理中问题列表", isOn: Bindable(store).feishuBotConfig.showInProgress)
+                .onChange(of: store.feishuBotConfig.showInProgress) { _, _ in saveState.triggerSave() }
             Toggle("观测中问题列表", isOn: Bindable(store).feishuBotConfig.showObserving)
                 .onChange(of: store.feishuBotConfig.showObserving) { _, _ in saveState.triggerSave() }
             Toggle("已排期问题列表", isOn: Bindable(store).feishuBotConfig.showScheduled)
@@ -472,8 +528,6 @@ struct FeishuBotTab: View {
                 .onChange(of: store.feishuBotConfig.showResolved) { _, _ in saveState.triggerSave() }
             Toggle("日报文字", isOn: Bindable(store).feishuBotConfig.showDailyNote)
                 .onChange(of: store.feishuBotConfig.showDailyNote) { _, _ in saveState.triggerSave() }
-            Toggle("问题评论（最近2条）", isOn: Bindable(store).feishuBotConfig.showComments)
-                .onChange(of: store.feishuBotConfig.showComments) { _, _ in saveState.triggerSave() }
         }
 
         Section {
@@ -493,6 +547,47 @@ struct FeishuBotTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func webhookBinding(id: UUID, keyPath: WritableKeyPath<FeishuWebhook, Bool>) -> Binding<Bool> {
+        Binding(
+            get: {
+                store.feishuBotConfig.webhooks.first(where: { $0.id == id })?[keyPath: keyPath] ?? false
+            },
+            set: { value in
+                guard let index = store.feishuBotConfig.webhooks.firstIndex(where: { $0.id == id }) else { return }
+                store.feishuBotConfig.webhooks[index][keyPath: keyPath] = value
+                saveState.triggerSave()
+            }
+        )
+    }
+
+    private func scheduleTimeBinding(id: UUID, keyPath: WritableKeyPath<ScheduleTime, Int>) -> Binding<Int> {
+        Binding(
+            get: {
+                store.feishuBotConfig.sendTimes.first(where: { $0.id == id })?[keyPath: keyPath] ?? 0
+            },
+            set: { value in
+                guard let index = store.feishuBotConfig.sendTimes.firstIndex(where: { $0.id == id }) else { return }
+                let oldKey = store.feishuBotConfig.sendTimes[index].key
+                store.feishuBotConfig.sendTimes[index][keyPath: keyPath] = value
+                store.feishuBotConfig.lastSentTimes.removeValue(forKey: oldKey)
+                FeishuBotService.shared.restartScheduler()
+                saveState.triggerSave()
+            }
+        )
+    }
+
+    private func toggleScheduleWeekday(id: UUID, weekday: Int) {
+        guard let index = store.feishuBotConfig.sendTimes.firstIndex(where: { $0.id == id }) else { return }
+        if store.feishuBotConfig.sendTimes[index].weekdays.contains(weekday) {
+            guard store.feishuBotConfig.sendTimes[index].weekdays.count > 1 else { return }
+            store.feishuBotConfig.sendTimes[index].weekdays.remove(weekday)
+        } else {
+            store.feishuBotConfig.sendTimes[index].weekdays.insert(weekday)
+        }
+        FeishuBotService.shared.restartScheduler()
+        saveState.triggerSave()
     }
 
     private func loadSecretsIfNeeded() {
@@ -532,6 +627,11 @@ struct FeishuBotTab: View {
         }
         return sorted.prefix(3).map { String(format: "%02d:%02d", $0.hour, $0.minute) }.joined(separator: "、") +
             (sorted.count > 3 ? " 等 \(sorted.count) 个" : "")
+    }
+
+    private var issueMonthlyScheduleSummary: String {
+        "每月 \(store.feishuBotConfig.issueMonthlyReportDay) 号 " +
+            String(format: "%02d:%02d", store.feishuBotConfig.issueMonthlyReportHour, store.feishuBotConfig.issueMonthlyReportMinute)
     }
 
     private var focusTagDisplay: String {
@@ -578,6 +678,26 @@ struct FeishuBotTab: View {
                 saveState.triggerSave()
             }
             sending = false
+        }
+    }
+
+    private func saveIssueMonthlyScheduleChange() {
+        store.feishuBotConfig.issueMonthlyReportLastSentMonth = ""
+        FeishuBotService.shared.restartScheduler()
+        saveState.triggerSave()
+    }
+
+    private func sendIssueMonthlyReport(_ period: WeeklyReport.Period) {
+        sendingIssueMonthlyReport = true
+        issueMonthlyReportResult = nil
+        Task {
+            let result = await FeishuBotService.shared.sendIssueTrackingReportNow(store: store, period: period)
+            issueMonthlyReportResult = result.message
+            issueMonthlyReportSuccess = result.success
+            if result.success {
+                saveState.triggerSave()
+            }
+            sendingIssueMonthlyReport = false
         }
     }
 

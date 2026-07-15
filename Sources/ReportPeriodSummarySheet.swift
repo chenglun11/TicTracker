@@ -1,8 +1,15 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ReportPeriodSummaryView: View {
     let store: DataStore
     @State private var period: WeeklyReport.Period = .currentMonth
+    @State private var isCopyingReport = false
+    @State private var isRenderingImage = false
+    @State private var isSendingFeishu = false
+    @State private var actionMessage: String?
+    @State private var actionSuccess = true
     @Environment(\.dismiss) private var dismiss
 
     private struct DayIssueSummary: Identifiable {
@@ -41,22 +48,24 @@ struct ReportPeriodSummaryView: View {
         keyFmt.dateFormat = "yyyy-MM-dd"
         let dayFmt = DateFormatter()
         dayFmt.dateFormat = "M/d"
-        let startKey = keyFmt.string(from: start)
-        let endKey = keyFmt.string(from: end)
+
+        func primaryDate(_ issue: TrackedIssue) -> Date {
+            issue.reportedAt ?? issue.createdAt
+        }
+
+        func primaryDateKey(_ issue: TrackedIssue) -> String {
+            keyFmt.string(from: primaryDate(issue))
+        }
 
         let issues = store.visibleTrackedIssues
             .filter { issue in
-                let keyInRange = issue.dateKey >= startKey && issue.dateKey <= endKey
-                let createdInRange = issue.createdAt >= start && issue.createdAt < endExclusive
-                let reportedInRange = issue.reportedAt.map { $0 >= start && $0 < endExclusive } ?? false
-                let updatedInRange = issue.updatedAt.map { $0 >= start && $0 < endExclusive } ?? false
-                let resolvedInRange = issue.resolvedAt.map { $0 >= start && $0 < endExclusive } ?? false
-                return keyInRange || createdInRange || reportedInRange || updatedInRange || resolvedInRange
+                let date = primaryDate(issue)
+                return date >= start && date < endExclusive
             }
             .sorted {
-                if $0.status.isResolved != $1.status.isResolved { return !$0.status.isResolved }
-                if $0.status != $1.status { return Self.statusRank($0.status) < Self.statusRank($1.status) }
-                return $0.dateKey > $1.dateKey
+                if $0.isEffectivelyResolved != $1.isEffectivelyResolved { return !$0.isEffectivelyResolved }
+                if $0.effectiveStatus != $1.effectiveStatus { return Self.statusRank($0.effectiveStatus) < Self.statusRank($1.effectiveStatus) }
+                return primaryDate($0) > primaryDate($1)
             }
 
         var days: [DayIssueSummary] = []
@@ -64,17 +73,16 @@ struct ReportPeriodSummaryView: View {
         while date <= end {
             let key = keyFmt.string(from: date)
             let created = issues.filter {
-                $0.dateKey == key ||
-                DataStore.dateKey(from: $0.createdAt) == key ||
-                $0.reportedAt.map { DataStore.dateKey(from: $0) == key } == true
-            }
-            let updated = issues.filter {
-                guard $0.updatedAt.map({ DataStore.dateKey(from: $0) == key }) == true else { return false }
-                let updatedIssue = $0
-                return !created.contains(where: { $0.id == updatedIssue.id })
+                primaryDateKey($0) == key
             }
             let resolved = issues.filter {
                 $0.resolvedAt.map { DataStore.dateKey(from: $0) == key } == true
+            }
+            let updated = issues.filter {
+                let updatedIssue = $0
+                guard !created.contains(where: { $0.id == updatedIssue.id }) else { return false }
+                guard !resolved.contains(where: { $0.id == updatedIssue.id }) else { return false }
+                return Self.hasReportUpdateActivity(updatedIssue, on: key)
             }
             let summary = DayIssueSummary(
                 id: key,
@@ -86,9 +94,10 @@ struct ReportPeriodSummaryView: View {
             if summary.total > 0 { days.append(summary) }
             date = calendar.date(byAdding: .day, value: 1, to: date)!
         }
+        let updatedIssueIDs = Set(days.flatMap { $0.updated.map(\.id) })
 
         let statusTotals = IssueStatus.allCases.compactMap { status -> (IssueStatus, Int)? in
-            let count = issues.filter { $0.status == status }.count
+            let count = issues.filter { $0.effectiveStatus == status }.count
             return count > 0 ? (status, count) : nil
         }
         let typeTotals = IssueType.allCases.compactMap { type -> (IssueType, Int)? in
@@ -113,13 +122,22 @@ struct ReportPeriodSummaryView: View {
         let sourceTotals = sourcePairs.sorted { lhs, rhs in
             lhs.1 == rhs.1 ? lhs.0 < rhs.0 : lhs.1 > rhs.1
         }
-        let openIssues = issues.filter { !$0.status.isResolved }
-        let resolvedIssues = issues.filter { $0.status.isResolved }
+        let openIssues = store.visibleTrackedIssues
+            .filter { issue in
+                guard !issue.isEffectivelyResolved, issue.effectiveStatus != .observing else { return false }
+                return primaryDate(issue) < endExclusive
+            }
+            .sorted {
+                if $0.isEscalated != $1.isEscalated { return $0.isEscalated }
+                if $0.effectiveStatus != $1.effectiveStatus { return Self.statusRank($0.effectiveStatus) < Self.statusRank($1.effectiveStatus) }
+                return primaryDate($0) < primaryDate($1)
+            }
+        let resolvedIssues = issues.filter { $0.isEffectivelyResolved }
         let referenceDate = min(Date(), endExclusive)
         let staleThreshold = calendar.date(byAdding: .day, value: -7, to: referenceDate) ?? referenceDate
         let staleOpenIssues = openIssues
-            .filter { $0.createdAt < staleThreshold && $0.status != .observing }
-            .sorted { $0.createdAt < $1.createdAt }
+            .filter { primaryDate($0) < staleThreshold }
+            .sorted { primaryDate($0) < primaryDate($1) }
         let unassignedOpenIssues = openIssues.filter {
             Self.normalizedAssignee($0) == "未分配"
         }
@@ -135,9 +153,9 @@ struct ReportPeriodSummaryView: View {
             assigneeTotals: assigneeTotals,
             sourceTotals: sourceTotals,
             days: Array(days.reversed()),
-            createdTotal: days.reduce(0) { $0 + $1.created.count },
-            updatedTotal: days.reduce(0) { $0 + $1.updated.count },
-            resolvedTotal: days.reduce(0) { $0 + $1.resolved.count },
+            createdTotal: issues.count,
+            updatedTotal: updatedIssueIDs.count,
+            resolvedTotal: resolvedIssues.count,
             staleOpenIssues: staleOpenIssues,
             unassignedOpenIssues: unassignedOpenIssues
         )
@@ -151,6 +169,7 @@ struct ReportPeriodSummaryView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     issueMetrics
                     analysisSection
+                    chartSection
                     distributionSection
                     focusSection
                     dayActivitySection
@@ -181,9 +200,34 @@ struct ReportPeriodSummaryView: View {
             .pickerStyle(.segmented)
             .frame(width: 132)
             Button {
-                WeeklyReport.copyIssueTrackingReportToClipboard(from: store, period: period)
+                copyIssueReport()
             } label: {
-                Label("复制问题报告", systemImage: "doc.on.doc")
+                Label(isCopyingReport ? "生成中..." : "复制问题报告", systemImage: isCopyingReport ? "hourglass" : "doc.on.doc")
+            }
+            .disabled(isCopyingReport)
+            Button {
+                copyIssueReportImage()
+            } label: {
+                Label(isRenderingImage ? "生成中..." : "复制图片", systemImage: isRenderingImage ? "hourglass" : "photo")
+            }
+            .disabled(isRenderingImage)
+            Button {
+                exportIssueReportJPG()
+            } label: {
+                Label("导出 JPG", systemImage: "square.and.arrow.down")
+            }
+            .disabled(isRenderingImage)
+            Button {
+                sendIssueReportToFeishu()
+            } label: {
+                Label(isSendingFeishu ? "推送中..." : "推送飞书", systemImage: isSendingFeishu ? "hourglass" : "paperplane.fill")
+            }
+            .disabled(isSendingFeishu)
+            if let actionMessage {
+                Text(actionMessage)
+                    .font(.caption)
+                    .foregroundStyle(actionSuccess ? .green : .red)
+                    .lineLimit(1)
             }
             Button("关闭") {
                 dismiss()
@@ -195,12 +239,77 @@ struct ReportPeriodSummaryView: View {
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
+    private func copyIssueReport() {
+        guard !isCopyingReport else { return }
+        isCopyingReport = true
+        let selectedPeriod = period
+        Task {
+            await WeeklyReport.copyIssueTrackingReportToClipboardAsync(from: store, period: selectedPeriod)
+            isCopyingReport = false
+            actionMessage = "问题报告已复制"
+            actionSuccess = true
+        }
+    }
+
+    private func copyIssueReportImage() {
+        guard !isRenderingImage else { return }
+        isRenderingImage = true
+        let selectedPeriod = period
+        Task {
+            let ok = await WeeklyReport.copyIssueTrackingImageToClipboardAsync(from: store, period: selectedPeriod)
+            isRenderingImage = false
+            actionMessage = ok ? "图片已复制" : "图片生成失败"
+            actionSuccess = ok
+        }
+    }
+
+    private func exportIssueReportJPG() {
+        guard !isRenderingImage else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.jpeg]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "问题追踪\(period.reportName).jpg"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isRenderingImage = true
+        let selectedPeriod = period
+        Task {
+            if let data = await ReportVisualRenderer.issueTrackingJPEGData(store: store, period: selectedPeriod) {
+                do {
+                    try data.write(to: url)
+                    actionMessage = "JPG 已导出"
+                    actionSuccess = true
+                } catch {
+                    actionMessage = "导出失败：\(error.localizedDescription)"
+                    actionSuccess = false
+                }
+            } else {
+                actionMessage = "图片生成失败"
+                actionSuccess = false
+            }
+            isRenderingImage = false
+        }
+    }
+
+    private func sendIssueReportToFeishu() {
+        guard !isSendingFeishu else { return }
+        isSendingFeishu = true
+        actionMessage = nil
+        let selectedPeriod = period
+        Task {
+            let result = await FeishuBotService.shared.sendIssueTrackingReportNow(store: store, period: selectedPeriod)
+            actionMessage = result.message
+            actionSuccess = result.success
+            isSendingFeishu = false
+        }
+    }
+
     private var issueMetrics: some View {
         Grid(horizontalSpacing: 10, verticalSpacing: 10) {
             GridRow {
-                metricTile("问题总数", value: "\(data.issues.count)", icon: "tray.full", color: .purple)
-                metricTile("未关闭", value: "\(data.openIssues.count)", icon: "circle", color: .orange)
-                metricTile("已关闭", value: "\(data.resolvedIssues.count)", icon: "checkmark.circle.fill", color: .green)
+                metricTile("本期新增", value: "\(data.createdTotal)", icon: "tray.full", color: .purple)
+                metricTile("月末未关闭", value: "\(data.openIssues.count)", icon: "circle", color: .orange)
+                metricTile("新增已关闭", value: "\(data.resolvedIssues.count)", icon: "checkmark.circle.fill", color: .green)
                 metricTile("关闭率", value: closureRateText, icon: "chart.line.uptrend.xyaxis", color: .blue)
             }
         }
@@ -218,7 +327,7 @@ struct ReportPeriodSummaryView: View {
                     analysisTile("关闭", value: "\(data.resolvedTotal)", detail: closeDetail, color: .green)
                 }
                 GridRow {
-                    analysisTile("积压", value: "\(data.staleOpenIssues.count)", detail: "创建超过 7 天且未关闭", color: .red)
+                    analysisTile("积压", value: "\(data.staleOpenIssues.count)", detail: "提交/创建超过 7 天且未关闭", color: .red)
                     analysisTile("未分配", value: "\(data.unassignedOpenIssues.count)", detail: "未关闭问题中缺少负责人", color: .secondary)
                     analysisTile("活跃日", value: busiestDayText, detail: "新增/更新/关闭合计最多", color: .purple)
                 }
@@ -279,6 +388,32 @@ struct ReportPeriodSummaryView: View {
         VStack(alignment: .leading, spacing: 10) {
             Label("分布", systemImage: "square.grid.2x2")
                 .font(.headline)
+            Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow {
+                    distributionChart(
+                        title: "状态分布",
+                        rows: data.statusTotals.map { ($0.0.rawValue, $0.1, $0.0.isResolved ? Color.green : Color.orange) },
+                        emptyText: "暂无状态数据"
+                    )
+                    distributionChart(
+                        title: "类型分布",
+                        rows: data.typeTotals.map { ($0.0.rawValue, $0.1, $0.0.color) },
+                        emptyText: "暂无类型数据"
+                    )
+                }
+                GridRow {
+                    distributionChart(
+                        title: "负责人 Top 8",
+                        rows: data.assigneeTotals.prefix(8).map { ($0.0, $0.1, Color.blue) },
+                        emptyText: "暂无负责人数据"
+                    )
+                    distributionChart(
+                        title: "来源分布",
+                        rows: data.sourceTotals.map { ($0.0, $0.1, Color.purple) },
+                        emptyText: "暂无来源数据"
+                    )
+                }
+            }
             ReportSummaryFlowLayout(spacing: 6) {
                 ForEach(data.statusTotals, id: \.0) { status, count in
                     chip("\(status.rawValue) \(count)", icon: status.icon, color: status.isResolved ? .green : .orange)
@@ -291,6 +426,189 @@ struct ReportPeriodSummaryView: View {
                 }
                 ForEach(data.sourceTotals, id: \.0) { source, count in
                     chip("\(source) \(count)", icon: "link", color: .blue)
+                }
+            }
+        }
+    }
+
+    private var chartSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("统计图表", systemImage: "chart.bar.xaxis")
+                .font(.headline)
+            Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow {
+                    dailyActivityChart
+                    closureChart
+                }
+            }
+        }
+    }
+
+    private var dailyActivityChart: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("每日活动趋势")
+                    .font(.callout.bold())
+                Spacer()
+                chartLegend("新增", color: .blue)
+                chartLegend("更新", color: .orange)
+                chartLegend("关闭", color: .green)
+            }
+
+            let days = Array(data.days.reversed())
+            if days.isEmpty {
+                Text("暂无趋势数据")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 160, alignment: .center)
+            } else {
+                GeometryReader { proxy in
+                    let maxValue = max(days.map { max($0.created.count, $0.updated.count, $0.resolved.count) }.max() ?? 1, 1)
+                    let contentWidth = max(proxy.size.width, CGFloat(days.count) * 28)
+                    let columnWidth = contentWidth / CGFloat(max(days.count, 1))
+                    ScrollView(.horizontal) {
+                        HStack(alignment: .bottom, spacing: 0) {
+                            ForEach(Array(days.enumerated()), id: \.element.id) { _, day in
+                                VStack(spacing: 6) {
+                                    HStack(alignment: .bottom, spacing: 3) {
+                                        activityBar(count: day.created.count, maxValue: maxValue, color: .blue)
+                                        activityBar(count: day.updated.count, maxValue: maxValue, color: .orange)
+                                        activityBar(count: day.resolved.count, maxValue: maxValue, color: .green)
+                                    }
+                                    .frame(height: 118, alignment: .bottom)
+                                    Text(day.label)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .frame(width: columnWidth)
+                            }
+                        }
+                        .frame(width: contentWidth)
+                    }
+                }
+                .frame(height: 158)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var closureChart: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("关闭与积压")
+                    .font(.callout.bold())
+                Spacer()
+                Text(closureRateText)
+                    .font(.caption.bold())
+                    .foregroundStyle(.blue)
+            }
+
+            let periodOpenCount = max(data.createdTotal - data.resolvedTotal, 0)
+            let total = max(data.createdTotal, 1)
+            VStack(alignment: .leading, spacing: 10) {
+                stackedProgress(
+                    rows: [
+                        ("新增已关闭", data.resolvedTotal, Color.green),
+                        ("新增未关闭", periodOpenCount, Color.orange)
+                    ],
+                    total: total
+                )
+                distributionChartBody(
+                    rows: [
+                        ("新增", data.createdTotal, Color.blue),
+                        ("关闭", data.resolvedTotal, Color.green),
+                        ("月末未关闭", data.openIssues.count, Color.orange),
+                        ("积压", data.staleOpenIssues.count, Color.red),
+                        ("未分配", data.unassignedOpenIssues.count, Color.secondary)
+                    ],
+                    emptyText: "暂无分析数据"
+                )
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func distributionChart(title: String, rows: [(String, Int, Color)], emptyText: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.callout.bold())
+            distributionChartBody(rows: rows, emptyText: emptyText)
+        }
+        .padding(12)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func distributionChartBody(rows: [(String, Int, Color)], emptyText: String) -> some View {
+        let filtered = rows.filter { $0.1 > 0 }
+        let maxValue = max(filtered.map(\.1).max() ?? 1, 1)
+        return VStack(alignment: .leading, spacing: 8) {
+            if filtered.isEmpty {
+                Text(emptyText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 90, alignment: .center)
+            } else {
+                ForEach(Array(filtered.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 8) {
+                        Text(row.0)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .frame(width: 82, alignment: .leading)
+                        GeometryReader { proxy in
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(row.2.opacity(0.16))
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(row.2)
+                                .frame(width: max(8, proxy.size.width * CGFloat(row.1) / CGFloat(maxValue)))
+                        }
+                        .frame(height: 8)
+                        Text("\(row.1)")
+                            .font(.caption.bold())
+                            .monospacedDigit()
+                            .frame(width: 28, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .frame(minHeight: 90, alignment: .top)
+    }
+
+    private func activityBar(count: Int, maxValue: Int, color: Color) -> some View {
+        RoundedRectangle(cornerRadius: 4)
+            .fill(count > 0 ? color : Color.secondary.opacity(0.12))
+            .frame(width: 7, height: max(5, 112 * CGFloat(count) / CGFloat(max(maxValue, 1))))
+            .help("\(count)")
+    }
+
+    private func chartLegend(_ title: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func stackedProgress(rows: [(String, Int, Color)], total: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            GeometryReader { proxy in
+                HStack(spacing: 2) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(row.2)
+                            .frame(width: max(row.1 == 0 ? 0 : 8, proxy.size.width * CGFloat(row.1) / CGFloat(max(total, 1))))
+                    }
+                }
+            }
+            .frame(height: 12)
+            HStack(spacing: 12) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    chartLegend("\(row.0) \(row.1)", color: row.2)
                 }
             }
         }
@@ -320,6 +638,7 @@ struct ReportPeriodSummaryView: View {
                             dayIssueLine(title: "更新", issues: day.updated)
                             dayIssueLine(title: "关闭", issues: day.resolved)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                     }
@@ -333,7 +652,7 @@ struct ReportPeriodSummaryView: View {
             Label("重点关注", systemImage: "exclamationmark.triangle")
                 .font(.headline)
             let escalated = data.openIssues.filter(\.isEscalated)
-            let blocked = data.openIssues.filter { $0.status == .pending || $0.status == .inProgress }
+            let blocked = data.openIssues.filter { $0.effectiveStatus == .pending || $0.effectiveStatus == .inProgress }
             if data.staleOpenIssues.isEmpty && data.unassignedOpenIssues.isEmpty && escalated.isEmpty && blocked.isEmpty {
                 Text("暂无需要优先处理的问题")
                     .font(.caption)
@@ -415,9 +734,9 @@ struct ReportPeriodSummaryView: View {
     private func issueRow(_ issue: TrackedIssue) -> some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Label(issue.status.rawValue, systemImage: issue.status.icon)
+                Label(issue.displayStatusName, systemImage: issue.displayStatusIcon)
                     .font(.caption.bold())
-                    .foregroundStyle(issue.status.isResolved ? .green : .orange)
+                    .foregroundStyle(issue.isEffectivelyResolved ? .green : .orange)
                 Label(issue.type.rawValue, systemImage: issue.type.icon)
                     .font(.caption2)
                     .foregroundStyle(issue.type.color)
@@ -441,6 +760,7 @@ struct ReportPeriodSummaryView: View {
             Spacer(minLength: 0)
         }
         .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 
@@ -454,7 +774,10 @@ struct ReportPeriodSummaryView: View {
     }
 
     private func issueChips(_ issue: TrackedIssue) -> [String] {
-        var chips = [issue.dateKey]
+        var chips = [
+            "创建 \(issueDateTimeText(issue.createdAt))",
+            "更新 \(issueDateTimeText(issueLatestActivityDate(issue)))"
+        ]
         if let dept = issue.department, !dept.isEmpty { chips.append(dept) }
         if let jira = issue.jiraKey, !jira.isEmpty { chips.append(jira) }
         if let linear = issue.linearKey, !linear.isEmpty { chips.append(linear) }
@@ -514,6 +837,21 @@ struct ReportPeriodSummaryView: View {
         return "\(Int((Double(count) / Double(total) * 100).rounded()))%"
     }
 
+    private func issueDateTimeText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func issueLatestActivityDate(_ issue: TrackedIssue) -> Date {
+        var dates = [issue.createdAt]
+        if let reportedAt = issue.reportedAt { dates.append(reportedAt) }
+        if let updatedAt = issue.updatedAt { dates.append(updatedAt) }
+        if let resolvedAt = issue.resolvedAt { dates.append(resolvedAt) }
+        dates.append(contentsOf: issue.comments.map(\.createdAt))
+        return dates.max() ?? issue.updatedAt ?? issue.createdAt
+    }
+
     private static func statusRank(_ status: IssueStatus) -> Int {
         switch status {
         case .pending: return 0
@@ -534,6 +872,21 @@ struct ReportPeriodSummaryView: View {
             return assignee
         }
         return "未分配"
+    }
+
+    private static func hasReportUpdateActivity(_ issue: TrackedIssue, on dateKey: String) -> Bool {
+        issue.comments.contains { comment in
+            isReportUpdateComment(comment) && DataStore.dateKey(from: comment.createdAt) == dateKey
+        }
+    }
+
+    private static func isReportUpdateComment(_ comment: IssueComment) -> Bool {
+        let text = comment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        if text.hasPrefix("[Linear] 已导入") || text.hasPrefix("[Linear] 已通过链接导入") {
+            return false
+        }
+        return true
     }
 }
 

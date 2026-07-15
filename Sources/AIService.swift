@@ -326,6 +326,10 @@ final class AIService {
         log.info(mod, "HTTP \(http.statusCode), \(data.count) bytes")
         guard http.statusCode == 200 else {
             let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            if shouldRetryWithResponsesAPI(statusCode: http.statusCode, message: msg) {
+                log.info(mod, "Chat Completions 不支持当前模型，改用 Responses API 重试")
+                return try await callOpenAIResponses(apiKey: apiKey, config: config, messages: messages)
+            }
             throw AIError.requestFailed("OpenAI API 错误: \(msg)")
         }
 
@@ -336,6 +340,51 @@ final class AIService {
             throw AIError.invalidResponse
         }
         return text
+    }
+
+    private func callOpenAIResponses(apiKey: String, config: AIConfig, messages: [[String: String]]) async throws -> String {
+        let request = buildOpenAIResponsesRequest(config: config, apiKey: apiKey, messages: messages)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }
+        log.info(mod, "Responses API HTTP \(http.statusCode), \(data.count) bytes")
+        guard http.statusCode == 200 else {
+            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            if shouldRetryWithResponsesAPI(statusCode: http.statusCode, message: msg) {
+                throw AIError.requestFailed("当前模型或 Base URL 不支持 OpenAI Chat Completions / Responses 调用。请换成支持对话的模型（例如 gpt-4o-mini），或改用支持 Responses API 的 OpenAI 兼容端点。原始错误: \(msg)")
+            }
+            throw AIError.requestFailed("OpenAI Responses API 错误: \(msg)")
+        }
+        return try parseOpenAIResponsesText(data)
+    }
+
+    private func shouldRetryWithResponsesAPI(statusCode: Int, message: String) -> Bool {
+        guard statusCode == 400 || statusCode == 404 || statusCode == 422 else { return false }
+        let lower = message.lowercased()
+        return lower.contains("unsupported") ||
+            lower.contains("not support") ||
+            lower.contains("requested operation is unsupported")
+    }
+
+    private func parseOpenAIResponsesText(_ data: Data) throws -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AIError.invalidResponse
+        }
+        if let text = json["output_text"] as? String, !text.isEmpty {
+            return text
+        }
+        guard let output = json["output"] as? [[String: Any]] else {
+            throw AIError.invalidResponse
+        }
+        let textParts = output.flatMap { item -> [String] in
+            guard let content = item["content"] as? [[String: Any]] else { return [] }
+            return content.compactMap { part in
+                if let text = part["text"] as? String { return text }
+                if let text = part["content"] as? String { return text }
+                return nil
+            }
+        }
+        guard !textParts.isEmpty else { throw AIError.invalidResponse }
+        return textParts.joined(separator: "\n\n")
     }
 
     // MARK: - Streaming
@@ -453,6 +502,45 @@ final class AIService {
             "messages": messages,
         ]
         if stream { body["stream"] = true }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    private func buildOpenAIResponsesRequest(config: AIConfig, apiKey: String, messages: [[String: String]]) -> URLRequest {
+        let url = URL(string: "\(config.effectiveBaseURL)/v1/responses")!
+        log.info(mod, "调用 OpenAI Responses API: \(url.absoluteString), 模型: \(config.effectiveModel)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 120
+
+        var instructions = ""
+        var input: [[String: Any]] = []
+        for message in messages {
+            let role = message["role"] ?? "user"
+            let content = message["content"] ?? ""
+            if role == "system" {
+                instructions = instructions.isEmpty ? content : "\(instructions)\n\n\(content)"
+            } else {
+                input.append([
+                    "role": role == "assistant" ? "assistant" : "user",
+                    "content": content,
+                ])
+            }
+        }
+        if input.isEmpty {
+            input.append(["role": "user", "content": ""])
+        }
+
+        var body: [String: Any] = [
+            "model": config.effectiveModel,
+            "max_output_tokens": 2048,
+            "input": input,
+        ]
+        if !instructions.isEmpty {
+            body["instructions"] = instructions
+        }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return request
     }

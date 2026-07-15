@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import AppKit
 
 struct GeneralTab: View {
     @Bindable var store: DataStore
@@ -14,6 +15,15 @@ struct GeneralTab: View {
         return m == 0 && !UserDefaults.standard.bool(forKey: "reminderEnabled") ? 30 : m
     }()
     @State private var summaryEnabled: Bool = UserDefaults.standard.object(forKey: "summaryEnabled") as? Bool ?? true
+    @State private var localMCPEnabled = UserDefaults.standard.bool(forKey: LocalMCPServer.enabledKey)
+    @State private var localMCPPortText: String = {
+        let value = UserDefaults.standard.integer(forKey: LocalMCPServer.portKey)
+        return value == 0 ? "8765" : "\(value)"
+    }()
+    @State private var localMCPReadAK = UserDefaults.standard.string(forKey: LocalMCPServer.readAccessKeyKey) ?? ""
+    @State private var localMCPWriteAK = UserDefaults.standard.string(forKey: LocalMCPServer.writeAccessKeyKey) ?? ""
+    @State private var mcpServer = LocalMCPServer.shared
+    @State private var pluginInstallMessage: String?
     @State private var saveState = AutoSaveState()
 
     var body: some View {
@@ -144,6 +154,82 @@ struct GeneralTab: View {
                 }
             }
 
+            Section("本地 MCP") {
+                Toggle(isOn: $localMCPEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用本地 MCP 服务")
+                        Text("仅监听 127.0.0.1，供本机 MCP Client 读取计数、问题追踪和创建 Linear 问题")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: localMCPEnabled) { _, _ in applyLocalMCPSettings() }
+
+                HStack {
+                    Text("端口")
+                    TextField("", text: $localMCPPortText, prompt: Text("8765"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 90)
+                        .onSubmit { applyLocalMCPSettings() }
+                        .onChange(of: localMCPPortText) { _, _ in applyLocalMCPSettings() }
+                    Spacer()
+                    Text(mcpServer.statusText)
+                        .font(.caption)
+                        .foregroundStyle(localMCPStatusColor)
+                }
+                if !mcpServer.statusDetail.isEmpty {
+                    Text(mcpServer.statusDetail)
+                        .font(.caption)
+                        .foregroundStyle(localMCPStatusColor)
+                        .textSelection(.enabled)
+                }
+
+                SecureField("只读 AK", text: $localMCPReadAK)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { applyLocalMCPSettings() }
+                    .onChange(of: localMCPReadAK) { _, _ in applyLocalMCPSettings() }
+                SecureField("可写 AK", text: $localMCPWriteAK)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { applyLocalMCPSettings() }
+                    .onChange(of: localMCPWriteAK) { _, _ in applyLocalMCPSettings() }
+
+                HStack {
+                    Button("生成只读 AK") {
+                        localMCPReadAK = generateAccessKey()
+                        applyLocalMCPSettings()
+                    }
+                    Button("生成可写 AK") {
+                        localMCPWriteAK = generateAccessKey()
+                        applyLocalMCPSettings()
+                    }
+                    Button("应用") {
+                        applyLocalMCPSettings()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .controlSize(.small)
+
+                Divider()
+
+                HStack {
+                    Button("安装到 Codex") {
+                        openCodexPluginInstaller()
+                    }
+                    Button("安装到 Claude Code") {
+                        prepareClaudeCodePluginInstall()
+                    }
+                }
+                .controlSize(.small)
+
+                if let pluginInstallMessage {
+                    Text(pluginInstallMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+
             Section("快捷键") {
                 Toggle(isOn: Bindable(store).hotkeyEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -201,10 +287,131 @@ struct GeneralTab: View {
         }
     }
 
+    private var localMCPStatusColor: Color {
+        switch mcpServer.statusText {
+        case "运行中":
+            return .green
+        case "启动失败":
+            return .red
+        case "启动中":
+            return .orange
+        default:
+            return .secondary
+        }
+    }
+
     private func applyReminder() {
         UserDefaults.standard.set(reminderHour, forKey: "reminderHour")
         UserDefaults.standard.set(reminderMinute, forKey: "reminderMinute")
         NotificationManager.shared.scheduleReminder(hour: reminderHour, minute: reminderMinute)
+    }
+
+    private func applyLocalMCPSettings() {
+        let port = Int(localMCPPortText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 8765
+        UserDefaults.standard.set(localMCPEnabled, forKey: LocalMCPServer.enabledKey)
+        UserDefaults.standard.set(max(1, min(port, 65535)), forKey: LocalMCPServer.portKey)
+        UserDefaults.standard.set(localMCPReadAK.trimmingCharacters(in: .whitespacesAndNewlines), forKey: LocalMCPServer.readAccessKeyKey)
+        UserDefaults.standard.set(localMCPWriteAK.trimmingCharacters(in: .whitespacesAndNewlines), forKey: LocalMCPServer.writeAccessKeyKey)
+        LocalMCPServer.shared.restart()
+        saveState.triggerSave()
+    }
+
+    private func generateAccessKey() -> String {
+        var bytes = [UInt8](repeating: 0, count: 24)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64EncodedString()
+    }
+
+    private func openCodexPluginInstaller() {
+        let marketplacePath = "/Users/maxli/.agents/plugins/marketplace.json"
+        var components = URLComponents()
+        components.scheme = "codex"
+        components.host = "plugins"
+        components.path = "/tictacker-mcp"
+        components.queryItems = [URLQueryItem(name: "marketplacePath", value: marketplacePath)]
+        guard let url = components.url else {
+            pluginInstallMessage = "无法生成 Codex 插件链接"
+            return
+        }
+        NSWorkspace.shared.open(url)
+        pluginInstallMessage = "已打开 Codex 插件安装页"
+    }
+
+    private func prepareClaudeCodePluginInstall() {
+        do {
+            let marketplace = try ensureClaudeCodeMarketplace()
+            let command = """
+            claude plugin marketplace add \(shellQuoted(marketplace.path))
+            claude plugin install tictacker-mcp@tictacker-local
+            """
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(command, forType: .string)
+            if let docs = URL(string: "https://code.claude.com/docs/en/plugin-marketplaces") {
+                NSWorkspace.shared.open(docs)
+            }
+            pluginInstallMessage = "Claude Code 安装命令已复制到剪贴板；已打开插件安装文档。"
+        } catch {
+            pluginInstallMessage = "Claude Code 插件准备失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func ensureClaudeCodeMarketplace() throws -> URL {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("plugins")
+            .appendingPathComponent("tictacker-mcp-claude-marketplace")
+        let pluginRoot = root
+            .appendingPathComponent("plugins")
+            .appendingPathComponent("tictacker-mcp")
+        let skillRoot = pluginRoot
+            .appendingPathComponent("skills")
+            .appendingPathComponent("tictacker-mcp")
+        let scriptsRoot = pluginRoot.appendingPathComponent("scripts")
+        let manager = FileManager.default
+        try manager.createDirectory(at: root.appendingPathComponent(".claude-plugin"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: pluginRoot.appendingPathComponent(".claude-plugin"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: skillRoot, withIntermediateDirectories: true)
+        try manager.createDirectory(at: scriptsRoot, withIntermediateDirectories: true)
+
+        let marketplace: [String: Any] = [
+            "name": "tictacker-local",
+            "owner": ["name": "Local developer"],
+            "plugins": [[
+                "name": "tictacker-mcp",
+                "source": "./plugins/tictacker-mcp",
+                "description": "TicTracker local MCP helpers"
+            ]]
+        ]
+        let plugin: [String: Any] = [
+            "name": "tictacker-mcp",
+            "description": "TicTracker local MCP helpers",
+            "version": "0.1.0",
+            "displayName": "TicTracker MCP"
+        ]
+        try writeJSONObject(marketplace, to: root.appendingPathComponent(".claude-plugin/marketplace.json"))
+        try writeJSONObject(plugin, to: pluginRoot.appendingPathComponent(".claude-plugin/plugin.json"))
+
+        let skill = """
+        ---
+        name: tictacker-mcp
+        description: Use TicTracker local MCP tools for status, issue tracking, and Linear issue creation.
+        ---
+
+        Use the local TicTracker MCP server exposed by the macOS app. Prefer the read-only AK for status/list operations and the write AK only when creating or modifying issues.
+
+        Default local endpoint: http://127.0.0.1:8765/mcp
+        """
+        try skill.write(to: skillRoot.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try "Scripts for TicTracker MCP helpers can live here.\n".write(to: scriptsRoot.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        return root
+    }
+
+    private func writeJSONObject(_ value: Any, to url: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 }
 

@@ -3,13 +3,13 @@ import Foundation
 
 @MainActor
 struct WeeklyReport {
-    enum Period {
+    enum Period: Sendable {
         case currentWeek
         case previousWeek
         case currentMonth
         case previousMonth
 
-        var reportName: String {
+        nonisolated var reportName: String {
             switch self {
             case .currentWeek, .previousWeek:
                 return "周报"
@@ -19,7 +19,7 @@ struct WeeklyReport {
         }
     }
 
-    static func dateRange(for period: Period, now: Date = Date()) -> (start: Date, end: Date) {
+    nonisolated static func dateRange(for period: Period, now: Date = Date()) -> (start: Date, end: Date) {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
         let weekday = calendar.component(.weekday, from: today)
@@ -124,12 +124,12 @@ struct WeeklyReport {
             lines.append("Jira 合计: \(jiraGrand) 次")
         }
 
-        // Tracked issues for the week (unified)
-        let weekTracked = store.trackedIssues.filter { (entry: TrackedIssue) -> Bool in
+        // Tracked issues created/reported in the selected period. Use visibleTrackedIssues
+        // so source toggles (for example hiding Feishu tasks) are respected in reports.
+        let weekTracked = store.visibleTrackedIssues.filter { (entry: TrackedIssue) -> Bool in
             isDateKeyInRange(entry.dateKey) ||
-            isDateInRange(entry.reportedAt) ||
-            isDateInRange(entry.updatedAt) ||
-            isDateInRange(entry.resolvedAt)
+            isDateInRange(entry.createdAt) ||
+            isDateInRange(entry.reportedAt)
         }
         if !weekTracked.isEmpty {
             let sorted = weekTracked.sorted { $0.dateKey < $1.dateKey }
@@ -141,15 +141,15 @@ struct WeeklyReport {
                 if let jira = issue.jiraKey { detail.append(jira) }
                 if let assignee = issue.assignee { detail.append(assignee) }
                 let suffix = " (\(detail.joined(separator: " · ")))"
-                lines.append("[\(issue.status.rawValue)] \(issue.title)\(suffix)")
+                lines.append("[\(issue.displayStatusName)] \(issue.title)\(suffix)")
             }
             // Summary by type
             let byType = Dictionary(grouping: weekTracked, by: \.type)
             for type in IssueType.allCases {
                 guard let items = byType[type] else { continue }
-                let fixed = items.filter { $0.status == .fixed }.count
-                let ignored = items.filter { $0.status == .ignored }.count
-                let observing = items.filter { $0.status == .observing }.count
+                let fixed = items.filter { $0.effectiveStatus == .fixed }.count
+                let ignored = items.filter { $0.effectiveStatus == .ignored }.count
+                let observing = items.filter { $0.effectiveStatus == .observing }.count
                 let unresolved = items.count - fixed - ignored - observing
                 var summary = "\(type.rawValue): \(items.count) 个（已修复 \(fixed)"
                 if ignored > 0 { summary += "，已忽略 \(ignored)" }
@@ -223,62 +223,108 @@ struct WeeklyReport {
     }
 
     static func generateIssueTrackingReport(from store: DataStore, period: Period = .currentMonth) -> String {
+        generateIssueTrackingReport(from: store.visibleTrackedIssues, period: period)
+    }
+
+    nonisolated static func generateIssueTrackingReport(from sourceIssues: [TrackedIssue], period: Period = .currentMonth, now: Date = Date()) -> String {
         let calendar = Calendar.current
-        let (rangeStart, rangeEnd) = dateRange(for: period)
+        let (rangeStart, rangeEnd) = dateRange(for: period, now: now)
         let rangeEndExclusive = calendar.date(byAdding: .day, value: 1, to: rangeEnd)!
         let keyFmt = DateFormatter()
         keyFmt.dateFormat = "yyyy-MM-dd"
         let displayFmt = DateFormatter()
         displayFmt.dateFormat = "M/d"
+        let dateTimeFmt = DateFormatter()
+        dateTimeFmt.dateFormat = "yyyy-MM-dd HH:mm"
 
         let startKey = keyFmt.string(from: rangeStart)
         let endKey = keyFmt.string(from: rangeEnd)
-        let issues = store.visibleTrackedIssues
+        func dateKey(from date: Date) -> String {
+            keyFmt.string(from: date)
+        }
+        func primaryDate(_ issue: TrackedIssue) -> Date {
+            issue.reportedAt ?? issue.createdAt
+        }
+        func primaryCreatedKey(_ issue: TrackedIssue) -> String {
+            dateKey(from: primaryDate(issue))
+        }
+        func hasReportUpdateActivity(_ issue: TrackedIssue) -> Bool {
+            let createdKey = primaryCreatedKey(issue)
+            let resolvedKey = issue.resolvedAt.map { dateKey(from: $0) }
+            return issue.comments.contains { comment in
+                guard isReportUpdateComment(comment) else { return false }
+                let key = dateKey(from: comment.createdAt)
+                guard key >= startKey && key <= endKey else { return false }
+                guard key != createdKey else { return false }
+                guard key != resolvedKey else { return false }
+                return true
+            }
+        }
+        func normalizedAssignee(_ issue: TrackedIssue) -> String {
+            if let assignee = issue.assignee?.trimmingCharacters(in: .whitespacesAndNewlines), !assignee.isEmpty {
+                return assignee
+            }
+            if let assignee = issue.linearAssignee?.trimmingCharacters(in: .whitespacesAndNewlines), !assignee.isEmpty {
+                return assignee
+            }
+            return "未分配"
+        }
+        func isReportUpdateComment(_ comment: IssueComment) -> Bool {
+            let text = comment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return false }
+            if text.hasPrefix("[Linear] 已导入") || text.hasPrefix("[Linear] 已通过链接导入") {
+                return false
+            }
+            return true
+        }
+        func issueDateTimeText(_ date: Date) -> String {
+            dateTimeFmt.string(from: date)
+        }
+        func issueLatestActivityDate(_ issue: TrackedIssue) -> Date {
+            var dates = [issue.createdAt]
+            if let reportedAt = issue.reportedAt { dates.append(reportedAt) }
+            if let updatedAt = issue.updatedAt { dates.append(updatedAt) }
+            if let resolvedAt = issue.resolvedAt { dates.append(resolvedAt) }
+            dates.append(contentsOf: issue.comments.map(\.createdAt))
+            return dates.max() ?? issue.updatedAt ?? issue.createdAt
+        }
+        func issueTimelineText(_ issue: TrackedIssue) -> String {
+            "创建 \(issueDateTimeText(issue.createdAt)) · 更新 \(issueDateTimeText(issueLatestActivityDate(issue)))"
+        }
+
+        let issues = sourceIssues
             .filter { issue in
-                let keyInRange = issue.dateKey >= startKey && issue.dateKey <= endKey
-                let createdInRange = issue.createdAt >= rangeStart && issue.createdAt < rangeEndExclusive
-                let reportedInRange = issue.reportedAt.map { $0 >= rangeStart && $0 < rangeEndExclusive } ?? false
-                let updatedInRange = issue.updatedAt.map { $0 >= rangeStart && $0 < rangeEndExclusive } ?? false
-                let resolvedInRange = issue.resolvedAt.map { $0 >= rangeStart && $0 < rangeEndExclusive } ?? false
-                return keyInRange || createdInRange || reportedInRange || updatedInRange || resolvedInRange
+                let date = primaryDate(issue)
+                return date >= rangeStart && date < rangeEndExclusive
             }
             .sorted {
-                if $0.status.isResolved != $1.status.isResolved { return !$0.status.isResolved }
-                return $0.dateKey > $1.dateKey
+                if $0.isEffectivelyResolved != $1.isEffectivelyResolved { return !$0.isEffectivelyResolved }
+                return primaryDate($0) > primaryDate($1)
             }
 
         let startStr = displayFmt.string(from: rangeStart)
         let endStr = displayFmt.string(from: rangeEnd)
         var lines = ["问题追踪\(period.reportName)（\(startStr) - \(endStr)）"]
-        lines.append("问题总数: \(issues.count)")
-        let openCount = issues.filter { !$0.status.isResolved }.count
-        let resolvedCount = issues.filter { $0.status.isResolved }.count
-        let createdCount = issues.filter {
-            ($0.dateKey >= startKey && $0.dateKey <= endKey) ||
-            (DataStore.dateKey(from: $0.createdAt) >= startKey && DataStore.dateKey(from: $0.createdAt) <= endKey) ||
-            ($0.reportedAt.map { DataStore.dateKey(from: $0) >= startKey && DataStore.dateKey(from: $0) <= endKey } == true)
-        }.count
-        let updatedCount = issues.filter {
-            guard let updatedAt = $0.updatedAt else { return false }
-            let key = DataStore.dateKey(from: updatedAt)
-            let createdInRange = ($0.dateKey >= startKey && $0.dateKey <= endKey) ||
-                (DataStore.dateKey(from: $0.createdAt) >= startKey && DataStore.dateKey(from: $0.createdAt) <= endKey) ||
-                ($0.reportedAt.map { DataStore.dateKey(from: $0) >= startKey && DataStore.dateKey(from: $0) <= endKey } == true)
-            return key >= startKey && key <= endKey && !createdInRange
-        }.count
+        let openIssues = sourceIssues
+            .filter { issue in
+                guard !issue.isEffectivelyResolved, issue.effectiveStatus != .observing else { return false }
+                return primaryDate(issue) < rangeEndExclusive
+            }
+            .sorted { primaryDate($0) < primaryDate($1) }
+        let openCount = openIssues.count
+        let resolvedCount = issues.filter { $0.isEffectivelyResolved }.count
+        let createdCount = issues.count
+        let updatedCount = issues.filter(hasReportUpdateActivity).count
         let referenceDate = min(Date(), rangeEndExclusive)
         let staleThreshold = calendar.date(byAdding: .day, value: -7, to: referenceDate) ?? referenceDate
-        let staleCount = issues.filter { !$0.status.isResolved && $0.status != .observing && $0.createdAt < staleThreshold }.count
-        let unassignedCount = issues.filter { issue in
-            guard !issue.status.isResolved else { return false }
-            let assignee = issue.assignee?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let linearAssignee = issue.linearAssignee?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return assignee.isEmpty && linearAssignee.isEmpty
+        let staleCount = openIssues.filter { primaryDate($0) < staleThreshold }.count
+        let unassignedCount = openIssues.filter { issue in
+            return normalizedAssignee(issue) == "未分配"
         }.count
-        lines.append("新增: \(createdCount)")
+        lines.append("本期新增: \(createdCount)")
         lines.append("更新: \(updatedCount)")
-        lines.append("未关闭: \(openCount)")
-        lines.append("已关闭: \(resolvedCount)")
+        lines.append("月末未关闭: \(openCount)")
+        lines.append("新增已关闭: \(resolvedCount)")
         lines.append("超过 7 天未关闭: \(staleCount)")
         lines.append("未分配负责人: \(unassignedCount)")
 
@@ -310,20 +356,57 @@ struct WeeklyReport {
             }
         }
 
+        let byStatus = Dictionary(grouping: issues, by: \.status)
+        if !byStatus.isEmpty {
+            lines.append("")
+            lines.append("--- 状态分布 ---")
+            for status in IssueStatus.allCases {
+                if let items = byStatus[status], !items.isEmpty {
+                    lines.append("\(status.rawValue): \(items.count)")
+                }
+            }
+        }
+
+        var assigneeCounts: [String: Int] = [:]
+        for issue in issues {
+            assigneeCounts[normalizedAssignee(issue), default: 0] += 1
+        }
+        let assigneeTotals = assigneeCounts.sorted {
+            $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }
+        if !assigneeTotals.isEmpty {
+            lines.append("")
+            lines.append("--- 负责人分布 ---")
+            for (name, count) in assigneeTotals.prefix(8) {
+                lines.append("\(name): \(count)")
+            }
+        }
+
+        if !openIssues.isEmpty {
+            lines.append("")
+            lines.append("--- 未关闭问题 ---")
+            for issue in openIssues {
+                var meta = [issue.type.rawValue, issueTimelineText(issue)]
+                if let jira = issue.jiraKey, !jira.isEmpty { meta.append(jira) }
+                if let assignee = issue.assignee, !assignee.isEmpty { meta.append("负责人 \(assignee)") }
+                lines.append("[\(issue.displayStatusName)] \(issue.title)（\(meta.joined(separator: " · "))）")
+            }
+        }
+
         lines.append("")
         lines.append("--- 问题明细 ---")
         if issues.isEmpty {
             lines.append("暂无问题记录")
         } else {
             for issue in issues {
-                var meta = [issue.type.rawValue, issue.dateKey]
+                var meta = [issue.type.rawValue, issueTimelineText(issue)]
                 if let dept = issue.department, !dept.isEmpty { meta.append(dept) }
                 if let jira = issue.jiraKey, !jira.isEmpty { meta.append(jira) }
                 if let linear = issue.linearKey, !linear.isEmpty { meta.append(linear) }
                 if let assignee = issue.assignee, !assignee.isEmpty { meta.append("负责人 \(assignee)") }
                 if let reporter = issue.reporterName, !reporter.isEmpty { meta.append("提交 \(reporter)") }
                 if !issue.issueTags.isEmpty { meta.append("标签 \(issue.issueTags.joined(separator: ","))") }
-                lines.append("[\(issue.status.rawValue)] \(issue.title)（\(meta.joined(separator: " · "))）")
+                lines.append("[\(issue.displayStatusName)] \(issue.title)（\(meta.joined(separator: " · "))）")
             }
         }
 
@@ -336,9 +419,39 @@ struct WeeklyReport {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    static func copyIssueTrackingReportToClipboardAsync(from store: DataStore, period: Period = .currentMonth) async {
+        let issues = store.visibleTrackedIssues
+        let now = Date()
+        let text = await Task.detached(priority: .userInitiated) {
+            WeeklyReport.generateIssueTrackingReport(from: issues, period: period, now: now)
+        }.value
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     static func copyImageToClipboard(from store: DataStore, period: Period = .currentWeek) {
         let image = ReportVisualRenderer.renderPeriodReport(store: store, period: period)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([image])
+    }
+
+    static func copyImageToClipboardAsync(from store: DataStore, period: Period = .currentWeek) async -> Bool {
+        guard let pngData = await ReportVisualRenderer.periodPNGData(store: store, period: period),
+              let image = NSImage(data: pngData) else {
+            return false
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
+        return true
+    }
+
+    static func copyIssueTrackingImageToClipboardAsync(from store: DataStore, period: Period = .currentMonth) async -> Bool {
+        guard let pngData = await ReportVisualRenderer.issueTrackingPNGData(store: store, period: period),
+              let image = NSImage(data: pngData) else {
+            return false
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
+        return true
     }
 }

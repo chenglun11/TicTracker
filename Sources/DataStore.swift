@@ -94,7 +94,11 @@ final class DataStore {
     // MARK: - Bug Entries
 
     var trackedIssues: [TrackedIssue] {
-        didSet { saveTrackedIssues() }
+        didSet {
+            if !suppressTrackedIssuesSave {
+                saveTrackedIssues()
+            }
+        }
     }
     var nextIssueNumber: Int {
         didSet { UserDefaults.standard.set(nextIssueNumber, forKey: "nextIssueNumber") }
@@ -210,6 +214,15 @@ final class DataStore {
     private let dailyNotesKey = "dailyNotes"
     private static let issueSourceFeishuTaskEnabledKey = "issueSourceFeishuTaskEnabled"
     private static let legacyIssueSourceFeishuDocEnabledKey = "issueSourceFeishuDocEnabled"
+    private static let pendingSyncImportKey = "sync.pendingWorkspaceImport"
+    private let persistenceDelay: Duration = .milliseconds(300)
+    private var recordsSaveTask: Task<Void, Never>?
+    private var dailyNotesSaveTask: Task<Void, Never>?
+    private var trackedIssuesSaveTask: Task<Void, Never>?
+    private var tapTimestampsSaveTask: Task<Void, Never>?
+    private var operationLogSaveTask: Task<Void, Never>?
+    private let localStore = LocalSQLiteStore()
+    private var suppressTrackedIssuesSave = false
 
     private static let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
@@ -235,18 +248,26 @@ final class DataStore {
     }
 
     init() {
+        let sqliteMigrationKey = "localSQLiteMigrationV1"
+        let sqliteAvailable = localStore.isReady
+        let needsSQLiteMigration = sqliteAvailable && !UserDefaults.standard.bool(forKey: sqliteMigrationKey)
+
         if let data = UserDefaults.standard.array(forKey: departmentsKey) as? [String] {
             departments = data
         } else {
             departments = ["研发部", "产品部", "设计部", "运营部"]
         }
-        if let data = UserDefaults.standard.data(forKey: recordsKey),
+        if sqliteAvailable && !needsSQLiteMigration {
+            records = localStore.loadRecords()
+        } else if let data = UserDefaults.standard.data(forKey: recordsKey),
            let decoded = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
             records = decoded
         } else {
             records = [:]
         }
-        if let data = UserDefaults.standard.data(forKey: dailyNotesKey),
+        if sqliteAvailable && !needsSQLiteMigration {
+            dailyNotes = localStore.loadDailyNotes()
+        } else if let data = UserDefaults.standard.data(forKey: dailyNotesKey),
            let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
             dailyNotes = decoded
         } else {
@@ -297,7 +318,11 @@ final class DataStore {
 
         // Feishu Bot
         if let data = UserDefaults.standard.data(forKey: "feishuBotConfig"),
-           let decoded = try? JSONDecoder().decode(FeishuBotConfig.self, from: data) {
+           var decoded = try? JSONDecoder().decode(FeishuBotConfig.self, from: data) {
+            if FeishuBotService.migrateLegacyConfigSecrets(&decoded),
+               let sanitized = try? JSONEncoder().encode(decoded) {
+                UserDefaults.standard.set(sanitized, forKey: "feishuBotConfig")
+            }
             feishuBotConfig = decoded
         } else {
             feishuBotConfig = FeishuBotConfig()
@@ -335,7 +360,9 @@ final class DataStore {
         }
 
         // Tracked issues (unified: bug + hotfix + issue)
-        if let data = UserDefaults.standard.data(forKey: "trackedIssues"),
+        if sqliteAvailable && !needsSQLiteMigration {
+            trackedIssues = localStore.loadTrackedIssues()
+        } else if let data = UserDefaults.standard.data(forKey: "trackedIssues"),
            let decoded = try? JSONDecoder().decode([TrackedIssue].self, from: data) {
             trackedIssues = decoded
         } else {
@@ -377,7 +404,9 @@ final class DataStore {
         currentMemberId = UserDefaults.standard.string(forKey: "currentMemberId") ?? ""
 
         // Tap timestamps
-        if let data = UserDefaults.standard.data(forKey: "tapTimestamps"),
+        if sqliteAvailable && !needsSQLiteMigration {
+            tapTimestamps = localStore.loadTapTimestamps()
+        } else if let data = UserDefaults.standard.data(forKey: "tapTimestamps"),
            let decoded = try? JSONDecoder().decode([String: [String: [String]]].self, from: data) {
             tapTimestamps = decoded
         } else {
@@ -393,7 +422,9 @@ final class DataStore {
         todoEnabled = UserDefaults.standard.object(forKey: "todoEnabled") as? Bool ?? true
         diaryShowAllPending = UserDefaults.standard.object(forKey: "diaryShowAllPending") as? Bool ?? true
         // Load operation log
-        if let data = UserDefaults.standard.data(forKey: "operationLog"),
+        if sqliteAvailable && !needsSQLiteMigration {
+            operationLog = localStore.loadOperationLog()
+        } else if let data = UserDefaults.standard.data(forKey: "operationLog"),
            let decoded = try? JSONDecoder().decode([OperationLogEntry].self, from: data) {
             operationLog = decoded
         } else {
@@ -463,10 +494,34 @@ final class DataStore {
             needsBackfill = true
         }
         if needsBackfill {
-            if let data = try? JSONEncoder().encode(trackedIssues) {
-                UserDefaults.standard.set(data, forKey: "trackedIssues")
-            }
+            localStore.saveTrackedIssues(trackedIssues)
             UserDefaults.standard.set(nextIssueNumber, forKey: "nextIssueNumber")
+        }
+        if needsSQLiteMigration {
+            let migrationSucceeded = localStore.saveMigrationSnapshot(
+                records: records,
+                dailyNotes: dailyNotes,
+                tapTimestamps: tapTimestamps,
+                trackedIssues: trackedIssues,
+                operationLog: operationLog
+            )
+            if migrationSucceeded {
+                UserDefaults.standard.set(true, forKey: sqliteMigrationKey)
+                DevLog.shared.info("SQLite", "已完成本地数据迁移")
+            } else {
+                // Keep every legacy value in place so the next launch can retry.
+                DevLog.shared.error("SQLite", "本地数据迁移失败，已保留 UserDefaults 原数据")
+            }
+        }
+        if sqliteAvailable, UserDefaults.standard.bool(forKey: sqliteMigrationKey) {
+            clearMigratedUserDefaultsPayloads()
+        }
+        if let pendingImport = UserDefaults.standard.data(forKey: Self.pendingSyncImportKey) {
+            if importSyncData(pendingImport, allowDestructive: true) {
+                DevLog.shared.info("Sync", "已恢复上次未完成的同步导入")
+            } else {
+                DevLog.shared.error("Sync", "未完成的同步导入无法恢复，已保留恢复数据")
+            }
         }
     }
 
@@ -732,25 +787,44 @@ final class DataStore {
         if !tapTimestamps.isEmpty {
             payload["tapTimestamps"] = tapTimestamps
         }
-        if !trackedIssues.isEmpty,
-           let issueData = try? JSONEncoder().encode(trackedIssues),
+        if let issueData = try? JSONEncoder().encode(trackedIssues),
            let issueArray = try? JSONSerialization.jsonObject(with: issueData) {
             payload["trackedIssues"] = issueArray
         }
         if !bugTeamMembers.isEmpty {
             payload["bugTeamMembers"] = bugTeamMembers
         }
-        if !teamMembers.isEmpty,
-           let memberData = try? JSONEncoder().encode(teamMembers),
+        if let memberData = try? JSONEncoder().encode(teamMembers),
            let memberArray = try? JSONSerialization.jsonObject(with: memberData) {
             payload["teamMembers"] = memberArray
+        }
+        payload["localConfigurationSnapshotVersion"] = 1
+        if let jiraData = try? JSONEncoder().encode(jiraConfig),
+           let value = try? JSONSerialization.jsonObject(with: jiraData) {
+            payload["jiraConfig"] = value
+        }
+        if let linearData = try? JSONEncoder().encode(linearConfig),
+           let value = try? JSONSerialization.jsonObject(with: linearData) {
+            payload["linearConfig"] = value
+        }
+        if let feishuData = try? JSONEncoder().encode(feishuBotConfig),
+           let value = try? JSONSerialization.jsonObject(with: feishuData) {
+            payload["feishuBotConfig"] = value
+        }
+        if let aiData = try? JSONEncoder().encode(aiConfig),
+           let value = try? JSONSerialization.jsonObject(with: aiData) {
+            payload["aiConfig"] = value
         }
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
+    /// Export the shared workspace payload. Device configuration is excluded by
+    /// default so changing transports can never replace local integrations.
     func exportSyncData() -> Data? {
         var payload: [String: Any] = [
+            "schemaVersion": SyncPayloadPolicy.currentSchemaVersion,
+            "payloadScope": "workspace-data",
             "lastModified": Date().timeIntervalSince1970,
             "departments": departments,
             "records": records,
@@ -761,51 +835,16 @@ final class DataStore {
         if !tapTimestamps.isEmpty {
             payload["tapTimestamps"] = tapTimestamps
         }
-        if !trackedIssues.isEmpty,
-           let issueData = try? JSONEncoder().encode(trackedIssues),
+        if let issueData = try? JSONEncoder().encode(trackedIssues),
            let issueArray = try? JSONSerialization.jsonObject(with: issueData) {
             payload["trackedIssues"] = issueArray
         }
         if !bugTeamMembers.isEmpty {
             payload["bugTeamMembers"] = bugTeamMembers
         }
-        if !teamMembers.isEmpty,
-           let memberData = try? JSONEncoder().encode(teamMembers),
+        if let memberData = try? JSONEncoder().encode(teamMembers),
            let memberArray = try? JSONSerialization.jsonObject(with: memberData) {
             payload["teamMembers"] = memberArray
-        }
-        // 配置数据
-        if let jiraData = try? JSONEncoder().encode(jiraConfig),
-           let jiraObj = try? JSONSerialization.jsonObject(with: jiraData) {
-            payload["jiraConfig"] = jiraObj
-        }
-        if let feishuData = try? JSONEncoder().encode(feishuBotConfig),
-           let feishuObj = try? JSONSerialization.jsonObject(with: feishuData) {
-            payload["feishuBotConfig"] = feishuObj
-        }
-        // 导出 webhook secrets（供服务器发送时使用）
-        var webhookSecrets: [String: String] = [:]
-        for webhook in feishuBotConfig.webhooks where webhook.signEnabled {
-            if let secret = FeishuBotService.loadSecret(for: webhook.id), !secret.isEmpty {
-                webhookSecrets[webhook.id.uuidString] = secret
-            }
-        }
-        if !webhookSecrets.isEmpty {
-            payload["feishuWebhookSecrets"] = webhookSecrets
-        }
-        if let aiData = try? JSONEncoder().encode(aiConfig),
-           let aiObj = try? JSONSerialization.jsonObject(with: aiData) {
-            payload["aiConfig"] = aiObj
-        }
-        if !rssFeeds.isEmpty,
-           let rssData = try? JSONEncoder().encode(rssFeeds),
-           let rssArray = try? JSONSerialization.jsonObject(with: rssData) {
-            payload["rssFeeds"] = rssArray
-        }
-        if !todoTasks.isEmpty,
-           let todoData = try? JSONEncoder().encode(todoTasks),
-           let todoArray = try? JSONSerialization.jsonObject(with: todoData) {
-            payload["todoTasks"] = todoArray
         }
         return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
@@ -878,71 +917,139 @@ final class DataStore {
         if let memberId = obj["currentMemberId"] as? String {
             currentMemberId = memberId
         }
+        // Local snapshots may restore non-secret device configuration. Cloud
+        // imports use importSyncData and never enter this path.
+        if let jiraObj = obj["jiraConfig"],
+           let data = try? JSONSerialization.data(withJSONObject: jiraObj),
+           let decoded = try? JSONDecoder().decode(JiraConfig.self, from: data) {
+            jiraConfig = decoded
+        }
+        if let linearObj = obj["linearConfig"],
+           let data = try? JSONSerialization.data(withJSONObject: linearObj),
+           let decoded = try? JSONDecoder().decode(LinearConfig.self, from: data) {
+            linearConfig = decoded
+        }
+        if let feishuObj = obj["feishuBotConfig"],
+           let data = try? JSONSerialization.data(withJSONObject: feishuObj),
+           let decoded = try? JSONDecoder().decode(FeishuBotConfig.self, from: data) {
+            feishuBotConfig = decoded
+        }
+        if let aiObj = obj["aiConfig"],
+           let data = try? JSONSerialization.data(withJSONObject: aiObj),
+           let decoded = try? JSONDecoder().decode(AIConfig.self, from: data) {
+            aiConfig = decoded
+        }
         return true
     }
 
-    func importSyncData(_ data: Data) -> Bool {
+    func importSyncData(_ data: Data, allowDestructive: Bool = false) -> Bool {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-        // 注意：feishuWebhookSecrets 字段仅用于服务器端，导入时不处理（不回写 Keychain）
-        // 核心数据
-        if let depts = obj["departments"] as? [String] {
-            departments = depts
+        guard SyncPayloadPolicy.supportedSchemaVersion(in: obj) else { return false }
+        let schemaVersion = (obj["schemaVersion"] as? NSNumber)?.intValue ?? 1
+
+        // Decode every field before mutating DataStore. A malformed field makes
+        // the whole import fail, preventing partial configuration/data loss.
+        let importedDepartments: [String]
+        let importedRecords: [String: [String: Int]]
+        let importedNotes: [String: String]
+        if schemaVersion >= 2 {
+            guard let departments = obj["departments"] as? [String],
+                  let records = obj["records"] as? [String: [String: Int]],
+                  let notes = obj["dailyNotes"] as? [String: String] else { return false }
+            importedDepartments = departments
+            importedRecords = records
+            importedNotes = notes
+        } else {
+            importedDepartments = obj["departments"] as? [String] ?? []
+            importedRecords = obj["records"] as? [String: [String: Int]] ?? [:]
+            importedNotes = obj["dailyNotes"] as? [String: String] ?? [:]
         }
-        if let recs = obj["records"] as? [String: [String: Int]] {
-            records = recs
+        let importedTaps = obj["tapTimestamps"] as? [String: [String: [String]]] ?? [:]
+
+        var importedIssues = trackedIssues
+        if let issueArray = obj["trackedIssues"] {
+            guard let issueData = try? JSONSerialization.data(withJSONObject: issueArray),
+                  let decoded = try? JSONDecoder().decode([TrackedIssue].self, from: issueData) else { return false }
+            importedIssues = decoded
+        } else if schemaVersion >= 2 {
+            return false
         }
-        if let notes = obj["dailyNotes"] as? [String: String] {
-            dailyNotes = notes
-        }
-        if let taps = obj["tapTimestamps"] as? [String: [String: [String]]] {
-            tapTimestamps = taps
-        }
-        if let issueArray = obj["trackedIssues"],
-           let issueData = try? JSONSerialization.data(withJSONObject: issueArray),
-           let decoded = try? JSONDecoder().decode([TrackedIssue].self, from: issueData) {
-            trackedIssues = decoded
-        }
-        if let memberArray = obj["teamMembers"],
-           let memberData = try? JSONSerialization.data(withJSONObject: memberArray),
-           let decoded = try? JSONDecoder().decode([TeamMember].self, from: memberData) {
-            teamMembers = decoded
+
+        var importedMembers = teamMembers
+        if let memberArray = obj["teamMembers"] {
+            guard let memberData = try? JSONSerialization.data(withJSONObject: memberArray),
+                  let decoded = try? JSONDecoder().decode([TeamMember].self, from: memberData) else { return false }
+            importedMembers = decoded
         } else if let members = obj["bugTeamMembers"] as? [String] {
-            bugTeamMembers = members
+            importedMembers = members.map { TeamMember(name: $0) }
+        } else if schemaVersion >= 2 {
+            return false
         }
-        if let memberId = obj["currentMemberId"] as? String {
-            currentMemberId = memberId
+
+        let localRecordCount = records.values.reduce(0) { $0 + $1.count }
+        let importedRecordCount = importedRecords.values.reduce(0) { $0 + $1.count }
+        let localSupportTotal = records.values.reduce(0) { total, day in total + day.values.reduce(0, +) }
+        let importedSupportTotal = importedRecords.values.reduce(0) { total, day in total + day.values.reduce(0, +) }
+        let blocksLargeReduction = SyncPayloadPolicy.blocksLargeReduction(
+            localRecordBuckets: localRecordCount,
+            remoteRecordBuckets: importedRecordCount,
+            localSupportTotal: localSupportTotal,
+            remoteSupportTotal: importedSupportTotal,
+            localIssues: trackedIssues.lazy.filter { $0.deletedAt == nil }.count,
+            remoteIssues: importedIssues.lazy.filter { $0.deletedAt == nil }.count,
+            localDepartments: departments.count,
+            remoteDepartments: importedDepartments.count,
+            localMembers: teamMembers.count,
+            remoteMembers: importedMembers.count
+        )
+        guard allowDestructive || !blocksLargeReduction else { return false }
+
+        var importedMemberID = obj["currentMemberId"] as? String ?? currentMemberId
+        if !importedMemberID.isEmpty,
+           !importedMembers.contains(where: { $0.id.uuidString == importedMemberID }) {
+            importedMemberID = ""
         }
-        // 配置数据
-        if let jiraObj = obj["jiraConfig"],
-           let jiraData = try? JSONSerialization.data(withJSONObject: jiraObj),
-           let decoded = try? JSONDecoder().decode(JiraConfig.self, from: jiraData) {
-            jiraConfig = decoded
+
+        // Keep a recovery copy until both SQLite and UserDefaults-backed fields
+        // have been committed. A crash at any point is replayed on next launch.
+        UserDefaults.standard.set(data, forKey: Self.pendingSyncImportKey)
+        if localStore.isReady,
+           !localStore.saveSyncSnapshot(
+               records: importedRecords,
+               dailyNotes: importedNotes,
+               tapTimestamps: importedTaps,
+               trackedIssues: importedIssues
+           ) {
+            return false
         }
-        if let feishuObj = obj["feishuBotConfig"],
-           let feishuData = try? JSONSerialization.data(withJSONObject: feishuObj),
-           let decoded = try? JSONDecoder().decode(FeishuBotConfig.self, from: feishuData) {
-            feishuBotConfig = decoded
+
+        // Commit only validated shared workspace data. Device integration
+        // configuration and all Keychain secrets remain local by design.
+        departments = importedDepartments
+        records = importedRecords
+        dailyNotes = importedNotes
+        tapTimestamps = importedTaps
+        suppressTrackedIssuesSave = true
+        trackedIssues = importedIssues
+        suppressTrackedIssuesSave = false
+        teamMembers = importedMembers
+        currentMemberId = importedMemberID
+
+        recordsSaveTask?.cancel()
+        dailyNotesSaveTask?.cancel()
+        trackedIssuesSaveTask?.cancel()
+        tapTimestampsSaveTask?.cancel()
+        recordsSaveTask = nil
+        dailyNotesSaveTask = nil
+        trackedIssuesSaveTask = nil
+        tapTimestampsSaveTask = nil
+        if !localStore.isReady {
+            writeRecords()
+            writeDailyNotes()
+            writeTrackedIssues()
+            writeTapTimestamps()
         }
-        if let linearObj = obj["linearConfig"],
-           let linearData = try? JSONSerialization.data(withJSONObject: linearObj),
-           let decoded = try? JSONDecoder().decode(LinearConfig.self, from: linearData) {
-            linearConfig = decoded
-        }
-        if let aiObj = obj["aiConfig"],
-           let aiData = try? JSONSerialization.data(withJSONObject: aiObj),
-           let decoded = try? JSONDecoder().decode(AIConfig.self, from: aiData) {
-            aiConfig = decoded
-        }
-        if let rssArray = obj["rssFeeds"],
-           let rssData = try? JSONSerialization.data(withJSONObject: rssArray),
-           let decoded = try? JSONDecoder().decode([RSSFeed].self, from: rssData) {
-            rssFeeds = decoded
-        }
-        if let todoArray = obj["todoTasks"],
-           let todoData = try? JSONSerialization.data(withJSONObject: todoArray),
-           let decoded = try? JSONDecoder().decode([TodoTask].self, from: todoData) {
-            todoTasks = decoded
-        }
+        UserDefaults.standard.removeObject(forKey: Self.pendingSyncImportKey)
         return true
     }
 
@@ -953,14 +1060,20 @@ final class DataStore {
     }
 
     private func saveRecords() {
-        if let data = try? JSONEncoder().encode(records) {
-            UserDefaults.standard.set(data, forKey: recordsKey)
+        recordsSaveTask?.cancel()
+        recordsSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: self?.persistenceDelay ?? .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            self.writeRecords()
         }
     }
 
     private func saveDailyNotes() {
-        if let data = try? JSONEncoder().encode(dailyNotes) {
-            UserDefaults.standard.set(data, forKey: dailyNotesKey)
+        dailyNotesSaveTask?.cancel()
+        dailyNotesSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: self?.persistenceDelay ?? .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            self.writeDailyNotes()
         }
     }
 
@@ -1025,8 +1138,11 @@ final class DataStore {
     }
 
     private func saveTapTimestamps() {
-        if let data = try? JSONEncoder().encode(tapTimestamps) {
-            UserDefaults.standard.set(data, forKey: "tapTimestamps")
+        tapTimestampsSaveTask?.cancel()
+        tapTimestampsSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: self?.persistenceDelay ?? .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            self.writeTapTimestamps()
         }
     }
 
@@ -1043,8 +1159,11 @@ final class DataStore {
     }
 
     private func saveTrackedIssues() {
-        if let data = try? JSONEncoder().encode(trackedIssues) {
-            UserDefaults.standard.set(data, forKey: "trackedIssues")
+        trackedIssuesSaveTask?.cancel()
+        trackedIssuesSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: self?.persistenceDelay ?? .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            self.writeTrackedIssues()
         }
     }
 
@@ -1057,8 +1176,101 @@ final class DataStore {
     }
 
     private func saveOperationLog() {
-        if let data = try? JSONEncoder().encode(operationLog) {
-            UserDefaults.standard.set(data, forKey: "operationLog")
+        operationLogSaveTask?.cancel()
+        operationLogSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: self?.persistenceDelay ?? .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            self.writeOperationLog()
+        }
+    }
+
+    func flushPendingSaves() {
+        recordsSaveTask?.cancel()
+        dailyNotesSaveTask?.cancel()
+        trackedIssuesSaveTask?.cancel()
+        tapTimestampsSaveTask?.cancel()
+        operationLogSaveTask?.cancel()
+        recordsSaveTask = nil
+        dailyNotesSaveTask = nil
+        trackedIssuesSaveTask = nil
+        tapTimestampsSaveTask = nil
+        operationLogSaveTask = nil
+
+        writeRecords()
+        writeDailyNotes()
+        writeTrackedIssues()
+        writeTapTimestamps()
+        writeOperationLog()
+    }
+
+    private func writeRecords() {
+        guard localStore.isReady else {
+            if let data = try? JSONEncoder().encode(records) {
+                UserDefaults.standard.set(data, forKey: recordsKey)
+            }
+            return
+        }
+        localStore.saveRecords(records)
+    }
+
+    private func writeDailyNotes() {
+        guard localStore.isReady else {
+            if let data = try? JSONEncoder().encode(dailyNotes) {
+                UserDefaults.standard.set(data, forKey: dailyNotesKey)
+            }
+            return
+        }
+        localStore.saveDailyNotes(dailyNotes)
+    }
+
+    private func writeTrackedIssues() {
+        guard localStore.isReady else {
+            if let data = try? JSONEncoder().encode(trackedIssues) {
+                UserDefaults.standard.set(data, forKey: "trackedIssues")
+            }
+            return
+        }
+        localStore.saveTrackedIssues(trackedIssues)
+    }
+
+    private func writeTapTimestamps() {
+        guard localStore.isReady else {
+            if let data = try? JSONEncoder().encode(tapTimestamps) {
+                UserDefaults.standard.set(data, forKey: "tapTimestamps")
+            }
+            return
+        }
+        localStore.saveTapTimestamps(tapTimestamps)
+    }
+
+    private func writeOperationLog() {
+        guard localStore.isReady else {
+            if let data = try? JSONEncoder().encode(operationLog) {
+                UserDefaults.standard.set(data, forKey: "operationLog")
+            }
+            return
+        }
+        localStore.saveOperationLog(operationLog)
+    }
+
+    private func clearMigratedUserDefaultsPayloads() {
+        let migratedKeys = [
+            recordsKey,
+            dailyNotesKey,
+            "trackedIssues",
+            "tapTimestamps",
+            "operationLog",
+            "bugEntries",
+            "projectIssues"
+        ]
+        let defaults = UserDefaults.standard
+        var removedAny = false
+        for key in migratedKeys where defaults.object(forKey: key) != nil {
+            defaults.removeObject(forKey: key)
+            removedAny = true
+        }
+        if removedAny {
+            DevLog.shared.info("SQLite", "已清理迁移后的 UserDefaults 大字段")
         }
     }
 
@@ -1132,7 +1344,7 @@ final class DataStore {
 
     func isIssueSourceEnabled(_ source: IssueSource) -> Bool {
         switch source {
-        case .manual:
+        case .manual, .web:
             issueSourceManualEnabled
         case .jira:
             issueSourceJiraEnabled
@@ -1146,7 +1358,7 @@ final class DataStore {
     }
 
     var visibleTrackedIssues: [TrackedIssue] {
-        trackedIssues.filter { isIssueSourceEnabled($0.source) }
+        trackedIssues.filter { $0.deletedAt == nil && isIssueSourceEnabled($0.source) }
     }
 
     func issuesForKey(_ key: String) -> [TrackedIssue] {
@@ -1166,13 +1378,13 @@ final class DataStore {
         let active = issuesActiveForKey(key)
         let activeIDs = Set(active.map(\.id))
         let carryOver = visibleTrackedIssues.filter {
-            !activeIDs.contains($0.id) && $0.dateKey < key && !$0.status.isResolved
+            !activeIDs.contains($0.id) && $0.dateKey < key && !$0.isEffectivelyResolved
         }
         return active + carryOver
     }
 
     var unresolvedIssueCount: Int {
-        issuesVisibleForKey(todayKey).filter { !$0.status.isResolved && $0.status != .observing }.count
+        issuesVisibleForKey(todayKey).filter { !$0.isEffectivelyResolved && $0.effectiveStatus != .observing }.count
     }
 
     func addIssue(_ title: String, type: IssueType, forKey key: String,
@@ -1190,7 +1402,7 @@ final class DataStore {
         entry.assignee = assignee
         entry.jiraKey = jiraKey
         entry.department = department
-        trackedIssues.append(entry)
+        appendTrackedIssue(entry)
         logOperation(module: "问题", action: "新增", detail: "#\(entry.issueNumber) [\(type.rawValue)] \(title)")
     }
 
@@ -1215,7 +1427,7 @@ final class DataStore {
         if let assignee = assigneeText(fromFeishuTask: task) {
             entry.assignee = assignee
         }
-        trackedIssues.append(entry)
+        appendTrackedIssue(entry)
         logOperation(module: "问题", action: "飞书同步新增", detail: "#\(entry.issueNumber) \(title) [guid=\(task.guid)]")
         if let assignee = entry.assignee {
             DevLog.shared.info("IssueTracker", "飞书任务负责人已同步 #\(entry.issueNumber) [guid=\(task.guid), assigneeIDs=\(task.assigneeIDs.joined(separator: ", ")), assignee=\(assignee)]")
@@ -1240,7 +1452,7 @@ final class DataStore {
         entry.dateKey = key ?? Self.dateKey(from: createdDate)
         entry.createdAt = createdDate
         entry.updatedAt = Self.parseLinearTimestamp(issue.updatedAt)
-        entry.status = mappedIssueStatus(from: issue.state?.name)
+        entry.status = mappedIssueStatus(from: issue.state) ?? .pending
         entry.resolvedAt = entry.status.isResolved ? (entry.updatedAt ?? createdDate) : nil
         entry.source = .linear
         entry.linearIssueId = issue.id
@@ -1248,12 +1460,19 @@ final class DataStore {
         entry.linearUrl = urlText.isEmpty ? nil : urlText
         entry.linearProjectId = issue.project?.id
         entry.linearProjectName = issue.project?.name
+        entry.linearTeamId = issue.team?.id
+        entry.linearTeamName = issue.team?.name
         entry.department = issue.project?.name
         entry.linearAssignee = issue.assignee?.name
+        entry.linearCreator = issue.creator?.name
+        entry.linearStateName = issue.state?.name
+        entry.linearStateType = issue.state?.type
+        entry.linearCreatedAt = issue.createdAt
+        entry.linearUpdatedAt = issue.updatedAt
         entry.assignee = mappedLocalAssignee(from: issue.assignee)
         entry.comments = [IssueComment(text: "[Linear] 已导入: \(keyText.isEmpty ? issue.id : keyText)")]
 
-        trackedIssues.append(entry)
+        appendTrackedIssue(entry)
         logOperation(module: "问题", action: "Linear同步新增", detail: "#\(entry.issueNumber) \(entry.title) [linear=\(keyText.isEmpty ? issue.id : keyText)]")
         return true
     }
@@ -1269,7 +1488,7 @@ final class DataStore {
         })
     }
 
-    func applyLinearIssueRemote(_ remote: LinearIssue, to id: UUID, syncDepartmentFromProject: Bool = true) {
+    func applyLinearIssueRemote(_ remote: LinearIssue, to id: UUID, syncDepartmentFromProject: Bool = true, syncStatus: Bool = true) {
         let titleText = remote.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let keyText = remote.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
         let urlText = remote.url.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1285,14 +1504,23 @@ final class DataStore {
             issue.linearUrl = urlText.isEmpty ? issue.linearUrl : urlText
             issue.linearProjectId = remote.project?.id
             issue.linearProjectName = projectName?.isEmpty == false ? projectName : nil
+            issue.linearTeamId = remote.team?.id
+            issue.linearTeamName = remote.team?.name
             if syncDepartmentFromProject, let projectName, !projectName.isEmpty {
                 issue.department = projectName
             }
             issue.linearAssignee = remote.assignee?.name
+            issue.linearCreator = remote.creator?.name
+            issue.linearStateName = remote.state?.name
+            issue.linearStateType = remote.state?.type
+            issue.linearCreatedAt = remote.createdAt
+            issue.linearUpdatedAt = remote.updatedAt
             issue.assignee = mappedLocalAssignee(from: remote.assignee)
             issue.updatedAt = Self.parseLinearTimestamp(remote.updatedAt) ?? issue.updatedAt
-            issue.status = mappedIssueStatus(from: remote.state?.name)
-            issue.resolvedAt = issue.status.isResolved ? (issue.updatedAt ?? Date()) : nil
+            if syncStatus, let mappedStatus = mappedIssueStatus(from: remote.state) {
+                issue.status = mappedStatus
+                issue.resolvedAt = issue.status.isResolved ? (issue.updatedAt ?? Date()) : nil
+            }
             let mappedType = mappedIssueType(from: remote.labels)
             if !remote.labels.isEmpty {
                 issue.type = mappedType
@@ -1327,7 +1555,7 @@ final class DataStore {
         entry.linearUrl = urlText.isEmpty ? nil : urlText
         entry.comments = [IssueComment(text: "[Linear] 已通过链接导入: \(keyText)")]
 
-        trackedIssues.append(entry)
+        appendTrackedIssue(entry)
         logOperation(module: "问题", action: "Linear链接新增", detail: "#\(entry.issueNumber) \(entry.title) [linear=\(keyText)]")
         return entry.id
     }
@@ -1357,15 +1585,19 @@ final class DataStore {
         }
     }
 
-    private func mappedIssueStatus(from linearStateName: String?) -> IssueStatus {
-        guard let linearStateName else { return .pending }
-        for (linearName, localCase) in linearConfig.statusMapping {
-            if linearName.localizedCaseInsensitiveCompare(linearStateName) == .orderedSame,
-               let status = IssueStatus.fromCaseName(localCase) {
-                return status
-            }
+    private func mappedIssueStatus(from linearState: LinearState?) -> IssueStatus? {
+        guard let linearState else { return nil }
+        if let localCase = linearConfig.mappedStatusCase(for: linearState.name),
+           let status = IssueStatus.fromCaseName(localCase) {
+            return status
         }
-        return .pending
+        switch linearState.type.lowercased() {
+        case "completed": return .fixed
+        case "canceled": return .ignored
+        case "started": return .inProgress
+        case "triage", "backlog", "unstarted": return .pending
+        default: return nil
+        }
     }
 
     private func mappedIssueType(from labels: [String]) -> IssueType {
@@ -1398,6 +1630,17 @@ final class DataStore {
         return basic.date(from: value)
     }
 
+    private func appendTrackedIssue(_ issue: TrackedIssue) {
+        guard localStore.isReady else {
+            trackedIssues.append(issue)
+            return
+        }
+        suppressTrackedIssuesSave = true
+        trackedIssues.append(issue)
+        suppressTrackedIssuesSave = false
+        localStore.upsertIssue(issue)
+    }
+
     /// Apply mutations to a tracked issue via copy-modify-writeback to reliably trigger didSet.
     private func mutateIssue(id: UUID, _ transform: (inout TrackedIssue) -> Void) {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
@@ -1405,7 +1648,14 @@ final class DataStore {
         transform(&copy)
         copy.updatedAt = Date()
         if copy.diaryBadge != .auto { copy.diaryBadge = .auto }
+        guard localStore.isReady else {
+            trackedIssues[idx] = copy
+            return
+        }
+        suppressTrackedIssuesSave = true
         trackedIssues[idx] = copy
+        suppressTrackedIssuesSave = false
+        localStore.upsertIssue(copy)
     }
 
     /// Mutate without touching updatedAt / diaryBadge
@@ -1413,7 +1663,14 @@ final class DataStore {
         guard let idx = trackedIssues.firstIndex(where: { $0.id == id }) else { return }
         var copy = trackedIssues[idx]
         transform(&copy)
+        guard localStore.isReady else {
+            trackedIssues[idx] = copy
+            return
+        }
+        suppressTrackedIssuesSave = true
         trackedIssues[idx] = copy
+        suppressTrackedIssuesSave = false
+        localStore.upsertIssue(copy)
     }
 
     func updateIssueStatus(id: UUID, status: IssueStatus) {
@@ -1602,6 +1859,27 @@ final class DataStore {
         mutateIssue(id: id) { $0.linearAssignee = assignee }
     }
 
+    func updateIssueLinearMetadata(id: UUID, creator: String?, stateName: String?, stateType: String?, createdAt: String?, updatedAt: String?) {
+        mutateIssue(id: id) { issue in
+            issue.linearCreator = creator
+            issue.linearStateName = stateName
+            issue.linearStateType = stateType
+            issue.linearCreatedAt = createdAt
+            issue.linearUpdatedAt = updatedAt
+        }
+    }
+
+    func updateIssueLinearStateLocally(id: UUID, state: LinearState) {
+        mutateIssue(id: id) { issue in
+            issue.linearStateName = state.name
+            issue.linearStateType = state.type
+            if let mappedStatus = mappedIssueStatus(from: state) {
+                issue.status = mappedStatus
+                issue.resolvedAt = mappedStatus.isResolved ? Date() : nil
+            }
+        }
+    }
+
     func updateIssueLinearLink(id: UUID, issueId: String?, key: String?, url: String?) {
         mutateIssue(id: id) { issue in
             issue.linearIssueId = issueId
@@ -1609,6 +1887,9 @@ final class DataStore {
             issue.linearUrl = url
             if issueId == nil {
                 issue.linearAssignee = nil
+                issue.linearCreator = nil
+                issue.linearCreatedAt = nil
+                issue.linearUpdatedAt = nil
             } else {
                 issue.source = .linear
                 clearBindingsInconsistentWithSource(&issue)
@@ -1630,24 +1911,10 @@ final class DataStore {
     }
 
     private func clearBindingsInconsistentWithSource(_ issue: inout TrackedIssue) {
-        if issue.source != .jira {
-            issue.jiraKey = nil
-        }
-        if issue.source != .meta {
-            issue.ticketURL = nil
-            issue.isEscalated = false
-        }
-        if issue.source != .feishu {
-            clearFeishuTaskBinding(&issue)
-        }
-        if issue.source != .linear {
-            issue.linearIssueId = nil
-            issue.linearKey = nil
-            issue.linearUrl = nil
-            issue.linearProjectId = nil
-            issue.linearProjectName = nil
-            issue.linearAssignee = nil
-        }
+        // Source describes where the issue entered the tracker; Jira, Linear,
+        // Feishu and ticket links are independent external bindings. Changing
+        // the source must never destroy those bindings. Explicit unlink actions
+        // remain responsible for clearing their own provider fields.
     }
 
     private func clearFeishuTaskBinding(_ issue: inout TrackedIssue) {
@@ -1708,10 +1975,20 @@ final class DataStore {
     }
 
     func deleteIssue(id: UUID) {
+        let syncID = trackedIssues.first(where: { $0.id == id })?.syncID
         if let issue = trackedIssues.first(where: { $0.id == id }) {
             logOperation(module: "问题", action: "删除", detail: "[\(issue.type.rawValue)] \(issue.title)")
         }
+        guard localStore.isReady else {
+            trackedIssues.removeAll { $0.id == id }
+            return
+        }
+        suppressTrackedIssuesSave = true
         trackedIssues.removeAll { $0.id == id }
+        suppressTrackedIssuesSave = false
+        if let syncID {
+            localStore.deleteIssue(syncID: syncID)
+        }
     }
 
     func markDevActivity(id: UUID) {

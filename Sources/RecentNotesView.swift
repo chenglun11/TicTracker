@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct MarkdownContentView: View {
     let text: String
@@ -52,6 +53,7 @@ struct RecentNotesView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var searchText = ""
     @State private var copied = false
+    @State private var imageRendering = false
     @State private var expandedIssueDays: Set<String> = []
     @State private var selectedDayID: String?
 
@@ -186,22 +188,33 @@ struct RecentNotesView: View {
     }
 
     private func copyReportImage(_ period: WeeklyReport.Period) {
-        WeeklyReport.copyImageToClipboard(from: store, period: period)
-        copied = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            copied = false
+        guard !imageRendering else { return }
+        imageRendering = true
+        Task {
+            let ok = await WeeklyReport.copyImageToClipboardAsync(from: store, period: period)
+            imageRendering = false
+            if ok {
+                copied = true
+                try? await Task.sleep(for: .seconds(1.5))
+                copied = false
+            }
         }
     }
 
-    private func exportReportImage(_ period: WeeklyReport.Period) {
-        let image = ReportVisualRenderer.renderPeriodReport(store: store, period: period)
-        guard let pngData = ReportVisualRenderer.pngData(for: image) else { return }
+    private func exportReportImage(_ period: WeeklyReport.Period, format: ReportVisualRenderer.ImageFormat) {
+        guard !imageRendering else { return }
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.png]
+        panel.allowedContentTypes = [format == .jpeg ? .jpeg : .png]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = "技术支持\(period.reportName).png"
+        panel.nameFieldStringValue = "技术支持\(period.reportName).\(format == .jpeg ? "jpg" : "png")"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? pngData.write(to: url)
+        imageRendering = true
+        Task {
+            if let data = await ReportVisualRenderer.periodImageData(store: store, period: period, format: format) {
+                try? data.write(to: url)
+            }
+            imageRendering = false
+        }
     }
 
     var body: some View {
@@ -253,22 +266,29 @@ struct RecentNotesView: View {
                             copyReportImage(.currentWeek)
                         }
                         Button("导出本周 PNG") {
-                            exportReportImage(.currentWeek)
+                            exportReportImage(.currentWeek, format: .png)
+                        }
+                        Button("导出本周 JPG") {
+                            exportReportImage(.currentWeek, format: .jpeg)
                         }
                         Divider()
                         Button("复制本月图片") {
                             copyReportImage(.currentMonth)
                         }
                         Button("导出本月 PNG") {
-                            exportReportImage(.currentMonth)
+                            exportReportImage(.currentMonth, format: .png)
+                        }
+                        Button("导出本月 JPG") {
+                            exportReportImage(.currentMonth, format: .jpeg)
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: "photo")
-                            Text("报表图片")
+                            Image(systemName: imageRendering ? "hourglass" : "photo")
+                            Text(imageRendering ? "生成中" : "报表图片")
                                 .font(.caption)
                         }
                     }
+                    .disabled(imageRendering)
                     .menuStyle(.button)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -577,7 +597,7 @@ struct RecentNotesView: View {
     @ViewBuilder
     private func issueTypeSection(type: IssueType, issues: [TrackedIssue], dayID: String) -> some View {
         let sectionKey = "\(dayID)-\(type.rawValue)"
-        let unresolvedCount = issues.filter { !$0.status.isResolved && $0.status != .observing }.count
+        let unresolvedCount = issues.filter { !$0.isEffectivelyResolved && $0.effectiveStatus != .observing }.count
         let newCount = issues.filter { $0.dateKey == dayID }.count
         VStack(alignment: .leading, spacing: 6) {
             Button {
@@ -634,7 +654,7 @@ struct RecentNotesView: View {
     }
 
     private func issueTag(_ issue: TrackedIssue, dayKey: String) -> some View {
-        let isUnresolved = !issue.status.isResolved
+        let isUnresolved = !issue.isEffectivelyResolved
         let autoNew = issue.dateKey == dayKey
         // 非当天新建，但当天有评论活动（被 issuesActiveForKey 拉进来的）
         let autoUpd = !autoNew && issue.comments.contains { DataStore.dateKey(from: $0.createdAt) == dayKey }
@@ -662,7 +682,7 @@ struct RecentNotesView: View {
                 Image(systemName: issue.type.icon)
                     .font(.system(size: 9))
                     .foregroundStyle(typeColor.opacity(0.7))
-                Image(systemName: issue.status.icon)
+                Image(systemName: issue.displayStatusIcon)
                     .font(.system(size: 9))
                     .fontWeight(isUnresolved ? .bold : .regular)
                 if showNew {
@@ -715,7 +735,7 @@ struct RecentNotesView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .help("\(issue.type.rawValue) · \(issue.status.rawValue)\(showNew ? " · 当日新增" : (showUpd ? " · 有更新" : ""))")
+        .help("\(issue.type.rawValue) · \(issue.displayStatusHelpText)\(showNew ? " · 当日新增" : (showUpd ? " · 有更新" : ""))")
         .contextMenu {
             Menu("徽章标记") {
                 ForEach(DiaryBadge.allCases, id: \.self) { badge in
