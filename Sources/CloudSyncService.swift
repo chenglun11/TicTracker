@@ -250,6 +250,14 @@ final class SyncManager {
         startPeriodicSync(store: store)
     }
 
+    private func pauseAutomaticSyncForConflict(_ message: String) {
+        stopPeriodicSync()
+        automaticSyncPaused = true
+        UserDefaults.standard.set(true, forKey: Self.automaticSyncPausedKey)
+        lastSyncDirection = "检测到多端修改冲突，等待选择同步方向"
+        status = .conflict(message)
+    }
+
     private func reloadIssueSyncState() {
         guard config.backend == .httpAPI else {
             issueConflicts = []
@@ -407,7 +415,7 @@ final class SyncManager {
         } catch {
             DevLog.shared.error("Sync", "同步失败: \(error.localizedDescription)")
             if case let SyncError.conflict(message) = error {
-                status = .conflict(message)
+                pauseAutomaticSyncForConflict(message)
             } else {
                 status = .error(error.localizedDescription)
             }
@@ -485,7 +493,7 @@ final class SyncManager {
         } catch {
             DevLog.shared.error("Sync", "强制上传当前快照失败: \(error.localizedDescription)")
             if case let SyncError.conflict(message) = error {
-                status = .conflict(message)
+                pauseAutomaticSyncForConflict(message)
             } else {
                 status = .error(error.localizedDescription)
             }

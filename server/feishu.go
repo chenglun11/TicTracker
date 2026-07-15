@@ -262,13 +262,8 @@ func buildCardElements(payload SyncPayload, cfg *FeishuBotConfig) []map[string]i
 
 	elements := []map[string]interface{}{}
 
-	// 日期 + 项目支持
+	// 日期
 	dateLine := fmt.Sprintf("**日期：** %s", today)
-	if cfg.ShowSupportStats {
-		if supportStats := buildSupportStats(payload); supportStats != "" {
-			dateLine += "\n" + supportStats
-		}
-	}
 	elements = append(elements, map[string]interface{}{
 		"tag":  "div",
 		"text": map[string]interface{}{"tag": "lark_md", "content": dateLine},
@@ -402,7 +397,7 @@ func buildTemplateMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]
 
 	statsStr := buildSupportStats(payload)
 
-	tpl := cfg.CustomTemplate
+	tpl := removeSupportStatsLines(cfg.CustomTemplate)
 	replacements := map[string]string{
 		"{{日期}}":    today,
 		"{{今日总数}}":  fmt.Sprintf("%d", stats.todayTotal),
@@ -426,10 +421,6 @@ func buildTemplateMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]
 	for k, v := range replacements {
 		tpl = strings.ReplaceAll(tpl, k, v)
 	}
-	if !cfg.ShowSupportStats {
-		tpl = removeSupportStatsLines(tpl)
-	}
-
 	title := cfg.CustomTemplateTitle
 	if title == "" {
 		title = cfg.CardTitle
@@ -440,14 +431,20 @@ func buildTemplateMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]
 
 	segments := strings.Split(tpl, "\n---\n")
 	elements := []map[string]interface{}{}
-	for i, seg := range segments {
-		if i > 0 {
+	added := 0
+	for _, seg := range segments {
+		trimmed := strings.TrimSpace(seg)
+		if trimmed == "" {
+			continue
+		}
+		if added > 0 {
 			elements = append(elements, map[string]interface{}{"tag": "hr"})
 		}
 		elements = append(elements, map[string]interface{}{
 			"tag":  "div",
-			"text": map[string]interface{}{"tag": "lark_md", "content": seg},
+			"text": map[string]interface{}{"tag": "lark_md", "content": trimmed},
 		})
+		added++
 	}
 
 	return map[string]interface{}{

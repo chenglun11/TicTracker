@@ -1321,16 +1321,6 @@ final class FeishuBotService {
             lines.append([text("")])
         }
 
-        // === 项目支持统计 ===
-        if d.config.showSupportStats && d.todayTotal > 0 {
-            let parts = d.todayRecords.sorted(by: { $0.key < $1.key })
-                .map { "\($0.key) \($0.value)次" }
-            lines.append([
-                text("📊 项目支持：\(parts.joined(separator: "，"))（共 \(d.todayTotal) 次）")
-            ])
-            lines.append([text("")])
-        }
-
         // === 待处理问题 ===
         if d.config.showPending && !d.pending.isEmpty {
             lines.append([text("📋 待处理问题：")])
@@ -1492,12 +1482,9 @@ final class FeishuBotService {
             "当前时间": timeFmt.string(from: Date()),
         ]
 
-        var result = template
+        var result = removeSupportStatsLines(from: template)
         for (key, value) in variables {
             result = result.replacingOccurrences(of: "{{\(key)}}", with: value)
-        }
-        if !d.config.showSupportStats {
-            result = removeSupportStatsLines(from: result)
         }
 
         // 按 --- 分隔为多个卡片段落，每段一个 lark_md div，段间加 hr 分隔线
@@ -1551,13 +1538,8 @@ final class FeishuBotService {
         let d = collectReportData(store: store)
         var elements: [[String: Any]] = []
 
-        // 日期 + 项目支持统计
-        var dateLine = "**日期：** \(d.todayKey)"
-        if d.config.showSupportStats && d.todayTotal > 0 {
-            let parts = d.todayRecords.sorted(by: { $0.key < $1.key })
-                .map { "\($0.key) \($0.value)次" }
-            dateLine += "\n**项目支持：** \(parts.joined(separator: "，"))（共 \(d.todayTotal) 次）"
-        }
+        // 日期
+        let dateLine = "**日期：** \(d.todayKey)"
         elements.append(["tag": "div", "text": ["tag": "lark_md", "content": dateLine]])
 
         // 统计概览（高亮）
@@ -1660,8 +1642,7 @@ final class FeishuBotService {
         }
 
         // 无数据
-        let hasContent = (d.config.showSupportStats && d.todayTotal > 0)
-            || d.config.showOverview
+        let hasContent = d.config.showOverview
             || (d.config.showPending && !d.pending.isEmpty)
             || (d.config.showInProgress && !d.inProgress.isEmpty)
             || (d.config.showObserving && !d.observing.isEmpty)

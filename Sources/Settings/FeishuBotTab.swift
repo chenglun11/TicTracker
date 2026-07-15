@@ -508,8 +508,6 @@ struct FeishuBotTab: View {
     @ViewBuilder
     private var reportModuleSections: some View {
         Section("卡片模块") {
-            Toggle("项目支持统计", isOn: Bindable(store).feishuBotConfig.showSupportStats)
-                .onChange(of: store.feishuBotConfig.showSupportStats) { _, _ in saveState.triggerSave() }
             Toggle("统计概览（新建/解决/待处理）", isOn: Bindable(store).feishuBotConfig.showOverview)
                 .onChange(of: store.feishuBotConfig.showOverview) { _, _ in saveState.triggerSave() }
             Toggle("待处理问题列表", isOn: Bindable(store).feishuBotConfig.showPending)

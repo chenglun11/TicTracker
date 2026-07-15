@@ -445,8 +445,18 @@ struct SyncTab: View {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("采用线上版本") {
-                    showingAcceptOnlineConfirmation = true
+                HStack {
+                    Button("上传本机数据") {
+                        previewLocalUpload()
+                    }
+                    .disabled(uploading || !manualSyncReady)
+                    Button("采用线上版本", role: .destructive) {
+                        if syncManager.config.backend == .httpAPI {
+                            showingAcceptOnlineConfirmation = true
+                        } else {
+                            previewRemoteAdoption()
+                        }
+                    }
                 }
                 .controlSize(.small)
             }
