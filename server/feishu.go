@@ -426,6 +426,9 @@ func buildTemplateMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]
 	for k, v := range replacements {
 		tpl = strings.ReplaceAll(tpl, k, v)
 	}
+	if !cfg.ShowSupportStats {
+		tpl = removeSupportStatsLines(tpl)
+	}
 
 	title := cfg.CustomTemplateTitle
 	if title == "" {
@@ -527,6 +530,19 @@ func primaryIssueTime(issue TrackedIssue) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+func removeSupportStatsLines(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "项目支持") || strings.Contains(trimmed, "{{项目统计}}") || strings.Contains(trimmed, "{{今日总数}}") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 func issueDateKey(issue TrackedIssue) string {

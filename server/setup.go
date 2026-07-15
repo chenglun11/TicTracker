@@ -199,7 +199,7 @@ func applySetup(payload *SyncPayload, req SetupRequest) {
 		cfg.EncryptKey = trimmed
 	}
 	cfg.TasklistGUID = strings.TrimSpace(req.Feishu.TasklistGUID)
-	cfg.ShowSupportStats = true
+	cfg.ShowSupportStats = false
 	cfg.ShowOverview = true
 	cfg.ShowPending = true
 	cfg.ShowObserving = true
@@ -316,7 +316,7 @@ func defaultFeishuBotConfig() *FeishuBotConfig {
 		CardTitle:        "每日工单报告",
 		FocusIssueTag:    "今日Bug",
 		MaxRetries:       3,
-		ShowSupportStats: true,
+		ShowSupportStats: false,
 		ShowOverview:     true,
 		ShowPending:      true,
 		ShowObserving:    true,

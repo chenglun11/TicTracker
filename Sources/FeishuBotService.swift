@@ -1496,6 +1496,9 @@ final class FeishuBotService {
         for (key, value) in variables {
             result = result.replacingOccurrences(of: "{{\(key)}}", with: value)
         }
+        if !d.config.showSupportStats {
+            result = removeSupportStatsLines(from: result)
+        }
 
         // 按 --- 分隔为多个卡片段落，每段一个 lark_md div，段间加 hr 分隔线
         let sections = result.components(separatedBy: "\n---\n")
@@ -1521,6 +1524,17 @@ final class FeishuBotService {
                 "elements": elements
             ]
         ]
+    }
+
+    private func removeSupportStatsLines(from text: String) -> String {
+        text.components(separatedBy: .newlines)
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                return !trimmed.contains("项目支持")
+                    && !trimmed.contains("{{项目统计}}")
+                    && !trimmed.contains("{{今日总数}}")
+            }
+            .joined(separator: "\n")
     }
 
     /// 格式化 issue 列表为 lark_md（用于自定义模板卡片）

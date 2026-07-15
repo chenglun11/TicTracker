@@ -80,8 +80,6 @@ enum FeishuTaskAuthMode: String, Codable, Sendable, CaseIterable {
 
 struct FeishuBotConfig: Codable, Sendable {
     static let defaultTemplate = """
-📊 **项目支持：**{{项目统计}}（共 {{今日总数}} 次）
----
 🟢 **今日新建** {{新建数量}} 个  ·  ✅ **今日解决** {{解决数量}} 个  ·  🔶 **待处理** {{待处理数量}} 个  ·  👁 **观测中** {{观测中数量}} 个
 ---
 **待处理问题：**
@@ -138,7 +136,7 @@ struct FeishuBotConfig: Codable, Sendable {
     var feishuUserNameMap: [String: String] = [:]
 
     // 卡片模块开关
-    var showSupportStats: Bool = true   // 项目支持统计
+    var showSupportStats: Bool = false  // 项目支持统计
     var showOverview: Bool = true       // 统计概览（新建/解决/待处理）
     var showPending: Bool = true        // 待处理列表
     var showInProgress: Bool = true     // 处理中列表
@@ -239,7 +237,7 @@ struct FeishuBotConfig: Codable, Sendable {
             }
         }
 
-        showSupportStats = try c.decodeIfPresent(Bool.self, forKey: .showSupportStats) ?? true
+        showSupportStats = try c.decodeIfPresent(Bool.self, forKey: .showSupportStats) ?? false
         showOverview = try c.decodeIfPresent(Bool.self, forKey: .showOverview) ?? true
         showPending = try c.decodeIfPresent(Bool.self, forKey: .showPending) ?? true
         showInProgress = try c.decodeIfPresent(Bool.self, forKey: .showInProgress) ?? true
