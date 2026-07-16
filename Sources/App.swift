@@ -12,15 +12,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
     private var didInitializeServices = false
     private var didFinishLaunching = false
+    private var explicitTerminationRequested = false
+    private var launchTerminationProtectionUntil: Date?
+    private var quitObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
+        launchTerminationProtectionUntil = Date().addingTimeInterval(15)
+        quitObserver = NotificationCenter.default.addObserver(
+            forName: .requestAppQuit,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.requestQuit()
+            }
+        }
         didFinishLaunching = true
         initializeServicesIfNeeded()
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if explicitTerminationRequested {
+            return .terminateNow
+        }
+        if let launchTerminationProtectionUntil, Date() < launchTerminationProtectionUntil {
+            DevLog.shared.warn("App", "忽略启动阶段的系统终止请求，避免菜单栏状态导致本地服务被关闭")
+            return .terminateCancel
+        }
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         store?.flushPendingSaves()
+        if let quitObserver {
+            NotificationCenter.default.removeObserver(quitObserver)
+        }
+    }
+
+    private func requestQuit() {
+        explicitTerminationRequested = true
+        NSApp.terminate(nil)
     }
 
     @MainActor
@@ -142,6 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 extension Notification.Name {
     static let openWindowRequest = Notification.Name("openWindowRequest")
     static let generateWeeklyReport = Notification.Name("generateWeeklyReport")
+    static let requestAppQuit = Notification.Name("requestAppQuit")
 }
 
 @main
@@ -151,9 +184,29 @@ struct TicTrackerApp: App {
     @Environment(\.openWindow) private var openWindow
 
     init() {
+        Self.migrateLegacyDefaultsIfNeeded()
         let store = DataStore()
         _store = State(initialValue: store)
         appDelegate.store = store
+    }
+
+    private static func migrateLegacyDefaultsIfNeeded() {
+        let legacyBundleID = "com.maxli.TicTracker"
+        guard Bundle.main.bundleIdentifier != legacyBundleID else { return }
+
+        let migrationKey = "migratedDefaultsFrom.\(legacyBundleID)"
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migrationKey),
+              let legacyDefaults = UserDefaults(suiteName: legacyBundleID),
+              let legacyDomain = legacyDefaults.persistentDomain(forName: legacyBundleID) else {
+            return
+        }
+
+        for (key, value) in legacyDomain where defaults.object(forKey: key) == nil {
+            defaults.set(value, forKey: key)
+        }
+        defaults.set(true, forKey: migrationKey)
+        defaults.synchronize()
     }
 
     var body: some Scene {
@@ -168,9 +221,6 @@ struct TicTrackerApp: App {
             HStack(spacing: 2) {
                 Image(systemName: "plus.circle.fill")
                 Text("\(store.todayTotal)")
-            }
-            .task {
-                LocalMCPServer.shared.setup(store: store)
             }
         }
         .menuBarExtraStyle(.window)

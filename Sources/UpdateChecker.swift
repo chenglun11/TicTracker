@@ -203,7 +203,7 @@ final class UpdateChecker {
                     relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
                     relaunch.arguments = ["-c", script]
                     try? relaunch.run()
-                    NSApp.terminate(nil)
+                    NotificationCenter.default.post(name: .requestAppQuit, object: nil)
                 }
             } catch {
                 await MainActor.run { progressWindow.close(); self.showError("更新失败：\(error.localizedDescription)") }

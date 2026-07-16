@@ -123,7 +123,8 @@ struct DataTab: View {
     private func openPreferencesInFinder() {
         let prefsDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Preferences")
-        let plistPath = prefsDir.appendingPathComponent("com.maxli.TicTracker.plist").path
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.maxli.TicTracker.swift"
+        let plistPath = prefsDir.appendingPathComponent("\(bundleID).plist").path
         NSWorkspace.shared.selectFile(plistPath, inFileViewerRootedAtPath: prefsDir.path)
     }
 
@@ -136,4 +137,3 @@ struct DataTab: View {
 }
 
 // MARK: - About Tab
-

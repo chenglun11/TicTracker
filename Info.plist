@@ -9,7 +9,7 @@
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.maxli.TicTracker</string>
+	<string>com.maxli.TicTracker.swift</string>
 	<key>CFBundleName</key>
 	<string>TicTracker</string>
 	<key>CFBundlePackageType</key>

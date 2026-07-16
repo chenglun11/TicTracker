@@ -366,7 +366,7 @@ struct MenuBarView: View {
                 Spacer()
 
                 Button {
-                    NSApp.terminate(nil)
+                    NotificationCenter.default.post(name: .requestAppQuit, object: nil)
                 } label: {
                     Image(systemName: "power")
                 }
