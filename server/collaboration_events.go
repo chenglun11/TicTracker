@@ -23,6 +23,35 @@ type CollaborationEvent struct {
 	OperationID    string          `json:"operationId,omitempty"`
 }
 
+// collaborationEventSignal returns the current one-shot broadcast channel for
+// a workspace. Callers subscribe before querying so a commit between the query
+// and the wait cannot be missed.
+func (s *SQLiteStore) collaborationEventSignal(workspaceID string) <-chan struct{} {
+	if workspaceID == "" {
+		workspaceID = defaultWorkspaceID
+	}
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	signal := s.eventSignals[workspaceID]
+	if signal == nil {
+		signal = make(chan struct{})
+		s.eventSignals[workspaceID] = signal
+	}
+	return signal
+}
+
+func (s *SQLiteStore) notifyCollaborationEvents(workspaceID string) {
+	if workspaceID == "" {
+		workspaceID = defaultWorkspaceID
+	}
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	if signal := s.eventSignals[workspaceID]; signal != nil {
+		close(signal)
+	}
+	s.eventSignals[workspaceID] = make(chan struct{})
+}
+
 func buildIssueEvents(before, after *SyncPayload, actor string) []CollaborationEvent {
 	previous := make(map[string]TrackedIssue, len(before.TrackedIssues))
 	for _, issue := range before.TrackedIssues {
@@ -95,6 +124,36 @@ ORDER BY cursor ASC LIMIT %d;`, sqlQuote(workspaceID), after, limit)
 		var event CollaborationEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			return nil, fmt.Errorf("decode collaboration event: %w", err)
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func (s *SQLiteStore) ListRecentCollaborationEvents(ctx context.Context, workspaceID string, limit int) ([]CollaborationEvent, error) {
+	if limit < 1 || limit > 50 {
+		limit = 12
+	}
+	sql := fmt.Sprintf(`SELECT json_object(
+'cursor',cursor,'type',event_type,'entityId',entity_id,'entityRevision',entity_revision,
+'payload',json(payload_json),'actor',coalesce(actor,''),'createdAt',created_at,'operationId',coalesce(operation_id,''))
+FROM collaboration_events
+WHERE workspace_id=%s
+ORDER BY cursor DESC LIMIT %d;`, sqlQuote(workspaceID), limit)
+	out, err := s.query(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	events := make([]CollaborationEvent, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var event CollaborationEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return nil, fmt.Errorf("decode recent collaboration event: %w", err)
 		}
 		events = append(events, event)
 	}
@@ -180,6 +239,26 @@ func HandleGetCollaborationEvents(store *SQLiteStore) gin.HandlerFunc {
 	}
 }
 
+func HandleGetRecentActivity(store *SQLiteStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limit := 12
+		if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 50 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be between 1 and 50", "code": "invalid_activity_limit"})
+				return
+			}
+			limit = parsed
+		}
+		events, err := store.ListRecentCollaborationEvents(c.Request.Context(), workspaceIDFromContext(c.Request.Context()), limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read recent activity"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"events": events})
+	}
+}
+
 func HandleStreamCollaborationEvents(store *SQLiteStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cursor, err := eventCursorFromRequest(c)
@@ -210,20 +289,25 @@ func HandleStreamCollaborationEvents(store *SQLiteStore) gin.HandlerFunc {
 			flusher.Flush()
 		}
 
-		ticker := time.NewTicker(time.Second)
+		// The fallback also catches writes made by another server process and
+		// periodically revalidates workspace membership. Local commits wake the
+		// stream immediately through the per-workspace signal.
+		fallback := time.NewTicker(5 * time.Second)
 		heartbeat := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
+		defer fallback.Stop()
 		defer heartbeat.Stop()
+		workspaceID := workspaceIDFromContext(c.Request.Context())
 		for {
 			if identity, hasIdentity := identityFromContext(c.Request.Context()); hasIdentity && !strings.HasSuffix(identity.Username, "-token") {
-				active, activeErr := store.IsWorkspaceMemberActive(c.Request.Context(), workspaceIDFromContext(c.Request.Context()), identity.Username)
+				active, activeErr := store.IsWorkspaceMemberActive(c.Request.Context(), workspaceID, identity.Username)
 				if activeErr != nil || !active {
 					_, _ = fmt.Fprint(c.Writer, "event: session.revoked\ndata: {\"code\":\"session_revoked\"}\n\n")
 					flusher.Flush()
 					return
 				}
 			}
-			events, listErr := store.ListCollaborationEvents(c.Request.Context(), workspaceIDFromContext(c.Request.Context()), cursor, 100)
+			eventSignal := store.collaborationEventSignal(workspaceID)
+			events, listErr := store.ListCollaborationEvents(c.Request.Context(), workspaceID, cursor, 100)
 			if listErr != nil {
 				_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"event_read_failed\"}\n\n")
 				flusher.Flush()
@@ -237,13 +321,17 @@ func HandleStreamCollaborationEvents(store *SQLiteStore) gin.HandlerFunc {
 			if len(events) > 0 {
 				flusher.Flush()
 			}
+			if len(events) == 100 {
+				continue
+			}
 			select {
 			case <-c.Request.Context().Done():
 				return
+			case <-eventSignal:
 			case <-heartbeat.C:
 				_, _ = fmt.Fprint(c.Writer, ": heartbeat\n\n")
 				flusher.Flush()
-			case <-ticker.C:
+			case <-fallback.C:
 			}
 		}
 	}

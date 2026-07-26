@@ -140,8 +140,8 @@ struct IssueTrackerView: View {
                 ($0.assignee?.lowercased().contains(query) ?? false) ||
                 ($0.jiraKey?.lowercased().contains(query) ?? false) ||
                 ($0.ticketURL?.lowercased().contains(query) ?? false) ||
-                ($0.feishuTaskGuid?.lowercased().contains(query) ?? false) ||
-                ($0.feishuTaskSummary?.lowercased().contains(query) ?? false) ||
+                (store.issueSourceFeishuTaskEnabled && ($0.feishuTaskGuid?.lowercased().contains(query) ?? false)) ||
+                (store.issueSourceFeishuTaskEnabled && ($0.feishuTaskSummary?.lowercased().contains(query) ?? false)) ||
                 ($0.department?.lowercased().contains(query) ?? false) ||
                 ($0.reporterName?.lowercased().contains(query) ?? false) ||
                 $0.issueTags.contains(where: { $0.lowercased().contains(query) }) ||
@@ -215,6 +215,7 @@ struct IssueTrackerView: View {
     }
 
     private var canSyncFeishuTasks: Bool {
+        guard store.issueSourceFeishuTaskEnabled else { return false }
         switch store.feishuBotConfig.taskAuthMode {
         case .botTenant:
             return !store.feishuBotConfig.appID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -269,7 +270,7 @@ struct IssueTrackerView: View {
             showLinearProjectPicker = false
             linearProjectSearchText = ""
         }
-        .task(id: store.feishuBotConfig.taskPollingInterval) {
+        .task(id: "\(store.issueSourceFeishuTaskEnabled)-\(store.feishuBotConfig.taskPollingInterval)") {
             await runFeishuSyncLoop()
         }
         .onChange(of: searchText) {
@@ -914,7 +915,8 @@ struct IssueTrackerView: View {
                     issueTag(issue.dateKey, systemImage: "calendar", color: .gray)
                 }
 
-                if issue.source != .manual || issueExternalLink(issue) != nil || issue.hasDevActivity || issue.isEscalated || issue.feishuTaskGuid?.isEmpty == false || !issue.issueTags.isEmpty {
+                let hasVisibleFeishuTaskBinding = store.issueSourceFeishuTaskEnabled && issue.feishuTaskGuid?.isEmpty == false
+                if issue.source != .manual || issueExternalLink(issue) != nil || issue.hasDevActivity || issue.isEscalated || hasVisibleFeishuTaskBinding || !issue.issueTags.isEmpty {
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 70), spacing: 5, alignment: .leading)],
                         alignment: .leading,
@@ -936,7 +938,7 @@ struct IssueTrackerView: View {
                         if issue.isEscalated {
                             issueTag("Escalated", systemImage: "exclamationmark.arrow.triangle.2.circlepath", color: .red)
                         }
-                        if issue.feishuTaskGuid?.isEmpty == false {
+                        if hasVisibleFeishuTaskBinding {
                             issueTag("飞书任务", systemImage: "checklist", color: .indigo)
                         }
                         ForEach(issue.issueTags.prefix(2), id: \.self) { tag in
@@ -1163,7 +1165,7 @@ struct IssueTrackerView: View {
                 if issue.isEscalated {
                     issueSummaryMetaChip(title: "升级", value: "Escalated", systemImage: "exclamationmark.arrow.triangle.2.circlepath", color: .red)
                 }
-                if issue.feishuTaskGuid?.isEmpty == false {
+                if store.issueSourceFeishuTaskEnabled && issue.feishuTaskGuid?.isEmpty == false {
                     issueSummaryMetaChip(title: "任务", value: "飞书任务", systemImage: "checklist", color: .indigo)
                 }
             }
@@ -1367,7 +1369,9 @@ struct IssueTrackerView: View {
                             saveState.triggerSave()
                         }
                     )) {
-                        ForEach(IssueSource.allCases, id: \.self) { source in
+                        ForEach(IssueSource.allCases.filter { source in
+                            source != .feishu || store.issueSourceFeishuTaskEnabled
+                        }, id: \.self) { source in
                             Text(displaySourceName(source)).tag(source)
                         }
                     }
@@ -1385,7 +1389,13 @@ struct IssueTrackerView: View {
                 case .meta:
                     metaLinkFields(issue)
                 case .feishu:
-                    linkedTaskControl(issue)
+                    if store.issueSourceFeishuTaskEnabled {
+                        linkedTaskControl(issue)
+                    } else {
+                        fieldRow("飞书任务", systemImage: "checklist") {
+                            mutedValue("入口已关闭")
+                        }
+                    }
                 case .linear:
                     linearLinkFields(issue)
                 case .manual, .web:
@@ -2012,7 +2022,8 @@ struct IssueTrackerView: View {
         if let jiraKey = issue.jiraKey, let url = jiraURL(for: jiraKey) {
             return (url, "打开历史入口")
         }
-        if let guid = issue.feishuTaskGuid, !guid.isEmpty,
+        if store.issueSourceFeishuTaskEnabled,
+           let guid = issue.feishuTaskGuid, !guid.isEmpty,
            let url = URL(string: "https://applink.feishu.cn/client/todo/detail?guid=\(guid)") {
             return (url, "打开飞书任务")
         }
@@ -2456,6 +2467,11 @@ struct IssueTrackerView: View {
     }
 
     private func loadFeishuTasks(tasklistGUID: String? = nil) {
+        guard store.issueSourceFeishuTaskEnabled else {
+            feishuTaskCandidates = []
+            feishuTaskError = "飞书任务入口已关闭"
+            return
+        }
         feishuTaskLoading = true
         feishuTaskError = nil
         Task {
@@ -2488,6 +2504,7 @@ struct IssueTrackerView: View {
     }
 
     private func createFeishuTask(for issue: TrackedIssue) {
+        guard store.issueSourceFeishuTaskEnabled else { return }
         creatingFeishuTaskIssueID = issue.id
         Task {
             do {
@@ -2557,6 +2574,7 @@ struct IssueTrackerView: View {
     }
 
     private func bindFeishuTask(_ task: FeishuTaskCandidate, to issue: TrackedIssue) {
+        guard store.issueSourceFeishuTaskEnabled else { return }
         store.updateIssueFeishuTaskBinding(id: issue.id, task: task)
         applyFeishuTaskCompletionStatus(issueID: issue.id, candidate: task)
         applyFeishuTaskAssignee(issueID: issue.id, candidate: task)
@@ -2647,6 +2665,7 @@ struct IssueTrackerView: View {
     }
 
     private func runFeishuSyncLoop() async {
+        guard canSyncFeishuTasks else { return }
         let minutes = max(store.feishuBotConfig.taskPollingInterval, 1)
         DevLog.shared.info("IssueTracker", "飞书任务单向同步循环已启动，每 \(minutes) 分钟检查一次")
         while !Task.isCancelled {

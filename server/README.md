@@ -157,6 +157,7 @@ X-Sync-Revision: 42
 
 - `GET /api/v1/auth/me` / `POST /api/v1/auth/logout` — 当前成员身份和会话注销
 - `GET /api/v1/events` / `GET /api/v1/events/stream?after=<cursor>` — 事件补偿和 SSE 实时通知
+- `GET /api/v1/activity?limit=8` — 最近协作活动，按时间倒序返回（最多 50 条）
 - `GET /api/v1/members` — 成员列表（viewer/member 可读）
 - `POST /api/v1/members`、`PATCH /api/v1/members/:username` — 成员与角色管理（仅 admin）
 

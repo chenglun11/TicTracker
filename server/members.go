@@ -91,8 +91,11 @@ COMMIT;
 `, sqlQuote(workspaceID), sqlQuote(username), sqlQuote(displayName), sqlQuote(role), sqlQuote(now), sqlQuote(now),
 		sqlQuote(workspaceID), sqlQuote(username), sqlQuote(string(hash)), sqlQuote(now), sqlQuote(now),
 		sqlQuote(workspaceID), sqlQuote(username), sqlQuote(string(payload)), sqlQuote(actorFromContext(ctx)), sqlQuote(eventTime))
-	_, err = s.exec(ctx, sql)
-	return err
+	if _, err = s.exec(ctx, sql); err != nil {
+		return err
+	}
+	s.notifyCollaborationEvents(workspaceID)
+	return nil
 }
 
 func (s *SQLiteStore) ListWorkspaceMembers(ctx context.Context, workspaceID string) ([]WorkspaceMember, error) {
@@ -193,8 +196,11 @@ func (s *SQLiteStore) UpdateWorkspaceMember(ctx context.Context, workspaceID, ta
 SELECT workspace_id,`+sqlQuote(eventType)+`,id,1,json_object('username',id,'displayName',name,'role',role,'disabledAt',disabled_at),`+sqlQuote(actorFromContext(ctx))+`,`+sqlQuote(time.Now().UTC().Format(time.RFC3339Nano))+` FROM users
 WHERE workspace_id=`+sqlQuote(workspaceID)+` AND id=`+sqlQuote(targetUsername))
 	statements = append(statements, "COMMIT")
-	_, err = s.exec(ctx, strings.Join(statements, ";\n")+";\n")
-	return err
+	if _, err = s.exec(ctx, strings.Join(statements, ";\n")+";\n"); err != nil {
+		return err
+	}
+	s.notifyCollaborationEvents(workspaceID)
+	return nil
 }
 
 func (s *SQLiteStore) IsWorkspaceMemberActive(ctx context.Context, workspaceID, username string) (bool, error) {

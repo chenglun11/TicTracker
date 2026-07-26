@@ -6,9 +6,30 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestMemberChangesNotifyOnlyTheirWorkspaceStreams(t *testing.T) {
+	store, _ := newTestSQLiteStore(t)
+	defaultSignal := store.collaborationEventSignal(defaultWorkspaceID)
+	otherSignal := store.collaborationEventSignal("other-workspace")
+	ctx := withActor(context.Background(), "web:admin")
+	if err := store.CreateWorkspaceMember(ctx, defaultWorkspaceID, "new-member", "New Member", RoleMember, "password-new-member"); err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	select {
+	case <-defaultSignal:
+	case <-time.After(time.Second):
+		t.Fatal("member event did not notify its workspace stream")
+	}
+	select {
+	case <-otherSignal:
+		t.Fatal("member event notified a different workspace stream")
+	default:
+	}
+}
 
 func TestWorkspaceRBACAtomicClaimAndAdminInvariants(t *testing.T) {
 	gin.SetMode(gin.TestMode)

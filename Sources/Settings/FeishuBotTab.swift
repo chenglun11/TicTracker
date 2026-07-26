@@ -435,11 +435,21 @@ struct FeishuBotTab: View {
                         .foregroundStyle(keychainSuccess ? .green : .red)
                 }
 
+                Toggle(isOn: Bindable(store).issueSourceFeishuTaskEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("在问题追踪中启用飞书任务入口")
+                        Text("关闭后仅保留飞书任务配置，不在问题追踪中展示、关联或同步飞书任务。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: store.issueSourceFeishuTaskEnabled) { _, _ in saveState.triggerSave() }
+
                 NavigationLink {
                     FeishuTaskSyncSettingsView(store: store)
                 } label: {
                     HStack {
-                        Text("飞书任务同步")
+                        Text("飞书任务同步配置")
                         Spacer()
                         Image(systemName: "chevron.right")
                             .font(.caption)

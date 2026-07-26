@@ -391,9 +391,12 @@ final class LinearService {
     func fetchIssueByIdentifier(_ identifier: String) async -> LinearIssue? {
         let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard !normalized.isEmpty else { return nil }
-        if let direct = await fetchIssueDetail(issueId: normalized),
-           direct.identifier.localizedCaseInsensitiveCompare(normalized) == .orderedSame {
-            return direct
+
+        // Linear's issue(id:) lookup expects the entity UUID. Passing a human-readable
+        // identifier such as "ENG-123" produces an expected-but-noisy
+        // "Entity not found: Issue" GraphQL error before the fallback succeeds.
+        if UUID(uuidString: normalized) != nil {
+            return await fetchIssueDetail(issueId: normalized)
         }
         if let exact = await fetchIssueByTeamKeyAndNumber(identifier: normalized) {
             return exact

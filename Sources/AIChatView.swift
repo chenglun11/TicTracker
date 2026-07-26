@@ -102,7 +102,13 @@ final class AIChatViewModel: ObservableObject {
     private var saveTask: Task<Void, Never>?
 
     var currentSession: ChatSession? {
-        sessions.first { $0.id == currentSessionId }
+        if let currentSessionId,
+           let selectedSession = sessions.first(where: { $0.id == currentSessionId }) {
+            return selectedSession
+        }
+        // SwiftUI's List selection can transiently become nil while the split view
+        // is being restored. Keep the detail pane backed by a real session.
+        return sessions.first
     }
 
     var messages: [ChatMessage] {
@@ -123,17 +129,33 @@ final class AIChatViewModel: ObservableObject {
         saveTask?.cancel()
     }
 
-    func createNewSession() {
+    @discardableResult
+    func createNewSession() -> UUID {
         let session = ChatSession()
         sessions.insert(session, at: 0)
         currentSessionId = session.id
+        attachments = []
+        errorMessage = nil
         debouncedSave()
+        return session.id
     }
 
     func switchSession(_ sessionId: UUID) {
+        guard sessions.contains(where: { $0.id == sessionId }) else {
+            ensureValidSelection()
+            return
+        }
         currentSessionId = sessionId
         attachments = []
         errorMessage = nil
+    }
+
+    func ensureValidSelection() {
+        if sessions.isEmpty {
+            createNewSession()
+        } else if currentSessionId == nil || !sessions.contains(where: { $0.id == currentSessionId }) {
+            currentSessionId = sessions.first?.id
+        }
     }
 
     func deleteSession(_ session: ChatSession) {
@@ -388,35 +410,86 @@ final class AIChatViewModel: ObservableObject {
     }
 
     func generateWeeklyReport(period: WeeklyReport.Period) {
-        guard let sessionId = currentSessionId,
-              let sessionIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         guard !isLoading else { return }
+
+        // A report is an independent task. Starting one must never append its
+        // prompt and response to whichever conversation happened to be selected.
+        let sessionId = createNewSession()
+        guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
 
         let rawReport = WeeklyReport.generate(from: store, period: period)
         let reportName = period.reportName
         let userMessage = ChatMessage(role: .user, content: "请根据以下数据生成\(reportName)：\n\n\(rawReport)", attachments: [])
         sessions[sessionIndex].messages.append(userMessage)
+        sessions[sessionIndex].title = "AI \(reportName)"
         sessions[sessionIndex].updatedAt = Date()
         errorMessage = nil
+
+        let assistantMessage = ChatMessage(role: .assistant, content: "")
+        let messageId = assistantMessage.id
+        sessions[sessionIndex].messages.append(assistantMessage)
+        streamingMessageId = messageId
         scrollTrigger = UUID()
 
         isLoading = true
         Task {
-            defer { isLoading = false }
+            defer {
+                isLoading = false
+                streamingMessageId = nil
+            }
 
             do {
-                let response = try await aiService.generateWeeklyReport(rawReport: rawReport, config: store.aiConfig, reportName: reportName)
+                let stream = try aiService.generateWeeklyReportStream(
+                    rawReport: rawReport,
+                    config: store.aiConfig,
+                    reportName: reportName
+                )
+                var buffer = ""
+                var lastFlush = Date()
+
+                for try await chunk in stream {
+                    buffer += chunk
+                    let now = Date()
+                    if now.timeIntervalSince(lastFlush) >= 0.1 || buffer.count >= 200 {
+                        appendStreamBuffer(buffer, to: messageId, in: sessionId)
+                        buffer = ""
+                        lastFlush = now
+                    }
+                }
+
+                if !buffer.isEmpty {
+                    appendStreamBuffer(buffer, to: messageId, in: sessionId)
+                }
                 guard let finalIndex = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
-                let assistantMessage = ChatMessage(role: .assistant, content: response)
-                sessions[finalIndex].messages.append(assistantMessage)
                 sessions[finalIndex].updatedAt = Date()
                 scrollTrigger = UUID()
                 saveSessions()
             } catch {
                 log.error("AIChat", "\(reportName)生成失败: \(error.localizedDescription)")
+                if let finalIndex = sessions.firstIndex(where: { $0.id == sessionId }),
+                   let messageIndex = sessions[finalIndex].messages.firstIndex(where: { $0.id == messageId }),
+                   sessions[finalIndex].messages[messageIndex].content.isEmpty {
+                    sessions[finalIndex].messages.remove(at: messageIndex)
+                }
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func appendStreamBuffer(_ buffer: String, to messageId: UUID, in sessionId: UUID) {
+        guard !buffer.isEmpty,
+              let sessionIndex = sessions.firstIndex(where: { $0.id == sessionId }),
+              let messageIndex = sessions[sessionIndex].messages.firstIndex(where: { $0.id == messageId }) else {
+            return
+        }
+        let message = sessions[sessionIndex].messages[messageIndex]
+        sessions[sessionIndex].messages[messageIndex] = ChatMessage(
+            id: messageId,
+            role: .assistant,
+            content: message.content + buffer,
+            timestamp: message.timestamp
+        )
+        scrollTrigger = UUID()
     }
 
     private func saveSessions() {
@@ -464,7 +537,10 @@ struct AIChatView: View {
             chatDetailView
         }
         .navigationSplitViewStyle(.balanced)
-        .onAppear { isInputFocused = true }
+        .onAppear {
+            viewModel.ensureValidSelection()
+            isInputFocused = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: .generateWeeklyReport)) { _ in
             if !viewModel.isLoading { showWeeklyReportPeriodPicker = true }
         }
@@ -513,7 +589,7 @@ struct AIChatView: View {
 
             Divider()
 
-            List(viewModel.sessions, selection: $viewModel.currentSessionId) { session in
+            List(viewModel.sessions, selection: sessionSelection) { session in
                 HStack {
                     if editingSessionId == session.id {
                         TextField("", text: $editingTitle)
@@ -538,13 +614,11 @@ struct AIChatView: View {
                             editingSessionId = session.id
                             editingTitle = session.title
                         }
-                        .onTapGesture {
-                            viewModel.switchSession(session.id)
-                        }
                     }
                     Spacer()
                 }
                 .contentShape(Rectangle())
+                .tag(session.id)
                 .contextMenu {
                     Button("重命名") {
                         editingSessionId = session.id
@@ -557,6 +631,19 @@ struct AIChatView: View {
             }
         }
         .frame(minWidth: 200)
+    }
+
+    private var sessionSelection: Binding<UUID?> {
+        Binding(
+            get: { viewModel.currentSessionId },
+            set: { newValue in
+                if let newValue {
+                    viewModel.switchSession(newValue)
+                } else {
+                    viewModel.ensureValidSelection()
+                }
+            }
+        )
     }
 
     private func formatDate(_ date: Date) -> String {
@@ -622,35 +709,36 @@ struct AIChatView: View {
 
     private var messagesView: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 16) {
-                    ForEach(viewModel.messages) { message in
-                        MessageRow(
-                            message: message,
-                            isStreaming: viewModel.streamingMessageId == message.id,
-                            onCopy: { viewModel.copyMessage(message) },
-                            onDelete: { viewModel.deleteMessage(message) },
-                            onRegenerate: { viewModel.regenerateResponse(for: message) }
-                        )
-                        .id(message.id)
-                    }
-
-                    if viewModel.isLoading && viewModel.streamingMessageId == nil {
-                        HStack(spacing: 8) {
-                            ProgressView().scaleEffect(0.7)
-                            Text("思考中...")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+            ZStack {
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        ForEach(viewModel.messages) { message in
+                            MessageRow(
+                                message: message,
+                                isStreaming: viewModel.streamingMessageId == message.id,
+                                onCopy: { viewModel.copyMessage(message) },
+                                onDelete: { viewModel.deleteMessage(message) },
+                                onRegenerate: { viewModel.regenerateResponse(for: message) }
+                            )
+                            .id(message.id)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, 52)
-                    }
 
-                    Color.clear.frame(height: 1).id("bottom")
+                        if viewModel.isLoading && viewModel.streamingMessageId == nil {
+                            HStack(spacing: 8) {
+                                ProgressView().scaleEffect(0.7)
+                                Text("思考中...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 52)
+                        }
+
+                        Color.clear.frame(height: 1).id("bottom")
+                    }
+                    .padding()
                 }
-                .padding()
-            }
-            .overlay {
+
                 if viewModel.messages.isEmpty { emptyStateView }
             }
             .onChange(of: viewModel.scrollTrigger) { _, _ in
@@ -843,7 +931,6 @@ struct MessageRow: View {
 
 struct MarkdownText: View {
     let content: String
-    @State private var parsedBlocks: [ContentBlock] = []
     @State private var groupedBlocks: [GroupedBlock] = []
 
     var body: some View {
@@ -859,12 +946,12 @@ struct MarkdownText: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: content) {
-            parsedBlocks = parseContent()
-            groupedBlocks = buildGroupedBlocks()
+            let parsedBlocks = parseContent()
+            groupedBlocks = buildGroupedBlocks(from: parsedBlocks)
         }
     }
 
-    private func buildGroupedBlocks() -> [GroupedBlock] {
+    private func buildGroupedBlocks(from parsedBlocks: [ContentBlock]) -> [GroupedBlock] {
         var result: [GroupedBlock] = []
         var pendingParagraphs: [ContentBlock] = []
 

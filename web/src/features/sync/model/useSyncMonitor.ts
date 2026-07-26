@@ -45,6 +45,7 @@ export function useSyncMonitor() {
           void queryClient.invalidateQueries({ queryKey: queryKeys.members })
           void queryClient.invalidateQueries({ queryKey: queryKeys.auth.me })
         }
+        void queryClient.invalidateQueries({ queryKey: queryKeys.activity })
         void queryClient.invalidateQueries({ queryKey: queryKeys.issues.all })
         void queryClient.invalidateQueries({ queryKey: queryKeys.status })
         void queryClient.invalidateQueries({ queryKey: queryKeys.sync.meta })

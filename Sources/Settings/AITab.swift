@@ -8,6 +8,11 @@ struct AITab: View {
     @State private var modelInput = ""
     @State private var apiKeySaved = false
     @State private var showClearAlert = false
+    @State private var availableModels: [String] = []
+    @State private var isLoadingModels = false
+    @State private var modelLoadError: String?
+    @State private var showManualModelInput = false
+    @State private var modelScanGeneration = UUID()
     @FocusState private var isAPIKeyFocused: Bool
     @FocusState private var isBaseURLFocused: Bool
     @FocusState private var isModelFocused: Bool
@@ -31,12 +36,18 @@ struct AITab: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: store.aiConfig.provider) { _, _ in saveState.triggerSave() }
+                .onChange(of: store.aiConfig.provider) { _, _ in
+                    availableModels = []
+                    modelLoadError = nil
+                    saveState.triggerSave()
+                    Task { await refreshModels() }
+                }
             }
 
             Section("连接 🔒") {
                 autoSaveSecureField("API Key", text: $apiKeyInput, saved: $apiKeySaved, focused: $isAPIKeyFocused) {
                     AIService.shared.saveAPIKey(apiKeyInput)
+                    Task { await refreshModels() }
                 }
 
                 TextField("Base URL（留空使用默认）", text: $baseURLInput)
@@ -48,26 +59,67 @@ struct AITab: View {
                             store.aiConfig.baseURL = baseURLInput
                             AIService.shared.saveBaseURL(baseURLInput)
                             saveState.triggerSave()
+                            Task { await refreshModels() }
                         }
                     }
                 Text("默认: \(store.aiConfig.effectiveBaseURL)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                TextField("模型（留空使用默认）", text: $modelInput)
-                    .textFieldStyle(UnderlineTextFieldStyle())
-                    .font(.callout.monospaced())
-                    .focused($isModelFocused)
-                    .onChange(of: isModelFocused) { _, focused in
-                        if !focused {
-                            store.aiConfig.model = modelInput
-                            AIService.shared.saveModel(modelInput)
-                            saveState.triggerSave()
+                HStack {
+                    Picker("模型", selection: $modelInput) {
+                        Text("使用默认模型").tag("")
+                        if !modelInput.isEmpty && !availableModels.contains(modelInput) {
+                            Text("当前：\(modelInput)").tag(modelInput)
+                            Divider()
+                        }
+                        ForEach(availableModels, id: \.self) { model in
+                            Text(model).tag(model)
                         }
                     }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onChange(of: modelInput) { _, _ in saveSelectedModel() }
+
+                    if isLoadingModels {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button {
+                            Task { await refreshModels() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("从服务商接口刷新模型列表")
+                    }
+                }
                 Text("默认: \(store.aiConfig.effectiveModel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if let modelLoadError {
+                    Label(modelLoadError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                } else if availableModels.isEmpty && !isLoadingModels {
+                    Text(apiKeyInput.isEmpty ? "填写 API Key 后可扫描模型" : "点击刷新以扫描可用模型")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if !availableModels.isEmpty {
+                    Text("已扫描到 \(availableModels.count) 个模型")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                DisclosureGroup("高级：手动输入模型 ID", isExpanded: $showManualModelInput) {
+                    TextField("模型 ID", text: $modelInput)
+                        .textFieldStyle(UnderlineTextFieldStyle())
+                        .font(.callout.monospaced())
+                        .focused($isModelFocused)
+                        .onSubmit { saveSelectedModel() }
+                }
             }
 
             Section("AI 功能") {
@@ -157,9 +209,16 @@ struct AITab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    TextField("对话模型（留空使用报表模型）", text: Bindable(store).aiConfig.chatModel)
-                        .textFieldStyle(UnderlineTextFieldStyle())
-                        .font(.callout.monospaced())
+                    Picker("对话模型", selection: Bindable(store).aiConfig.chatModel) {
+                        Text("跟随报表模型").tag("")
+                        if !store.aiConfig.chatModel.isEmpty && !availableModels.contains(store.aiConfig.chatModel) {
+                            Text("当前：\(store.aiConfig.chatModel)").tag(store.aiConfig.chatModel)
+                            Divider()
+                        }
+                        ForEach(availableModels, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
                         .onChange(of: store.aiConfig.chatModel) { _, _ in saveState.debouncedSave() }
                     Text("默认: \(store.aiConfig.effectiveChatModel)")
                         .font(.caption)
@@ -255,6 +314,48 @@ struct AITab: View {
         modelInput = stored.model.isEmpty ? store.aiConfig.model : stored.model
         customPromptDraft = store.aiConfig.customPrompt
         chatSystemPromptDraft = store.aiConfig.chatSystemPrompt
+        if !apiKeyInput.isEmpty {
+            Task { await refreshModels() }
+        }
+    }
+
+    private func saveSelectedModel() {
+        store.aiConfig.model = modelInput
+        AIService.shared.saveModel(modelInput)
+        saveState.triggerSave()
+    }
+
+    private func refreshModels() async {
+        let apiKey = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            modelScanGeneration = UUID()
+            availableModels = []
+            modelLoadError = nil
+            isLoadingModels = false
+            return
+        }
+
+        var config = store.aiConfig
+        config.baseURL = baseURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generation = UUID()
+        modelScanGeneration = generation
+        isLoadingModels = true
+        modelLoadError = nil
+        defer {
+            if modelScanGeneration == generation {
+                isLoadingModels = false
+            }
+        }
+
+        do {
+            let models = try await AIService.shared.fetchModels(apiKey: apiKey, config: config)
+            guard modelScanGeneration == generation else { return }
+            availableModels = models
+        } catch {
+            guard modelScanGeneration == generation else { return }
+            availableModels = []
+            modelLoadError = error.localizedDescription
+        }
     }
 
     private func clearAll() {
@@ -262,6 +363,8 @@ struct AITab: View {
         apiKeyInput = ""
         baseURLInput = ""
         modelInput = ""
+        availableModels = []
+        modelLoadError = nil
         store.aiConfig = AIConfig()
     }
 }

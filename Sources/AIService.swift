@@ -25,6 +25,7 @@ struct AIConfig: Codable {
     4. 如有日报笔记，提炼关键事项
     5. 只总结本周期实际完成的工作，不要写展望或计划
     6. 保持简洁，不要过度展开
+    7. 原始数据中的 Markdown 外部链接必须原样保留在对应事项中
     """
 
     static let defaultChatSystemPrompt = """
@@ -54,6 +55,14 @@ struct AIConfig: Codable {
         case .claude: return "https://api.anthropic.com"
         case .openai: return "https://api.openai.com"
         }
+    }
+
+    /// Normalized API root. OpenAI SDK examples commonly include `/v1` in the
+    /// configured base URL, while this app historically accepted the host only.
+    /// Supporting both prevents accidental `/v1/v1/...` requests.
+    var effectiveAPIBaseURL: String {
+        let base = effectiveBaseURL
+        return base.lowercased().hasSuffix("/v1") ? base : "\(base)/v1"
     }
 
     var effectiveModel: String {
@@ -158,14 +167,64 @@ final class AIService {
         case noAPIKey
         case requestFailed(String)
         case invalidResponse
+        case invalidBaseURL
+        case noModels
 
         var errorDescription: String? {
             switch self {
             case .noAPIKey: return "未配置 API Key"
             case .requestFailed(let msg): return msg
             case .invalidResponse: return "无法解析 AI 响应"
+            case .invalidBaseURL: return "Base URL 格式不正确"
+            case .noModels: return "接口没有返回可用模型"
             }
         }
+    }
+
+    func fetchModels(apiKey suppliedAPIKey: String? = nil, config: AIConfig) async throws -> [String] {
+        let apiKey = (suppliedAPIKey ?? loadAPIKey() ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else { throw AIError.noAPIKey }
+
+        let suffix = config.provider == .claude ? "/models?limit=1000" : "/models"
+        guard let url = URL(string: "\(config.effectiveAPIBaseURL)\(suffix)") else {
+            throw AIError.invalidBaseURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        switch config.provider {
+        case .claude:
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        case .openai:
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        log.info(mod, "扫描模型列表，服务商: \(config.provider.rawValue)")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            throw AIError.requestFailed("获取模型列表失败（HTTP \(http.statusCode)）：\(body.prefix(500))")
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = json["data"] as? [[String: Any]] else {
+            throw AIError.invalidResponse
+        }
+        let models = Set(items.compactMap { item -> String? in
+            guard let id = item["id"] as? String else { return nil }
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })
+        guard !models.isEmpty else { throw AIError.noModels }
+
+        let sorted = models.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        log.info(mod, "扫描到 \(sorted.count) 个模型")
+        return sorted
     }
 
     func generateWeeklyReport(rawReport: String, config: AIConfig, reportName: String = "周报") async throws -> String {
@@ -176,7 +235,7 @@ final class AIService {
         }
 
         let systemPrompt = config.effectivePrompt
-        let userPrompt = "以下是\(reportName)周期内的原始技术支持数据，请生成\(reportName)摘要：\n\n\(rawReport)"
+        let userPrompt = "以下是\(reportName)周期内的原始技术支持数据，请生成\(reportName)摘要。原始数据中的 Markdown 外部链接必须原样保留在对应事项中：\n\n\(rawReport)"
 
         do {
             let result: String
@@ -189,6 +248,34 @@ final class AIService {
         } catch {
             log.error(mod, "\(reportName)生成失败: \(error.localizedDescription)")
             throw error
+        }
+    }
+
+    func generateWeeklyReportStream(rawReport: String, config: AIConfig, reportName: String = "周报") throws -> AsyncThrowingStream<String, Error> {
+        log.info(mod, "开始流式生成\(reportName)，服务商: \(config.provider.rawValue)")
+        guard let apiKey = loadAPIKey(), !apiKey.isEmpty else {
+            throw AIError.noAPIKey
+        }
+
+        let systemPrompt = config.effectivePrompt
+        let userPrompt = "以下是\(reportName)周期内的原始技术支持数据，请生成\(reportName)摘要。原始数据中的 Markdown 外部链接必须原样保留在对应事项中：\n\n\(rawReport)"
+        switch config.provider {
+        case .claude:
+            return streamClaude(
+                apiKey: apiKey,
+                config: config,
+                system: systemPrompt,
+                messages: [["role": "user", "content": userPrompt]]
+            )
+        case .openai:
+            return streamOpenAI(
+                apiKey: apiKey,
+                config: config,
+                messages: [
+                    ["role": "system", "content": systemPrompt],
+                    ["role": "user", "content": userPrompt],
+                ]
+            )
         }
     }
 
@@ -445,8 +532,13 @@ final class AIService {
                     return
                 }
                 guard let jsonData = data.data(using: .utf8),
-                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                      let choices = json["choices"] as? [[String: Any]],
+                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { return }
+                if let error = json["error"] as? [String: Any] {
+                    let message = error["message"] as? String ?? "流式响应错误"
+                    continuation.finish(throwing: AIError.requestFailed(message))
+                    return
+                }
+                guard let choices = json["choices"] as? [[String: Any]],
                       let delta = choices.first?["delta"] as? [String: Any],
                       let text = delta["content"] as? String else { return }
                 continuation.yield(text)
@@ -467,7 +559,7 @@ final class AIService {
     // MARK: - Request Builders
 
     private func buildClaudeRequest(config: AIConfig, apiKey: String, system: String, messages: [[String: String]], stream: Bool) -> URLRequest {
-        let url = URL(string: "\(config.effectiveBaseURL)/v1/messages")!
+        let url = URL(string: "\(config.effectiveAPIBaseURL)/messages")!
         log.info(mod, "调用 Claude API: \(url.absoluteString), 模型: \(config.effectiveModel), stream: \(stream)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -488,12 +580,15 @@ final class AIService {
     }
 
     private func buildOpenAIRequest(config: AIConfig, apiKey: String, messages: [[String: String]], stream: Bool) -> URLRequest {
-        let url = URL(string: "\(config.effectiveBaseURL)/v1/chat/completions")!
+        let url = URL(string: "\(config.effectiveAPIBaseURL)/chat/completions")!
         log.info(mod, "调用 OpenAI API: \(url.absoluteString), 模型: \(config.effectiveModel), stream: \(stream)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if stream {
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        }
         request.timeoutInterval = 120
 
         var body: [String: Any] = [
@@ -507,7 +602,7 @@ final class AIService {
     }
 
     private func buildOpenAIResponsesRequest(config: AIConfig, apiKey: String, messages: [[String: String]]) -> URLRequest {
-        let url = URL(string: "\(config.effectiveBaseURL)/v1/responses")!
+        let url = URL(string: "\(config.effectiveAPIBaseURL)/responses")!
         log.info(mod, "调用 OpenAI Responses API: \(url.absoluteString), 模型: \(config.effectiveModel)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -586,32 +681,52 @@ private final class SSEDelegate: NSObject, URLSessionDataDelegate, @unchecked Se
             onError(error)
         } else {
             // 处理剩余 buffer
-            if !buffer.isEmpty { processBuffer() }
+            if !buffer.isEmpty { processBuffer(flush: true) }
             onComplete()
         }
     }
 
-    private func processBuffer() {
-        // SSE 格式: "event: xxx\ndata: yyy\n\n"
-        while let range = buffer.range(of: "\n\n") {
+    private func processBuffer(flush: Bool = false) {
+        // SSE permits LF, CRLF, or CR line endings. Keep the raw buffer so a
+        // CRLF sequence split across URLSession chunks is not mistaken for an
+        // empty line.
+        while let range = nextEventBoundary() {
             let block = String(buffer[buffer.startIndex..<range.lowerBound])
             buffer = String(buffer[range.upperBound...])
+            processEventBlock(block)
+        }
 
-            var event: String?
-            var dataLines: [String] = []
+        if flush && !buffer.isEmpty {
+            let block = buffer
+            buffer = ""
+            processEventBlock(block)
+        }
+    }
 
-            for line in block.components(separatedBy: "\n") {
-                if line.hasPrefix("event:") {
-                    event = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
-                } else if line.hasPrefix("data:") {
-                    dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-                }
+    private func nextEventBoundary() -> Range<String.Index>? {
+        ["\r\n\r\n", "\n\n", "\r\r"]
+            .compactMap { buffer.range(of: $0) }
+            .min { $0.lowerBound < $1.lowerBound }
+    }
+
+    private func processEventBlock(_ rawBlock: String) {
+        let block = rawBlock
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        var event: String?
+        var dataLines: [String] = []
+
+        for line in block.components(separatedBy: "\n") {
+            if line.hasPrefix("event:") {
+                event = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("data:") {
+                dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
             }
+        }
 
-            if !dataLines.isEmpty {
-                let data = dataLines.joined(separator: "\n")
-                onEvent?(event, data)
-            }
+        if !dataLines.isEmpty {
+            let data = dataLines.joined(separator: "\n")
+            onEvent?(event, data)
         }
     }
 }

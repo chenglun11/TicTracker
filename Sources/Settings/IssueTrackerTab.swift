@@ -89,12 +89,12 @@ struct IssueTrackerTab: View {
                         .onChange(of: store.issueSourceJiraEnabled) { _, _ in saveState.triggerSave() }
                     Toggle("Meta Direct Support", isOn: Bindable(store).issueSourceMetaEnabled)
                         .onChange(of: store.issueSourceMetaEnabled) { _, _ in saveState.triggerSave() }
-                    Toggle("飞书任务", isOn: Bindable(store).issueSourceFeishuTaskEnabled)
+                    Toggle("飞书任务入口", isOn: Bindable(store).issueSourceFeishuTaskEnabled)
                         .onChange(of: store.issueSourceFeishuTaskEnabled) { _, _ in saveState.triggerSave() }
                 } header: {
                     Text("反馈入口")
                 } footer: {
-                    Text("关闭某入口后，问题追踪列表与统计将不再展示该来源的 issue；不会删除已同步数据。")
+                    Text("关闭某入口后，问题追踪列表、详情字段、统计与同步动作将不再展示或拉取该来源；不会删除已同步数据。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

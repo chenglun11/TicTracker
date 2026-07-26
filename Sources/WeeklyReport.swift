@@ -41,6 +41,22 @@ struct WeeklyReport {
         }
     }
 
+    nonisolated private static func linearReference(for issue: TrackedIssue) -> String? {
+        let key = issue.linearKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let url = issue.linearUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if !url.isEmpty {
+            let urlIdentifier = URL(string: url)?.lastPathComponent.removingPercentEncoding ?? ""
+            let identifier = key.isEmpty ? urlIdentifier : key
+            let label = identifier.isEmpty ? "Linear" : "Linear \(identifier)"
+            return "[\(label)](\(url))"
+        }
+        if !key.isEmpty {
+            return "Linear \(key)"
+        }
+        return nil
+    }
+
     static func generate(from store: DataStore, period: Period = .currentWeek) -> String {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
@@ -139,6 +155,7 @@ struct WeeklyReport {
                 var detail = [issue.type.rawValue]
                 if let dept = issue.department, !dept.isEmpty { detail.append(dept) }
                 if let jira = issue.jiraKey { detail.append(jira) }
+                if let linear = linearReference(for: issue) { detail.append(linear) }
                 if let assignee = issue.assignee { detail.append(assignee) }
                 let suffix = " (\(detail.joined(separator: " · ")))"
                 lines.append("[\(issue.displayStatusName)] \(issue.title)\(suffix)")

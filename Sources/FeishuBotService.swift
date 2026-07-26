@@ -313,6 +313,7 @@ final class FeishuBotService {
     }
 
     private func canSyncFeishuTasks(store: DataStore) -> Bool {
+        guard store.issueSourceFeishuTaskEnabled else { return false }
         switch store.feishuBotConfig.taskAuthMode {
         case .botTenant:
             return !store.feishuBotConfig.appID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

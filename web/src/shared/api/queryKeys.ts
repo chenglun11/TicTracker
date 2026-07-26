@@ -4,6 +4,7 @@ export const queryKeys = {
     me: ['auth', 'me'] as const
   },
   members: ['members'] as const,
+  activity: ['activity'] as const,
   setup: ['setup'] as const,
   status: ['status'] as const,
   issues: {

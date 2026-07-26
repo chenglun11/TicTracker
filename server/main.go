@@ -116,6 +116,7 @@ func main() {
 		group.GET("/linear/sync-status", read, HandleLinearSyncStatus(cfg))
 		group.POST("/sync/token/rotate", admin, HandleRotateSyncToken(store))
 		group.GET("/events", read, HandleGetCollaborationEvents(store))
+		group.GET("/activity", read, HandleGetRecentActivity(store))
 		group.GET("/events/stream", read, HandleStreamCollaborationEvents(store))
 		group.GET("/setup", read, HandleGetSetup(store))
 		group.PUT("/setup", admin, HandlePutSetup(store))

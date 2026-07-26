@@ -7,6 +7,7 @@ import { getIssues } from '../features/issues/api/issues'
 import { useSyncMonitor } from '../features/sync/model/useSyncMonitor'
 import { SyncStatusPill } from '../features/sync/ui/SyncStatusPill'
 import { queryKeys } from '../shared/api/queryKeys'
+import { ActivityPulse } from '../features/activity/ui/ActivityPulse'
 import FeishuControl from './FeishuControl'
 import IssueList from './IssueList'
 import Statistics from './Statistics'
@@ -70,13 +71,13 @@ function Dashboard({ currentUser }: { currentUser: AuthUser }) {
             <Tag color="green">今日解决 {status?.statistics.resolvedToday ?? 0}</Tag>
           </div>
         </div>
-    <SyncStatusPill
-      revision={sync.revision}
-      isConnected={sync.isConnected}
-      isChecking={sync.isChecking}
-      lastModified={sync.lastModified}
-      lastModifiedBy={sync.lastModifiedBy}
-    />
+        <SyncStatusPill
+          revision={sync.revision}
+          isConnected={sync.isConnected}
+          isChecking={sync.isChecking}
+          lastModified={sync.lastModified}
+          lastModifiedBy={sync.lastModifiedBy}
+        />
       </div>
 
       <Statistics status={status!} />
@@ -87,6 +88,7 @@ function Dashboard({ currentUser }: { currentUser: AuthUser }) {
         </section>
 
         <aside className="side-stack">
+          <ActivityPulse isRealtime={sync.isRealtime} />
           <FeishuControl
             lastSentTime={status?.lastSentTime}
             cooldownRemain={status?.cooldownRemain || 0}

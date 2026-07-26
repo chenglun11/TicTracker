@@ -17,10 +17,12 @@ import (
 )
 
 type SQLiteStore struct {
-	mu        sync.Mutex
-	dbPath    string
-	sqliteBin string
-	dataDir   string
+	mu           sync.Mutex
+	eventMu      sync.Mutex
+	eventSignals map[string]chan struct{}
+	dbPath       string
+	sqliteBin    string
+	dataDir      string
 }
 
 func NewSQLiteStore(ctx context.Context, cfg *Config) (*SQLiteStore, error) {
@@ -48,9 +50,10 @@ func NewSQLiteStore(ctx context.Context, cfg *Config) (*SQLiteStore, error) {
 	}
 
 	store := &SQLiteStore{
-		dbPath:    dbPath,
-		sqliteBin: sqliteBin,
-		dataDir:   dataDir,
+		eventSignals: make(map[string]chan struct{}),
+		dbPath:       dbPath,
+		sqliteBin:    sqliteBin,
+		dataDir:      dataDir,
 	}
 	if err := store.backupSQLiteBeforeMigration(ctx); err != nil {
 		return nil, err
@@ -377,8 +380,13 @@ func (s *SQLiteStore) savePayloadAndEventsUnlocked(ctx context.Context, workspac
 		return fmt.Errorf("marshal workspace payload: %w", err)
 	}
 	sql := s.normalizedSQL(workspaceID, payload, string(data), events)
-	_, err = s.exec(ctx, sql)
-	return err
+	if _, err = s.exec(ctx, sql); err != nil {
+		return err
+	}
+	if len(events) > 0 {
+		s.notifyCollaborationEvents(workspaceID)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {
