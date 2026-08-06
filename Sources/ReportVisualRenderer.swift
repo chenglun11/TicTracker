@@ -413,7 +413,8 @@ enum ReportVisualRenderer {
            let image = NSImage(data: pngData) {
             return image
         }
-        return NSImage(size: NSSize(width: 1200, height: 1100))
+        let fallbackWidth: CGFloat = data.metricCards.isEmpty ? 1200 : 1600
+        return NSImage(size: NSSize(width: fallbackWidth, height: 1100))
     }
 
     nonisolated private static func renderPNG(data: VisualData) -> Data? {
@@ -431,13 +432,13 @@ enum ReportVisualRenderer {
     }
 
     nonisolated private static func drawImage(data: VisualData) -> NSImage {
-        let width: CGFloat = 1200
+        let monthlyLayout = !data.metricCards.isEmpty
+        let width: CGFloat = monthlyLayout ? 1600 : 1200
         let margin: CGFloat = 64
         let contentWidth = width - margin * 2
         let maxIssueRows = data.metricCards.isEmpty ? 12 : 6
         let maxRecordRows = 12
         let issueRowHeight: CGFloat = 76
-        let monthlyLayout = !data.metricCards.isEmpty
         let issueRows = monthlyLayout ? 0 : max(min(data.issues.count, maxIssueRows) + (data.issues.count > maxIssueRows ? 1 : 0), 1)
         let focusRows = monthlyLayout ? max(min(data.focusIssues.count, maxIssueRows) + (data.focusIssues.count > maxIssueRows ? 1 : 0), 1) : 0
         let backlogRows = monthlyLayout ? max(min(data.backlogIssues.count, maxIssueRows) + (data.backlogIssues.count > maxIssueRows ? 1 : 0), 1) : 0
@@ -485,7 +486,7 @@ enum ReportVisualRenderer {
             }
         }
         drawMetricCards(metricRows, x: margin, y: y, width: contentWidth)
-        y -= 170
+        y -= 198
 
         y = drawSection(title: data.recordsSectionTitle, x: margin, y: y, width: contentWidth) { sectionY in
             drawBars(
@@ -559,16 +560,17 @@ enum ReportVisualRenderer {
 
     nonisolated private static func drawMetricCards(_ cards: [(String, String, String, NSColor)], x: CGFloat, y: CGFloat, width: CGFloat) {
         let gap: CGFloat = 18
+        let cardHeight: CGFloat = 156
         let cardWidth = (width - gap * CGFloat(cards.count - 1)) / CGFloat(cards.count)
         for (index, card) in cards.enumerated() {
-            let rect = NSRect(x: x + CGFloat(index) * (cardWidth + gap), y: y - 128, width: cardWidth, height: 128)
+            let rect = NSRect(x: x + CGFloat(index) * (cardWidth + gap), y: y - cardHeight, width: cardWidth, height: cardHeight)
             rounded(rect, radius: 18, color: .white)
             card.3.withAlphaComponent(0.12).setFill()
             NSBezierPath(roundedRect: NSRect(x: rect.minX, y: rect.minY, width: 8, height: rect.height), xRadius: 4, yRadius: 4).fill()
-            drawText(card.0, x: rect.minX + 28, y: rect.maxY - 38, width: cardWidth - 56, font: .systemFont(ofSize: 24), color: .secondaryLabelColor)
-            drawText(card.1, x: rect.minX + 28, y: rect.maxY - 88, width: cardWidth - 56, font: .boldSystemFont(ofSize: 40), color: card.3)
+            drawText(card.0, x: rect.minX + 28, y: rect.maxY - 30, width: cardWidth - 56, font: .systemFont(ofSize: 22), color: .secondaryLabelColor)
+            drawText(card.1, x: rect.minX + 28, y: rect.maxY - 72, width: cardWidth - 56, font: .boldSystemFont(ofSize: 42), color: card.3)
             if !card.2.isEmpty {
-                drawText(card.2, x: rect.minX + 28, y: rect.maxY - 116, width: cardWidth - 56, font: .systemFont(ofSize: 18), color: .secondaryLabelColor)
+                drawText(card.2, x: rect.minX + 28, y: rect.minY + 28, width: cardWidth - 56, font: .systemFont(ofSize: 18), color: .secondaryLabelColor)
             }
         }
     }
