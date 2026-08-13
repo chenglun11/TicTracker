@@ -22,10 +22,12 @@ struct FeishuBotTab: View {
         ("{{新建数量}}", "今日新建问题数"),
         ("{{解决数量}}", "今日解决问题数"),
         ("{{待处理数量}}", "当前待处理问题数"),
+        ("{{待验收数量}}", "当前待验收问题数"),
         ("{{观测中数量}}", "当前观测中问题数"),
         ("{{已排期数量}}", "当前已排期问题数"),
         ("{{测试中数量}}", "当前测试中问题数"),
         ("{{待处理列表}}", "待处理问题列表"),
+        ("{{待验收列表}}", "待验收问题列表"),
         ("{{已解决列表}}", "今日已解决问题列表"),
         ("{{观测中列表}}", "观测中问题列表"),
         ("{{已排期列表}}", "已排期问题列表"),
@@ -518,18 +520,20 @@ struct FeishuBotTab: View {
     @ViewBuilder
     private var reportModuleSections: some View {
         Section("卡片模块") {
-            Toggle("统计概览（新建/解决/待处理）", isOn: Bindable(store).feishuBotConfig.showOverview)
+            Toggle("统计概览（新建/解决/各状态）", isOn: Bindable(store).feishuBotConfig.showOverview)
                 .onChange(of: store.feishuBotConfig.showOverview) { _, _ in saveState.triggerSave() }
             Toggle("待处理问题列表", isOn: Bindable(store).feishuBotConfig.showPending)
                 .onChange(of: store.feishuBotConfig.showPending) { _, _ in saveState.triggerSave() }
             Toggle("处理中问题列表", isOn: Bindable(store).feishuBotConfig.showInProgress)
                 .onChange(of: store.feishuBotConfig.showInProgress) { _, _ in saveState.triggerSave() }
-            Toggle("观测中问题列表", isOn: Bindable(store).feishuBotConfig.showObserving)
-                .onChange(of: store.feishuBotConfig.showObserving) { _, _ in saveState.triggerSave() }
-            Toggle("已排期问题列表", isOn: Bindable(store).feishuBotConfig.showScheduled)
-                .onChange(of: store.feishuBotConfig.showScheduled) { _, _ in saveState.triggerSave() }
             Toggle("测试中问题列表", isOn: Bindable(store).feishuBotConfig.showTesting)
                 .onChange(of: store.feishuBotConfig.showTesting) { _, _ in saveState.triggerSave() }
+            Toggle("待验收问题列表", isOn: Bindable(store).feishuBotConfig.showPendingAcceptance)
+                .onChange(of: store.feishuBotConfig.showPendingAcceptance) { _, _ in saveState.triggerSave() }
+            Toggle("已排期问题列表", isOn: Bindable(store).feishuBotConfig.showScheduled)
+                .onChange(of: store.feishuBotConfig.showScheduled) { _, _ in saveState.triggerSave() }
+            Toggle("观测中问题列表", isOn: Bindable(store).feishuBotConfig.showObserving)
+                .onChange(of: store.feishuBotConfig.showObserving) { _, _ in saveState.triggerSave() }
             Toggle("今日已解决列表", isOn: Bindable(store).feishuBotConfig.showResolved)
                 .onChange(of: store.feishuBotConfig.showResolved) { _, _ in saveState.triggerSave() }
             Toggle("日报文字", isOn: Bindable(store).feishuBotConfig.showDailyNote)

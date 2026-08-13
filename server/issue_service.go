@@ -113,6 +113,7 @@ func BuildStatusSummary(payload *SyncPayload, now time.Time) map[string]any {
 	newToday := 0
 	resolvedToday := 0
 	pending := 0
+	pendingAcceptance := 0
 	scheduled := 0
 	testing := 0
 	observing := 0
@@ -134,6 +135,8 @@ func BuildStatusSummary(payload *SyncPayload, now time.Time) map[string]any {
 			scheduled++
 		case StatusTesting:
 			testing++
+		case StatusPendingAcceptance:
+			pendingAcceptance++
 		case StatusObserving:
 			observing++
 		default:
@@ -153,12 +156,13 @@ func BuildStatusSummary(payload *SyncPayload, now time.Time) map[string]any {
 
 	return map[string]any{
 		"statistics": map[string]int{
-			"newToday":      newToday,
-			"resolvedToday": resolvedToday,
-			"pending":       pending,
-			"scheduled":     scheduled,
-			"testing":       testing,
-			"observing":     observing,
+			"newToday":          newToday,
+			"resolvedToday":     resolvedToday,
+			"pending":           pending,
+			"pendingAcceptance": pendingAcceptance,
+			"scheduled":         scheduled,
+			"testing":           testing,
+			"observing":         observing,
 		},
 		"todayTotal":  todayTotal,
 		"departments": payload.Departments,

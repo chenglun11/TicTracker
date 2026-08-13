@@ -165,7 +165,42 @@ func isResolvedStatus(status string) bool {
 	return status == StatusResolved || status == StatusIgnored
 }
 
+// normalizeIssueStatus accepts the stable case names used by the Swift/Tauri
+// clients while keeping the persisted status values human-readable and
+// backward-compatible with existing Chinese payloads.
+func normalizeIssueStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "pending":
+		return StatusPending
+	case "inProgress":
+		return StatusInProgress
+	case "testing":
+		return StatusTesting
+	case "pendingAcceptance":
+		return StatusPendingAcceptance
+	case "scheduled":
+		return StatusScheduled
+	case "observing":
+		return StatusObserving
+	case "fixed":
+		return StatusResolved
+	case "ignored":
+		return StatusIgnored
+	default:
+		return strings.TrimSpace(status)
+	}
+}
+
+func isPendingBucketStatus(status string) bool {
+	return !isResolvedStatus(status) &&
+		status != StatusScheduled &&
+		status != StatusTesting &&
+		status != StatusPendingAcceptance &&
+		status != StatusObserving
+}
+
 func applyIssueStatus(issue *TrackedIssue, status string) {
+	status = normalizeIssueStatus(status)
 	issue.Status = status
 	if isResolvedStatus(status) {
 		now := FlexTime{Value: time.Now().Format("2006-01-02 15:04:05")}
@@ -261,7 +296,11 @@ func HandleGetIssues(store PayloadStore) gin.HandlerFunc {
 					filtered = append(filtered, issue)
 				}
 			case "pending":
-				if !isResolved && issue.Status != StatusObserving && issue.Status != StatusScheduled && issue.Status != StatusTesting {
+				if isPendingBucketStatus(issue.Status) {
+					filtered = append(filtered, issue)
+				}
+			case "pendingAcceptance":
+				if issue.Status == StatusPendingAcceptance {
 					filtered = append(filtered, issue)
 				}
 			case "scheduled":

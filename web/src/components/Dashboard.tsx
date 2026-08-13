@@ -68,6 +68,7 @@ function Dashboard({ currentUser }: { currentUser: AuthUser }) {
           <div className="dashboard-brief">
             <Tag color="red">待处理 {status?.statistics.pending ?? 0}</Tag>
             <Tag color="cyan">测试中 {status?.statistics.testing ?? 0}</Tag>
+            <Tag color="geekblue">待验收 {status?.statistics.pendingAcceptance ?? 0}</Tag>
             <Tag color="green">今日解决 {status?.statistics.resolvedToday ?? 0}</Tag>
           </div>
         </div>

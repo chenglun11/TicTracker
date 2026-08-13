@@ -7,12 +7,14 @@ import (
 
 // Issue 状态常量，避免中文字面量散落各处
 const (
-	StatusPending   = "待处理"
-	StatusScheduled = "已排期"
-	StatusTesting   = "测试中"
-	StatusObserving = "观测中"
-	StatusResolved  = "已修复"
-	StatusIgnored   = "已忽略"
+	StatusPending           = "待处理"
+	StatusInProgress        = "处理中"
+	StatusScheduled         = "已排期"
+	StatusTesting           = "测试中"
+	StatusPendingAcceptance = "待验收"
+	StatusObserving         = "观测中"
+	StatusResolved          = "已修复"
+	StatusIgnored           = "已忽略"
 )
 
 type SyncPayload struct {
@@ -182,6 +184,7 @@ type FeishuBotConfig struct {
 	ShowSupportStats                bool              `json:"showSupportStats"`
 	ShowOverview                    bool              `json:"showOverview"`
 	ShowPending                     bool              `json:"showPending"`
+	ShowPendingAcceptance           bool              `json:"showPendingAcceptance"`
 	ShowObserving                   bool              `json:"showObserving"`
 	ShowScheduled                   bool              `json:"showScheduled"`
 	ShowTesting                     bool              `json:"showTesting"`
@@ -194,6 +197,18 @@ type FeishuBotConfig struct {
 	FieldJiraKey                    bool              `json:"fieldJiraKey"`
 	FieldStatus                     bool              `json:"fieldStatus"`
 	FieldAssignee                   bool              `json:"fieldAssignee"`
+}
+
+// UnmarshalJSON keeps the newly introduced pending-acceptance section enabled
+// for configurations saved by older clients, while preserving an explicit false.
+func (c *FeishuBotConfig) UnmarshalJSON(data []byte) error {
+	type feishuBotConfigAlias FeishuBotConfig
+	decoded := feishuBotConfigAlias{ShowPendingAcceptance: true}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = FeishuBotConfig(decoded)
+	return nil
 }
 
 type ScheduleTime struct {

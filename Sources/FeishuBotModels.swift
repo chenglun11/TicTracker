@@ -80,10 +80,13 @@ enum FeishuTaskAuthMode: String, Codable, Sendable, CaseIterable {
 
 struct FeishuBotConfig: Codable, Sendable {
     static let defaultTemplate = """
-🟢 **今日新建** {{新建数量}} 个  ·  ✅ **今日解决** {{解决数量}} 个  ·  🔶 **待处理** {{待处理数量}} 个  ·  👁 **观测中** {{观测中数量}} 个
+🟢 **今日新建** {{新建数量}} 个  ·  ✅ **今日解决** {{解决数量}} 个  ·  🔶 **待处理** {{待处理数量}} 个  ·  🔍 **待验收** {{待验收数量}} 个  ·  👁 **观测中** {{观测中数量}} 个
 ---
 **待处理问题：**
 {{待处理列表}}
+---
+**🔍 待验收问题：**
+{{待验收列表}}
 ---
 **已解决问题：**
 {{已解决列表}}
@@ -137,8 +140,9 @@ struct FeishuBotConfig: Codable, Sendable {
 
     // 卡片模块开关
     var showSupportStats: Bool = false  // 项目支持统计
-    var showOverview: Bool = true       // 统计概览（新建/解决/待处理）
+    var showOverview: Bool = true       // 统计概览（新建/解决/各未关闭状态）
     var showPending: Bool = true        // 待处理列表
+    var showPendingAcceptance: Bool = true // 待验收列表
     var showInProgress: Bool = true     // 处理中列表
     var showObserving: Bool = true      // 观测中列表
     var showResolved: Bool = true       // 今日已解决列表
@@ -175,7 +179,7 @@ struct FeishuBotConfig: Codable, Sendable {
         case taskDefaultCollaboratorOpenID
         case botTasklistGUID, botTasklistName
         case feishuUserNameMap
-        case showSupportStats, showOverview, showPending, showInProgress, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showMyReported, showFocusTag, showComments
+        case showSupportStats, showOverview, showPending, showPendingAcceptance, showInProgress, showObserving, showScheduled, showTesting, showResolved, showDailyNote, showMyReported, showFocusTag, showComments
         case fieldType, fieldDepartment, fieldJiraKey, fieldStatus, fieldAssignee
     }
 
@@ -240,6 +244,7 @@ struct FeishuBotConfig: Codable, Sendable {
         showSupportStats = try c.decodeIfPresent(Bool.self, forKey: .showSupportStats) ?? false
         showOverview = try c.decodeIfPresent(Bool.self, forKey: .showOverview) ?? true
         showPending = try c.decodeIfPresent(Bool.self, forKey: .showPending) ?? true
+        showPendingAcceptance = try c.decodeIfPresent(Bool.self, forKey: .showPendingAcceptance) ?? true
         showInProgress = try c.decodeIfPresent(Bool.self, forKey: .showInProgress) ?? true
         showObserving = try c.decodeIfPresent(Bool.self, forKey: .showObserving) ?? true
         showScheduled = try c.decodeIfPresent(Bool.self, forKey: .showScheduled) ?? true
@@ -310,6 +315,7 @@ struct FeishuBotConfig: Codable, Sendable {
         try c.encode(showSupportStats, forKey: .showSupportStats)
         try c.encode(showOverview, forKey: .showOverview)
         try c.encode(showPending, forKey: .showPending)
+        try c.encode(showPendingAcceptance, forKey: .showPendingAcceptance)
         try c.encode(showInProgress, forKey: .showInProgress)
         try c.encode(showObserving, forKey: .showObserving)
         try c.encode(showScheduled, forKey: .showScheduled)

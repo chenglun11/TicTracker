@@ -386,7 +386,7 @@ func handleStatsCommand(ctx context.Context, app *FeishuApp, store PayloadStore,
 	}
 
 	today := time.Now().Format("2006-01-02")
-	newToday, resolvedToday, pending, scheduled, testing, observing := 0, 0, 0, 0, 0, 0
+	newToday, resolvedToday, pending, pendingAcceptance, scheduled, testing, observing := 0, 0, 0, 0, 0, 0, 0
 	for _, issue := range payload.TrackedIssues {
 		isResolved := isResolvedStatus(issue.Status)
 		if issue.DateKey == today && !isResolved {
@@ -400,6 +400,8 @@ func handleStatsCommand(ctx context.Context, app *FeishuApp, store PayloadStore,
 			scheduled++
 		case StatusTesting:
 			testing++
+		case StatusPendingAcceptance:
+			pendingAcceptance++
 		case StatusObserving:
 			observing++
 		default:
@@ -409,8 +411,8 @@ func handleStatsCommand(ctx context.Context, app *FeishuApp, store PayloadStore,
 		}
 	}
 
-	msg := fmt.Sprintf("今日统计：\n🟢 新建 %d  ✅ 解决 %d\n🔶 待处理 %d  📅 已排期 %d\n🧪 测试中 %d  👁 观测中 %d",
-		newToday, resolvedToday, pending, scheduled, testing, observing)
+	msg := fmt.Sprintf("今日统计：\n🟢 新建 %d  ✅ 解决 %d\n🔶 待处理 %d  📅 已排期 %d\n🧪 测试中 %d  🔍 待验收 %d\n👁 观测中 %d",
+		newToday, resolvedToday, pending, scheduled, testing, pendingAcceptance, observing)
 	replyText(ctx, app, chatID, msg)
 }
 

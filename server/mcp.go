@@ -524,7 +524,11 @@ func filterIssuesForMCP(issues []TrackedIssue, statusFilter string) []TrackedIss
 				filtered = append(filtered, issue)
 			}
 		case "pending":
-			if !isResolved && issue.Status != StatusObserving && issue.Status != StatusScheduled && issue.Status != StatusTesting {
+			if isPendingBucketStatus(issue.Status) {
+				filtered = append(filtered, issue)
+			}
+		case "pendingAcceptance":
+			if issue.Status == StatusPendingAcceptance {
 				filtered = append(filtered, issue)
 			}
 		case "scheduled":
@@ -620,7 +624,7 @@ func listIssuesTool() mcpTool {
 		InputSchema: objectSchema(map[string]any{
 			"status": map[string]any{
 				"type":        "string",
-				"description": "可选：new、pending、scheduled、testing、observing、resolved。",
+				"description": "可选：new、pending、scheduled、testing、pendingAcceptance、observing、resolved。",
 			},
 			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
 		}, nil),
@@ -638,7 +642,7 @@ func createIssueTool() mcpTool {
 func updateIssueStatusTool() mcpTool {
 	return mcpTool{
 		Name:        "tictacker.update_issue_status",
-		Description: "更新问题状态，例如待处理、已排期、测试中、观测中、已修复、已忽略。",
+		Description: "更新问题状态；支持中文或稳定 caseName，例如待验收或 pendingAcceptance。",
 		InputSchema: objectSchema(map[string]any{
 			"id":     map[string]any{"type": "string"},
 			"status": map[string]any{"type": "string"},

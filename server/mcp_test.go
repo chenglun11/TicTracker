@@ -48,6 +48,35 @@ func TestMCPReadKeyCannotWriteAndWriteKeyCreatesIssue(t *testing.T) {
 	}
 }
 
+func TestMCPUpdateIssueStatusNormalizesPendingAcceptanceCaseName(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Update(context.Background(), func(payload *SyncPayload) error {
+		payload.TrackedIssues = []TrackedIssue{{ID: "mcp-status-1", Status: StatusPending}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	cfg := &Config{MCPAccessKey: "write-ak", MCPPermissions: "read,write"}
+	r := gin.New()
+	r.POST("/mcp", NewMCPServer(cfg, store, nil).Handle())
+	resp := mcpPost(t, r, "write-ak", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tictacker.update_issue_status","arguments":{"id":"mcp-status-1","status":"pendingAcceptance"}}}`)
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), "success") {
+		t.Fatalf("update_issue_status failed: code=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	got, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.TrackedIssues) != 1 || got.TrackedIssues[0].Status != StatusPendingAcceptance {
+		t.Fatalf("stable case name was not normalized: %+v", got.TrackedIssues)
+	}
+}
+
 func TestMCPCreateLinearIssueCreatesRemoteAndLocalBinding(t *testing.T) {
 	var received struct {
 		Variables struct {

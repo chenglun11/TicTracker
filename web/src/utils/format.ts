@@ -44,6 +44,7 @@ export const statusColor = (status: string): string => {
     '待处理': 'orange',
     '处理中': 'blue',
     '测试中': 'cyan',
+    '待验收': 'geekblue',
     '已排期': 'purple',
     '观测中': 'gold',
     '已修复': 'green',

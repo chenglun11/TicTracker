@@ -337,6 +337,7 @@ final class LocalMCPServer {
         var newToday = 0
         var resolvedToday = 0
         var pending = 0
+        var pendingAcceptance = 0
         var scheduled = 0
         var testing = 0
         var observing = 0
@@ -348,6 +349,8 @@ final class LocalMCPServer {
                 resolvedToday += 1
             }
             switch issue.effectiveStatus {
+            case .pendingAcceptance:
+                pendingAcceptance += 1
             case .scheduled:
                 scheduled += 1
             case .testing:
@@ -367,6 +370,7 @@ final class LocalMCPServer {
                 "newToday": newToday,
                 "resolvedToday": resolvedToday,
                 "pending": pending,
+                "pendingAcceptance": pendingAcceptance,
                 "scheduled": scheduled,
                 "testing": testing,
                 "observing": observing
@@ -386,7 +390,9 @@ final class LocalMCPServer {
             case "new":
                 return issue.dateKey == store.todayKey && !issue.isEffectivelyResolved
             case "pending":
-                return !issue.isEffectivelyResolved && issue.effectiveStatus != .observing && issue.effectiveStatus != .scheduled && issue.effectiveStatus != .testing && issue.effectiveStatus != .inProgress
+                return !issue.isEffectivelyResolved && issue.effectiveStatus != .pendingAcceptance && issue.effectiveStatus != .observing && issue.effectiveStatus != .scheduled && issue.effectiveStatus != .testing && issue.effectiveStatus != .inProgress
+            case "pendingAcceptance":
+                return issue.effectiveStatus == .pendingAcceptance
             case "scheduled":
                 return issue.effectiveStatus == .scheduled
             case "testing":
@@ -470,7 +476,7 @@ final class LocalMCPServer {
         var list: [[String: Any]] = [
             tool("tictacker.get_status", "读取今日计数、问题状态统计和部门列表。", properties: [:], required: []),
             tool("tictacker.list_issues", "读取问题追踪列表，支持 status 与 limit。", properties: [
-                "status": ["type": "string"],
+                "status": ["type": "string", "description": "支持 new、pending、pendingAcceptance、scheduled、testing、observing、resolved，或状态中文/caseName。"],
                 "limit": ["type": "integer", "minimum": 1, "maximum": 200]
             ], required: [])
         ]
@@ -483,7 +489,7 @@ final class LocalMCPServer {
             list.append(tool("tictacker.create_issue", "新增本地问题追踪记录。", properties: createIssueProperties(), required: ["title", "type"]))
             list.append(tool("tictacker.update_issue_status", "更新问题状态。", properties: [
                 "id": ["type": "string"],
-                "status": ["type": "string"]
+                "status": ["type": "string", "description": "状态中文或稳定 caseName，例如待验收或 pendingAcceptance。"]
             ], required: ["id", "status"]))
             list.append(tool("tictacker.add_issue_comment", "给问题追加备注。", properties: [
                 "id": ["type": "string"],

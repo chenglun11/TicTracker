@@ -2605,8 +2605,14 @@ struct IssueTrackerView: View {
             && candidate.completedAt != "0"
         if isCompleted {
             store.updateIssueStatus(id: issueID, status: .fixed)
-        } else if let issue = store.trackedIssues.first(where: { $0.id == issueID }), issue.status.isResolved {
-            store.updateIssueStatus(id: issueID, status: .pending)
+        } else if let issue = store.trackedIssues.first(where: { $0.id == issueID }) {
+            switch issue.status {
+            case .fixed, .ignored:
+                store.updateIssueStatus(id: issueID, status: .pending)
+            case .pending, .inProgress, .testing, .pendingAcceptance, .scheduled, .observing:
+                // 未完成的飞书任务不应覆盖用户在本地维护的细分状态。
+                break
+            }
         }
     }
 
@@ -3155,6 +3161,7 @@ struct IssueTrackerView: View {
         case .pending: return .orange
         case .inProgress: return .orange
         case .testing: return .purple
+        case .pendingAcceptance: return .indigo
         case .scheduled: return .teal
         case .observing: return .blue
         case .fixed: return .green

@@ -91,20 +91,24 @@ func TestFeishuWebhookSendEnabled(t *testing.T) {
 func TestStatusConstants(t *testing.T) {
 	// 防止有人不小心改了状态字符串导致客户端不兼容
 	expected := map[string]string{
-		"StatusPending":   "待处理",
-		"StatusScheduled": "已排期",
-		"StatusTesting":   "测试中",
-		"StatusObserving": "观测中",
-		"StatusResolved":  "已修复",
-		"StatusIgnored":   "已忽略",
+		"StatusPending":           "待处理",
+		"StatusInProgress":        "处理中",
+		"StatusScheduled":         "已排期",
+		"StatusTesting":           "测试中",
+		"StatusPendingAcceptance": "待验收",
+		"StatusObserving":         "观测中",
+		"StatusResolved":          "已修复",
+		"StatusIgnored":           "已忽略",
 	}
 	got := map[string]string{
-		"StatusPending":   StatusPending,
-		"StatusScheduled": StatusScheduled,
-		"StatusTesting":   StatusTesting,
-		"StatusObserving": StatusObserving,
-		"StatusResolved":  StatusResolved,
-		"StatusIgnored":   StatusIgnored,
+		"StatusPending":           StatusPending,
+		"StatusInProgress":        StatusInProgress,
+		"StatusScheduled":         StatusScheduled,
+		"StatusTesting":           StatusTesting,
+		"StatusPendingAcceptance": StatusPendingAcceptance,
+		"StatusObserving":         StatusObserving,
+		"StatusResolved":          StatusResolved,
+		"StatusIgnored":           StatusIgnored,
 	}
 	for k, want := range expected {
 		if got[k] != want {
@@ -115,17 +119,38 @@ func TestStatusConstants(t *testing.T) {
 
 func TestIsResolvedStatus(t *testing.T) {
 	cases := map[string]bool{
-		StatusResolved:  true,
-		StatusIgnored:   true,
-		StatusPending:   false,
-		StatusScheduled: false,
-		StatusTesting:   false,
-		StatusObserving: false,
-		"":              false,
+		StatusResolved:          true,
+		StatusIgnored:           true,
+		StatusPending:           false,
+		StatusInProgress:        false,
+		StatusScheduled:         false,
+		StatusTesting:           false,
+		StatusPendingAcceptance: false,
+		StatusObserving:         false,
+		"":                      false,
 	}
 	for status, want := range cases {
 		if got := isResolvedStatus(status); got != want {
 			t.Errorf("isResolvedStatus(%q)=%v, want %v", status, got, want)
+		}
+	}
+}
+
+func TestNormalizeIssueStatusAcceptsStableCaseNames(t *testing.T) {
+	cases := map[string]string{
+		"pending":               StatusPending,
+		"inProgress":            StatusInProgress,
+		"testing":               StatusTesting,
+		"pendingAcceptance":     StatusPendingAcceptance,
+		"scheduled":             StatusScheduled,
+		"observing":             StatusObserving,
+		"fixed":                 StatusResolved,
+		"ignored":               StatusIgnored,
+		StatusPendingAcceptance: StatusPendingAcceptance,
+	}
+	for input, want := range cases {
+		if got := normalizeIssueStatus(input); got != want {
+			t.Errorf("normalizeIssueStatus(%q)=%q, want %q", input, got, want)
 		}
 	}
 }
@@ -160,6 +185,24 @@ func TestFeishuBotConfigDecodeNewFields(t *testing.T) {
 	}
 	if len(cfg.AllowedChatIDs) != 2 || cfg.AllowedChatIDs[0] != "oc_a" {
 		t.Errorf("AllowedChatIDs decode failed: %+v", cfg.AllowedChatIDs)
+	}
+}
+
+func TestFeishuBotConfigPendingAcceptanceDisplayDefaultsOnForLegacyJSON(t *testing.T) {
+	var legacy FeishuBotConfig
+	if err := json.Unmarshal([]byte(`{"showPending":true}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy config: %v", err)
+	}
+	if !legacy.ShowPendingAcceptance {
+		t.Fatal("legacy config without showPendingAcceptance should default to true")
+	}
+
+	var explicitlyDisabled FeishuBotConfig
+	if err := json.Unmarshal([]byte(`{"showPendingAcceptance":false}`), &explicitlyDisabled); err != nil {
+		t.Fatalf("unmarshal explicit config: %v", err)
+	}
+	if explicitlyDisabled.ShowPendingAcceptance {
+		t.Fatal("explicit showPendingAcceptance=false should be preserved")
 	}
 }
 

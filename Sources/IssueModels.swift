@@ -73,6 +73,7 @@ enum IssueStatus: String, Codable, Sendable, CaseIterable {
     case pending = "待处理"
     case inProgress = "处理中"
     case testing = "测试中"
+    case pendingAcceptance = "待验收"
     case scheduled = "已排期"
     case observing = "观测中"
     case fixed = "已修复"
@@ -84,6 +85,7 @@ enum IssueStatus: String, Codable, Sendable, CaseIterable {
         case .pending: return "pending"
         case .inProgress: return "inProgress"
         case .testing: return "testing"
+        case .pendingAcceptance: return "pendingAcceptance"
         case .scheduled: return "scheduled"
         case .observing: return "observing"
         case .fixed: return "fixed"
@@ -101,6 +103,7 @@ enum IssueStatus: String, Codable, Sendable, CaseIterable {
         case .pending: return "circle"
         case .inProgress: return "arrow.triangle.2.circlepath"
         case .testing: return "testtube.2"
+        case .pendingAcceptance: return "checkmark.seal"
         case .scheduled: return "calendar.badge.clock"
         case .observing: return "eye"
         case .fixed: return "checkmark.circle.fill"
@@ -116,6 +119,9 @@ enum IssueStatus: String, Codable, Sendable, CaseIterable {
 extension TrackedIssue {
     var effectiveStatus: IssueStatus {
         guard source == .linear else { return status }
+        // 待验收是用户或 Linear 映射明确推进到的本地阶段；Linear 会把
+        // 多个自定义工作流状态统一标为 started，不能再把它降级成“处理中”。
+        if status == .pendingAcceptance { return .pendingAcceptance }
         if let type = linearStateType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !type.isEmpty {
             switch type {
             case "completed": return .fixed

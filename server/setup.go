@@ -202,6 +202,7 @@ func applySetup(payload *SyncPayload, req SetupRequest) {
 	cfg.ShowSupportStats = false
 	cfg.ShowOverview = true
 	cfg.ShowPending = true
+	cfg.ShowPendingAcceptance = true
 	cfg.ShowObserving = true
 	cfg.ShowScheduled = true
 	cfg.ShowTesting = true
@@ -312,24 +313,25 @@ func currentMemberIDForName(teamMembers json.RawMessage, name string) string {
 
 func defaultFeishuBotConfig() *FeishuBotConfig {
 	return &FeishuBotConfig{
-		MessageFormat:    "消息卡片",
-		CardTitle:        "每日工单报告",
-		FocusIssueTag:    "今日Bug",
-		MaxRetries:       3,
-		ShowSupportStats: false,
-		ShowOverview:     true,
-		ShowPending:      true,
-		ShowObserving:    true,
-		ShowScheduled:    true,
-		ShowTesting:      true,
-		ShowResolved:     true,
-		ShowDailyNote:    true,
-		ShowFocusTag:     true,
-		ShowComments:     true,
-		FieldType:        true,
-		FieldDepartment:  true,
-		FieldJiraKey:     true,
-		FieldStatus:      true,
+		MessageFormat:         "消息卡片",
+		CardTitle:             "每日工单报告",
+		FocusIssueTag:         "今日Bug",
+		MaxRetries:            3,
+		ShowSupportStats:      false,
+		ShowOverview:          true,
+		ShowPending:           true,
+		ShowPendingAcceptance: true,
+		ShowObserving:         true,
+		ShowScheduled:         true,
+		ShowTesting:           true,
+		ShowResolved:          true,
+		ShowDailyNote:         true,
+		ShowFocusTag:          true,
+		ShowComments:          true,
+		FieldType:             true,
+		FieldDepartment:       true,
+		FieldJiraKey:          true,
+		FieldStatus:           true,
 	}
 }
 

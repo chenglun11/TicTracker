@@ -16,6 +16,16 @@ struct IssueSyncVerification {
         let reencoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any]
         require(reencoded?["id"] as? String == "legacy-web-42", "non-UUID remote ID did not round-trip")
 
+        var linearAcceptance = TrackedIssue(title: "Linear acceptance")
+        linearAcceptance.source = .linear
+        linearAcceptance.status = .pendingAcceptance
+        linearAcceptance.linearStateName = "Ready for acceptance"
+        linearAcceptance.linearStateType = "started"
+        require(
+            linearAcceptance.effectiveStatus == .pendingAcceptance,
+            "Linear started state overrode the explicit pending-acceptance mapping"
+        )
+
         var base = TrackedIssue(title: "Base title")
         base.revision = 1
         base.assignee = "Alice"

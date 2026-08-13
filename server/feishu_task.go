@@ -28,7 +28,7 @@ func validTaskGUID(s string) bool {
 // UpsertIssueFromFeishuTask 根据飞书任务事件创建或更新对应 issue
 //
 // 关键规则：
-//   - 已进入细分状态（已排期/测试中/观测中）的 issue，若飞书端仍未完成，不会被打回"待处理"
+//   - 已进入细分状态（已排期/测试中/待验收/观测中）的 issue，若飞书端仍未完成，不会被打回"待处理"
 //   - 只有"完成↔未完成"真正翻转时才推进状态
 //   - summary/description 为空时不覆盖旧值
 func UpsertIssueFromFeishuTask(ctx context.Context, store PayloadStore, taskGUID, summary, description, completedAt string, completed bool) {
@@ -58,7 +58,7 @@ func UpsertIssueFromFeishuTask(ctx context.Context, store PayloadStore, taskGUID
 				ensureFeishuTaskComment(issue, description, now)
 			}
 
-			// 状态同步：仅在真正翻转时修改，保留已排期/测试中/观测中
+			// 状态同步：仅在真正翻转时修改，保留已排期/测试中/待验收/观测中
 			wasResolved := isResolvedStatus(issue.Status)
 			if completed && !wasResolved {
 				applyIssueStatus(issue, StatusResolved)

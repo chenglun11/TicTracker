@@ -42,6 +42,7 @@ const statusLabels: Record<IssueStatus, string> = {
   Pending: "待处理",
   InProgress: "处理中",
   Testing: "测试中",
+  PendingAcceptance: "待验收",
   Scheduled: "已排期",
   Observing: "观测中",
   Fixed: "已修复",

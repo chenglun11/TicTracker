@@ -15,6 +15,7 @@ export interface StatusResponse {
     pending: number
     scheduled: number
     testing: number
+    pendingAcceptance: number
     observing: number
   }
   lastSentTime?: string

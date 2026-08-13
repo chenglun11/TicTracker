@@ -102,3 +102,76 @@ func TestFeishuIssueFormattingIncludesLinearReference(t *testing.T) {
 		t.Fatalf("Linear should take precedence over Jira in formatted issue: %s", got)
 	}
 }
+
+func TestFeishuReportSeparatesPendingAcceptanceInEveryMessageFormat(t *testing.T) {
+	today := time.Now().Format("2006-01-02")
+	cfg := &FeishuBotConfig{
+		ShowOverview:          true,
+		ShowPending:           true,
+		ShowPendingAcceptance: true,
+		FieldStatus:           true,
+		CustomTemplate: "待处理 {{待处理数量}} 个\n{{待处理列表}}\n---\n" +
+			"待验收 {{待验收数量}} 个\n{{待验收列表}}",
+	}
+	payload := SyncPayload{
+		FeishuBotConfig: cfg,
+		TrackedIssues: []TrackedIssue{
+			{
+				ID:          "pending",
+				IssueNumber: 1,
+				Title:       "pending only",
+				DateKey:     today,
+				CreatedAt:   FlexTime{Value: today + " 09:00:00"},
+				Status:      StatusPending,
+			},
+			{
+				ID:          "pending-acceptance",
+				IssueNumber: 2,
+				Title:       "acceptance only",
+				DateKey:     today,
+				CreatedAt:   FlexTime{Value: today + " 10:00:00"},
+				Status:      StatusPendingAcceptance,
+			},
+		},
+	}
+
+	stats := calcStats(payload)
+	if len(stats.pending) != 1 || stats.pending[0].ID != "pending" {
+		t.Fatalf("pending bucket should exclude pending acceptance: %+v", stats.pending)
+	}
+	if len(stats.pendingAcceptance) != 1 || stats.pendingAcceptance[0].ID != "pending-acceptance" {
+		t.Fatalf("pending acceptance bucket mismatch: %+v", stats.pendingAcceptance)
+	}
+
+	assertMessageContains := func(name string, body map[string]interface{}, values ...string) {
+		t.Helper()
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal %s message: %v", name, err)
+		}
+		text := string(data)
+		for _, value := range values {
+			if !strings.Contains(text, value) {
+				t.Errorf("%s message missing %q: %s", name, value, text)
+			}
+		}
+	}
+
+	assertMessageContains("card", buildCardMessage(payload, cfg),
+		"待处理问题（1个）", "待验收问题（1个）", "acceptance only")
+	assertMessageContains("post", buildPostMessage(payload, cfg),
+		"待处理问题（1个）", "待验收问题（1个）", "acceptance only")
+	assertMessageContains("template", buildTemplateMessage(payload, cfg),
+		"待处理 1 个", "pending only", "待验收 1 个", "acceptance only")
+
+	summaryStats := BuildStatusSummary(&payload, time.Now())["statistics"].(map[string]int)
+	if summaryStats["pending"] != 1 || summaryStats["pendingAcceptance"] != 1 {
+		t.Fatalf("status summary did not separate pending acceptance: %+v", summaryStats)
+	}
+	if got := filterIssuesForMCP(payload.TrackedIssues, "pending"); len(got) != 1 || got[0].ID != "pending" {
+		t.Fatalf("MCP pending filter included pending acceptance: %+v", got)
+	}
+	if got := filterIssuesForMCP(payload.TrackedIssues, "pendingAcceptance"); len(got) != 1 || got[0].ID != "pending-acceptance" {
+		t.Fatalf("MCP pendingAcceptance filter mismatch: %+v", got)
+	}
+}

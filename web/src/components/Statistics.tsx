@@ -4,6 +4,7 @@ import {
   ClockCircleOutlined,
   ExperimentOutlined,
   EyeOutlined,
+  FileDoneOutlined,
   PlusCircleOutlined
 } from '@ant-design/icons'
 import type { StatusResponse } from '../types'
@@ -19,8 +20,9 @@ function Statistics({ status }: StatisticsProps) {
     { label: '今日新建', value: statistics.newToday, icon: <PlusCircleOutlined />, color: 'var(--tt-green)', note: '当天新增未关闭' },
     { label: '今日解决', value: statistics.resolvedToday, icon: <CheckCircleOutlined />, color: 'var(--tt-blue)', note: '当天完成' },
     { label: '待处理', value: statistics.pending, icon: <ClockCircleOutlined />, color: 'var(--tt-red)', note: '当前阻塞池' },
-    { label: '已排期', value: statistics.scheduled, icon: <CalendarOutlined />, color: '#76559a', note: '进入计划' },
     { label: '测试中', value: statistics.testing, icon: <ExperimentOutlined />, color: 'var(--tt-cyan)', note: '等待验证' },
+    { label: '待验收', value: statistics.pendingAcceptance ?? 0, icon: <FileDoneOutlined />, color: '#2f54eb', note: '等待确认结果' },
+    { label: '已排期', value: statistics.scheduled, icon: <CalendarOutlined />, color: '#76559a', note: '进入计划' },
     { label: '观测中', value: statistics.observing, icon: <EyeOutlined />, color: 'var(--tt-gold)', note: todayTotal > 0 ? `支持 ${todayTotal} 次` : '持续观察' }
   ]
 

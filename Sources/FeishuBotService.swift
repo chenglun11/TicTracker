@@ -362,8 +362,14 @@ final class FeishuBotService {
             && candidate.completedAt != "0"
         if isCompleted {
             store.updateIssueStatus(id: issueID, status: .fixed)
-        } else if let issue = store.trackedIssues.first(where: { $0.id == issueID }), issue.status.isResolved {
-            store.updateIssueStatus(id: issueID, status: .pending)
+        } else if let issue = store.trackedIssues.first(where: { $0.id == issueID }) {
+            switch issue.status {
+            case .fixed, .ignored:
+                store.updateIssueStatus(id: issueID, status: .pending)
+            case .pending, .inProgress, .testing, .pendingAcceptance, .scheduled, .observing:
+                // 飞书任务未完成时保留本地细分状态，仅将已关闭问题重新打开为待处理。
+                break
+            }
         }
     }
 
@@ -912,6 +918,7 @@ final class FeishuBotService {
         let newIssues: [TrackedIssue]
         let resolvedToday: [TrackedIssue]
         let pending: [TrackedIssue]
+        let pendingAcceptance: [TrackedIssue]
         let inProgress: [TrackedIssue]
         let scheduled: [TrackedIssue]
         let testing: [TrackedIssue]
@@ -962,7 +969,8 @@ final class FeishuBotService {
                 guard issue.isEffectivelyResolved, let resolvedAt = issue.resolvedAt else { return false }
                 return DataStore.dateKey(from: resolvedAt) == todayKey
             },
-            pending: allIssues.filter { !$0.isEffectivelyResolved && $0.effectiveStatus != .observing && $0.effectiveStatus != .scheduled && $0.effectiveStatus != .testing && $0.effectiveStatus != .inProgress },
+            pending: allIssues.filter { !$0.isEffectivelyResolved && $0.effectiveStatus != .pendingAcceptance && $0.effectiveStatus != .observing && $0.effectiveStatus != .scheduled && $0.effectiveStatus != .testing && $0.effectiveStatus != .inProgress },
+            pendingAcceptance: allIssues.filter { $0.effectiveStatus == .pendingAcceptance },
             inProgress: allIssues.filter { $0.effectiveStatus == .inProgress },
             scheduled: allIssues.filter { $0.effectiveStatus == .scheduled },
             testing: allIssues.filter { $0.effectiveStatus == .testing },
@@ -1294,10 +1302,11 @@ final class FeishuBotService {
         case .pending: return 0
         case .inProgress: return 1
         case .testing: return 2
-        case .scheduled: return 3
-        case .observing: return 4
-        case .fixed: return 5
-        case .ignored: return 6
+        case .pendingAcceptance: return 3
+        case .scheduled: return 4
+        case .observing: return 5
+        case .fixed: return 6
+        case .ignored: return 7
         }
     }
 
@@ -1312,6 +1321,9 @@ final class FeishuBotService {
             var statsLine = "🟢 今日新建 \(d.newIssues.count)  ·  ✅ 今日解决 \(d.resolvedToday.count)  ·  🔶 待处理 \(d.pending.count)"
             if !d.inProgress.isEmpty {
                 statsLine += "  ·  🔄 处理中 \(d.inProgress.count)"
+            }
+            if !d.pendingAcceptance.isEmpty {
+                statsLine += "  ·  🔍 待验收 \(d.pendingAcceptance.count)"
             }
             if !d.observing.isEmpty {
                 statsLine += "  ·  👁 观测中 \(d.observing.count)"
@@ -1340,10 +1352,19 @@ final class FeishuBotService {
             lines.append([text("")])
         }
 
-        // === 观测中问题 ===
-        if d.config.showObserving && !d.observing.isEmpty {
-            lines.append([text("👁 观测中问题：")])
-            for issue in d.observing {
+        // === 测试中问题 ===
+        if d.config.showTesting && !d.testing.isEmpty {
+            lines.append([text("🧪 测试中问题：")])
+            for issue in d.testing {
+                lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
+            }
+            lines.append([text("")])
+        }
+
+        // === 待验收问题 ===
+        if d.config.showPendingAcceptance && !d.pendingAcceptance.isEmpty {
+            lines.append([text("🔍 待验收问题：")])
+            for issue in d.pendingAcceptance {
                 lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
             }
             lines.append([text("")])
@@ -1358,10 +1379,10 @@ final class FeishuBotService {
             lines.append([text("")])
         }
 
-        // === 测试中问题 ===
-        if d.config.showTesting && !d.testing.isEmpty {
-            lines.append([text("🧪 测试中问题：")])
-            for issue in d.testing {
+        // === 观测中问题 ===
+        if d.config.showObserving && !d.observing.isEmpty {
+            lines.append([text("👁 观测中问题：")])
+            for issue in d.observing {
                 lines.append(richTextIssueLine(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL))
             }
             lines.append([text("")])
@@ -1468,10 +1489,12 @@ final class FeishuBotService {
             "新建数量": "\(d.newIssues.count)",
             "解决数量": "\(d.resolvedToday.count)",
             "待处理数量": "\(d.pending.count)",
+            "待验收数量": "\(d.pendingAcceptance.count)",
             "观测中数量": "\(d.observing.count)",
             "已排期数量": "\(d.scheduled.count)",
             "测试中数量": "\(d.testing.count)",
             "待处理列表": formatIssueListMd(d.pending, showStatus: true, config: d.config, jiraServerURL: d.jiraServerURL),
+            "待验收列表": formatIssueListMd(d.pendingAcceptance, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
             "已解决列表": formatIssueListMd(d.resolvedToday, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
             "观测中列表": formatIssueListMd(d.observing, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
             "已排期列表": formatIssueListMd(d.scheduled, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL),
@@ -1550,6 +1573,9 @@ final class FeishuBotService {
             if !d.inProgress.isEmpty {
                 statsLine += "  ·  🔄 **处理中** \(d.inProgress.count) 个"
             }
+            if !d.pendingAcceptance.isEmpty {
+                statsLine += "  ·  🔍 **待验收** \(d.pendingAcceptance.count) 个"
+            }
             if !d.observing.isEmpty {
                 statsLine += "  ·  👁 **观测中** \(d.observing.count) 个"
             }
@@ -1576,11 +1602,21 @@ final class FeishuBotService {
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
 
-        // 观测中问题列表 + 评论
-        if d.config.showObserving && !d.observing.isEmpty {
+        // 测试中问题列表 + 评论
+        if d.config.showTesting && !d.testing.isEmpty {
             elements.append(["tag": "hr"])
-            var content = "**👁 观测中问题：**"
-            for issue in d.observing {
+            var content = "**🧪 测试中问题：**"
+            for issue in d.testing {
+                content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
+            }
+            elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
+        }
+
+        // 待验收问题列表 + 评论
+        if d.config.showPendingAcceptance && !d.pendingAcceptance.isEmpty {
+            elements.append(["tag": "hr"])
+            var content = "**🔍 待验收问题：**"
+            for issue in d.pendingAcceptance {
                 content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
             }
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
@@ -1596,11 +1632,11 @@ final class FeishuBotService {
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
         }
 
-        // 测试中问题列表 + 评论
-        if d.config.showTesting && !d.testing.isEmpty {
+        // 观测中问题列表 + 评论
+        if d.config.showObserving && !d.observing.isEmpty {
             elements.append(["tag": "hr"])
-            var content = "**🧪 测试中问题：**"
-            for issue in d.testing {
+            var content = "**👁 观测中问题：**"
+            for issue in d.observing {
                 content += "\n" + Self.formatIssue(issue, showStatus: false, config: d.config, jiraServerURL: d.jiraServerURL)
             }
             elements.append(["tag": "div", "text": ["tag": "lark_md", "content": content]])
@@ -1645,6 +1681,7 @@ final class FeishuBotService {
         // 无数据
         let hasContent = d.config.showOverview
             || (d.config.showPending && !d.pending.isEmpty)
+            || (d.config.showPendingAcceptance && !d.pendingAcceptance.isEmpty)
             || (d.config.showInProgress && !d.inProgress.isEmpty)
             || (d.config.showObserving && !d.observing.isEmpty)
             || (d.config.showScheduled && !d.scheduled.isEmpty)

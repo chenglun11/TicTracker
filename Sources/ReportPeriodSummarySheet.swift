@@ -857,10 +857,11 @@ struct ReportPeriodSummaryView: View {
         case .pending: return 0
         case .inProgress: return 1
         case .testing: return 2
-        case .scheduled: return 3
-        case .observing: return 4
-        case .fixed: return 5
-        case .ignored: return 6
+        case .pendingAcceptance: return 3
+        case .scheduled: return 4
+        case .observing: return 5
+        case .fixed: return 6
+        case .ignored: return 7
         }
     }
 

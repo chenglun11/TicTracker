@@ -39,7 +39,9 @@ interface IssueListProps {
   currentUser: AuthUser
 }
 
-type QueueKey = 'pending' | 'scheduled' | 'testing' | 'observing' | 'newToday' | 'resolvedToday' | 'myReported' | 'tagged' | 'all'
+type QueueKey = 'pending' | 'scheduled' | 'testing' | 'pendingAcceptance' | 'observing' | 'newToday' | 'resolvedToday' | 'myReported' | 'tagged' | 'all'
+
+const STATUS_OPTIONS = ['待处理', '处理中', '测试中', '待验收', '已排期', '观测中', '已修复', '已忽略']
 
 function IssueList({ issues, departments, currentUser }: IssueListProps) {
   const today = dayjs().format('YYYY-MM-DD')
@@ -60,9 +62,10 @@ function IssueList({ issues, departments, currentUser }: IssueListProps) {
       i => i.resolvedAt && parseDate(i.resolvedAt).format('YYYY-MM-DD') === today
     )
     return {
-      pending: issues.filter(i => !isResolved(i.status) && !['观测中', '已排期', '测试中'].includes(i.status)),
+      pending: issues.filter(i => !isResolved(i.status) && !['观测中', '已排期', '测试中', '待验收'].includes(i.status)),
       scheduled: issues.filter(i => i.status === '已排期'),
       testing: issues.filter(i => i.status === '测试中'),
+      pendingAcceptance: issues.filter(i => i.status === '待验收'),
       observing: issues.filter(i => i.status === '观测中'),
       newToday: issues.filter(i => i.dateKey === today && !isResolved(i.status)),
       resolvedToday,
@@ -156,8 +159,6 @@ function IssueList({ issues, departments, currentUser }: IssueListProps) {
     }
   })
 
-  const statusOptions = ['待处理', '处理中', '测试中', '已排期', '观测中', '已修复', '已忽略']
-
   const handleStatusChange = (issue: TrackedIssue, status: string) => {
     mutation.mutate({ id: issue.id, revision: issue.revision, data: { status } })
   }
@@ -233,7 +234,7 @@ function IssueList({ issues, departments, currentUser }: IssueListProps) {
             value={status}
             style={{ width: 108 }}
             onChange={(val) => handleStatusChange(record, val)}
-            options={statusOptions.map(s => ({ label: s, value: s }))}
+            options={STATUS_OPTIONS.map(s => ({ label: s, value: s }))}
             variant="borderless"
             loading={updatingIds.has(record.id)}
             disabled={readOnly || !canWrite}
@@ -349,8 +350,9 @@ function IssueList({ issues, departments, currentUser }: IssueListProps) {
 
   const queueOptions = [
     { label: <span className="queue-tab-label"><span>待处理</span><b>{groups.pending.length}</b></span>, value: 'pending' },
-    { label: <span className="queue-tab-label"><span>已排期</span><b>{groups.scheduled.length}</b></span>, value: 'scheduled' },
     { label: <span className="queue-tab-label"><span>测试中</span><b>{groups.testing.length}</b></span>, value: 'testing' },
+    { label: <span className="queue-tab-label"><span>待验收</span><b>{groups.pendingAcceptance.length}</b></span>, value: 'pendingAcceptance' },
+    { label: <span className="queue-tab-label"><span>已排期</span><b>{groups.scheduled.length}</b></span>, value: 'scheduled' },
     { label: <span className="queue-tab-label"><span>观测中</span><b>{groups.observing.length}</b></span>, value: 'observing' },
     { label: <span className="queue-tab-label"><span>今日新建</span><b>{groups.newToday.length}</b></span>, value: 'newToday' },
     { label: <span className="queue-tab-label"><span>今日解决</span><b>{groups.resolvedToday.length}</b></span>, value: 'resolvedToday' },

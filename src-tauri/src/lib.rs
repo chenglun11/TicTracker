@@ -159,6 +159,7 @@ enum IssueStatus {
     Pending,
     InProgress,
     Testing,
+    PendingAcceptance,
     Scheduled,
     Observing,
     Fixed,
@@ -954,15 +955,26 @@ mod tests {
         let mut snapshot = AppSnapshot::default();
         snapshot.tracked_issues = vec![
             issue_with_status(IssueStatus::Pending),
+            issue_with_status(IssueStatus::PendingAcceptance),
             issue_with_status(IssueStatus::Observing),
             issue_with_status(IssueStatus::Fixed),
             issue_with_status(IssueStatus::Ignored),
         ];
 
         let counts = snapshot.issue_counts();
-        assert_eq!(counts.open, 1);
+        assert_eq!(counts.open, 2);
         assert_eq!(counts.observing, 1);
         assert_eq!(counts.resolved, 2);
+    }
+
+    #[test]
+    fn pending_acceptance_status_round_trips() {
+        let status = IssueStatus::PendingAcceptance;
+        let json = serde_json::to_string(&status).expect("status encodes");
+        assert_eq!(json, r#""PendingAcceptance""#);
+
+        let decoded: IssueStatus = serde_json::from_str(&json).expect("status decodes");
+        assert_eq!(decoded, status);
     }
 
     #[test]

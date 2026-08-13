@@ -4,6 +4,7 @@ export type IssueStatus =
   | "Pending"
   | "InProgress"
   | "Testing"
+  | "PendingAcceptance"
   | "Scheduled"
   | "Observing"
   | "Fixed"

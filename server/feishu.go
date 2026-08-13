@@ -141,16 +141,17 @@ func formatLinearIssueReference(issue TrackedIssue) string {
 
 // reportStats 日报中各状态分组结果
 type reportStats struct {
-	newIssues     []TrackedIssue
-	resolvedToday []TrackedIssue
-	pending       []TrackedIssue
-	scheduled     []TrackedIssue
-	testing       []TrackedIssue
-	observing     []TrackedIssue
-	focusTagged   []TrackedIssue
-	focusTag      string
-	todayTotal    int
-	todayNote     string
+	newIssues         []TrackedIssue
+	resolvedToday     []TrackedIssue
+	pending           []TrackedIssue
+	pendingAcceptance []TrackedIssue
+	scheduled         []TrackedIssue
+	testing           []TrackedIssue
+	observing         []TrackedIssue
+	focusTagged       []TrackedIssue
+	focusTag          string
+	todayTotal        int
+	todayNote         string
 }
 
 func calcStats(payload SyncPayload) reportStats {
@@ -177,6 +178,8 @@ func calcStats(payload SyncPayload) reportStats {
 			stats.scheduled = append(stats.scheduled, issue)
 		case StatusTesting:
 			stats.testing = append(stats.testing, issue)
+		case StatusPendingAcceptance:
+			stats.pendingAcceptance = append(stats.pendingAcceptance, issue)
 		case StatusObserving:
 			stats.observing = append(stats.observing, issue)
 		default:
@@ -240,9 +243,10 @@ type reportSection struct {
 func collectSections(stats reportStats, cfg *FeishuBotConfig) []reportSection {
 	raw := []reportSection{
 		{title: fmt.Sprintf("**待处理问题（%d个）**", len(stats.pending)), header: fmt.Sprintf("待处理问题（%d个）", len(stats.pending)), items: stats.pending, shown: cfg.ShowPending},
-		{title: fmt.Sprintf("**👁 观测中（%d个）**", len(stats.observing)), header: fmt.Sprintf("观测中（%d个）", len(stats.observing)), items: stats.observing, shown: cfg.ShowObserving},
-		{title: fmt.Sprintf("**📅 已排期问题（%d个）**", len(stats.scheduled)), header: fmt.Sprintf("已排期问题（%d个）", len(stats.scheduled)), items: stats.scheduled, shown: cfg.ShowScheduled},
 		{title: fmt.Sprintf("**🧪 测试中问题（%d个）**", len(stats.testing)), header: fmt.Sprintf("测试中问题（%d个）", len(stats.testing)), items: stats.testing, shown: cfg.ShowTesting},
+		{title: fmt.Sprintf("**🔍 待验收问题（%d个）**", len(stats.pendingAcceptance)), header: fmt.Sprintf("待验收问题（%d个）", len(stats.pendingAcceptance)), items: stats.pendingAcceptance, shown: cfg.ShowPendingAcceptance},
+		{title: fmt.Sprintf("**📅 已排期问题（%d个）**", len(stats.scheduled)), header: fmt.Sprintf("已排期问题（%d个）", len(stats.scheduled)), items: stats.scheduled, shown: cfg.ShowScheduled},
+		{title: fmt.Sprintf("**👁 观测中（%d个）**", len(stats.observing)), header: fmt.Sprintf("观测中（%d个）", len(stats.observing)), items: stats.observing, shown: cfg.ShowObserving},
 		{title: fmt.Sprintf("**今日解决（%d个）**", len(stats.resolvedToday)), header: fmt.Sprintf("今日解决（%d个）", len(stats.resolvedToday)), items: stats.resolvedToday, shown: cfg.ShowResolved},
 		{title: fmt.Sprintf("**今日重点（%s，%d个）**", stats.focusTag, len(stats.focusTagged)), header: fmt.Sprintf("今日重点（%s，%d个）", stats.focusTag, len(stats.focusTagged)), items: stats.focusTagged, shown: cfg.ShowFocusTag && stats.focusTag != ""},
 	}
@@ -272,8 +276,8 @@ func buildCardElements(payload SyncPayload, cfg *FeishuBotConfig) []map[string]i
 
 	// 概览
 	if cfg.ShowOverview {
-		overview := fmt.Sprintf("🟢 **今日新建** %d 个  ·  ✅ **今日解决** %d 个  ·  🔶 **待处理** %d 个",
-			len(stats.newIssues), len(stats.resolvedToday), len(stats.pending))
+		overview := fmt.Sprintf("🟢 **今日新建** %d 个  ·  ✅ **今日解决** %d 个  ·  🔶 **待处理** %d 个  ·  🔍 **待验收** %d 个",
+			len(stats.newIssues), len(stats.resolvedToday), len(stats.pending), len(stats.pendingAcceptance))
 		if len(stats.observing) > 0 {
 			overview += fmt.Sprintf("  ·  👁 **观测中** %d 个", len(stats.observing))
 		}
@@ -353,8 +357,8 @@ func buildPostMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]inte
 	}
 
 	if cfg.ShowOverview {
-		addRow(fmt.Sprintf("今日新建 %d 个 · 今日解决 %d 个 · 待处理 %d 个",
-			len(stats.newIssues), len(stats.resolvedToday), len(stats.pending)))
+		addRow(fmt.Sprintf("今日新建 %d 个 · 今日解决 %d 个 · 待处理 %d 个 · 待验收 %d 个",
+			len(stats.newIssues), len(stats.resolvedToday), len(stats.pending), len(stats.pendingAcceptance)))
 	}
 	for _, sec := range collectSections(stats, cfg) {
 		addRow(sec.header)
@@ -405,10 +409,12 @@ func buildTemplateMessage(payload SyncPayload, cfg *FeishuBotConfig) map[string]
 		"{{新建数量}}":  fmt.Sprintf("%d", len(stats.newIssues)),
 		"{{解决数量}}":  fmt.Sprintf("%d", len(stats.resolvedToday)),
 		"{{待处理数量}}": fmt.Sprintf("%d", len(stats.pending)),
+		"{{待验收数量}}": fmt.Sprintf("%d", len(stats.pendingAcceptance)),
 		"{{观测中数量}}": fmt.Sprintf("%d", len(stats.observing)),
 		"{{已排期数量}}": fmt.Sprintf("%d", len(stats.scheduled)),
 		"{{测试中数量}}": fmt.Sprintf("%d", len(stats.testing)),
 		"{{待处理列表}}": issueLines(stats.pending),
+		"{{待验收列表}}": issueLines(stats.pendingAcceptance),
 		"{{已解决列表}}": issueLines(stats.resolvedToday),
 		"{{观测中列表}}": issueLines(stats.observing),
 		"{{已排期列表}}": issueLines(stats.scheduled),
@@ -753,7 +759,7 @@ func collectIssueMonthlyReport(payload SyncPayload, period string) issueMonthlyR
 			staleOpen:      staleOpen,
 			unassignedOpen: unassignedOpen,
 			typeTotals:     sortedCountPairs(typeCounts, []string{"Bug", "Feature", "Support"}),
-			statusTotals:   sortedCountPairs(statusCounts, []string{StatusPending, "处理中", StatusTesting, StatusScheduled, StatusObserving, StatusResolved, StatusIgnored}),
+			statusTotals:   sortedCountPairs(statusCounts, []string{StatusPending, StatusInProgress, StatusTesting, StatusPendingAcceptance, StatusScheduled, StatusObserving, StatusResolved, StatusIgnored}),
 			assigneeTotals: sortedCountPairs(assigneeCounts, nil),
 			closureRate:    closureRate,
 		}
